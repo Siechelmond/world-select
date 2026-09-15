@@ -25,7 +25,7 @@ export async function fetchStationSatellites(at: Date, signal?: AbortSignal): Pr
     try {
       const satrec = satellite.twoline2satrec(record.line1, record.line2);
       const propagated = satellite.propagate(satrec, at);
-      if (!propagated.position || typeof propagated.position === "boolean") return [];
+      if (!propagated || !propagated.position || typeof propagated.position === "boolean") return [];
       const gd = satellite.eciToGeodetic(propagated.position, gmst);
       const longitude = satellite.degreesLong(gd.longitude);
       const latitude = satellite.degreesLat(gd.latitude);
