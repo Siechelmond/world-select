@@ -70,3 +70,55 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .legend { left: 8px; right: 8px; bottom: 8px; }
   .legend span:nth-child(2), .legend span:nth-child(3) { display: none; }
 }
+
+.globeHidden { opacity: 0; pointer-events: none; }
+.modeSwitch { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: rgba(2,6,23,.55); }
+.modeSwitch button { border: 0; background: transparent; color: #64748b; padding: 7px 10px; border-radius: 7px; cursor: pointer; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.modeSwitch button.active { color: #cffafe; background: rgba(8,145,178,.24); box-shadow: inset 0 0 0 1px rgba(103,232,249,.16); }
+.layerRow.disabled { opacity: .42; }
+.spaceLayerSummary { display: grid; grid-template-columns: 1fr auto; gap: 9px; margin-top: 14px; color: #94a3b8; font-size: 11px; }
+.spaceLayerSummary em { font-style: normal; color: #64748b; font-size: 9px; letter-spacing: .1em; }
+
+.timebar { position: fixed; left: 294px; right: 364px; bottom: 74px; min-height: 64px; border-radius: 14px; z-index: 5; display: grid; grid-template-columns: 190px 1fr 110px; align-items: center; gap: 16px; padding: 10px 14px; }
+.timebar strong { display: block; font-size: 11px; color: #e2e8f0; font-weight: 600; }
+.timebar input[type="range"] { width: 100%; accent-color: #22d3ee; }
+.timeActions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; font-size: 10px; color: #94a3b8; }
+.timeActions button { border: 1px solid rgba(103,232,249,.22); background: rgba(8,145,178,.14); color: #cffafe; border-radius: 8px; padding: 7px 9px; cursor: pointer; font-size: 9px; font-weight: 800; }
+.legendDot.observed { background: var(--orange); box-shadow: 0 0 8px var(--orange); }
+.legendDot.calculated { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+.spaceScene { position: fixed; inset: 0; z-index: 1; overflow: hidden; background: radial-gradient(circle at 50% 46%, #071224 0%, #020617 38%, #000 100%); }
+.spaceScene::before { content: ""; position: absolute; inset: 0; opacity: .6; background-image: radial-gradient(circle, rgba(255,255,255,.7) 0 1px, transparent 1.2px), radial-gradient(circle, rgba(125,211,252,.6) 0 1px, transparent 1.1px); background-size: 83px 83px, 137px 137px; background-position: 13px 7px, 47px 31px; }
+.spaceTitle { position: absolute; z-index: 2; top: 108px; left: 50%; transform: translateX(-50%); text-align: center; pointer-events: none; }
+.spaceTitle span { display: block; font-size: 12px; color: #cffafe; letter-spacing: .18em; font-weight: 800; }
+.spaceTitle small { display: block; margin-top: 5px; color: #64748b; font-size: 9px; }
+.solarSvg { position: absolute; inset: 92px 250px 118px 250px; width: calc(100% - 500px); height: calc(100% - 210px); overflow: visible; }
+.orbitRing { fill: none; stroke: rgba(148,163,184,.14); stroke-width: 1.5; stroke-dasharray: 4 7; }
+.spaceObject, .planetGroup { cursor: pointer; }
+.planetDot { fill: #cbd5e1; stroke: rgba(255,255,255,.8); stroke-width: 1.2; filter: drop-shadow(0 0 6px rgba(255,255,255,.35)); }
+.planet-mercury { fill: #a8a29e; }
+.planet-venus { fill: #fbbf24; }
+.planet-earth { fill: #38bdf8; }
+.planet-mars { fill: #f97316; }
+.planet-jupiter { fill: #d6b38a; }
+.planet-saturn { fill: #fde68a; }
+.planet-uranus { fill: #67e8f9; }
+.planet-neptune { fill: #818cf8; }
+.planetLabel { fill: #cbd5e1; font-size: 16px; font-family: Arial, Helvetica, sans-serif; paint-order: stroke; stroke: rgba(2,6,23,.8); stroke-width: 3px; stroke-linejoin: round; }
+
+@media (max-width: 1000px) {
+  .timebar { left: 238px; right: 8px; bottom: 58px; grid-template-columns: 150px 1fr 90px; }
+  .solarSvg { inset: 90px 100px 120px 100px; width: calc(100% - 200px); height: calc(100% - 210px); }
+}
+
+@media (max-width: 780px) {
+  .modeSwitch { position: absolute; left: 50%; transform: translateX(-50%); }
+  .statusRow { display: none; }
+  .timebar { left: 8px; right: 8px; bottom: 58px; min-height: 56px; grid-template-columns: 128px 1fr 70px; gap: 8px; }
+  .timebar .panelLabel { display: none; }
+  .timebar strong { font-size: 9px; }
+  .timeActions span { display: none; }
+  .solarSvg { inset: 88px 8px 185px 8px; width: calc(100% - 16px); height: calc(100% - 273px); }
+  .spaceTitle { top: 90px; }
+  .spaceTitle small { display: none; }
+}
