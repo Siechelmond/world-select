@@ -42,3 +42,18 @@ No Cesium ion token is required for MVP v1 because the globe uses Cesium's defau
 ## Isolation
 
 `PROJECT_GUARDRAILS.md` is binding. World Select must not mutate any other repository, deployment, or database.
+
+## GitHub Pages
+
+World Select is configured for a static Next.js export and can be deployed directly from this repository with GitHub Actions.
+
+1. Push the repository to `main`.
+2. In GitHub open **Settings → Pages**.
+3. Under **Build and deployment**, choose **GitHub Actions** as the source.
+4. Run the `Deploy World Select to GitHub Pages` workflow or push a new commit to `main`.
+
+The workflow builds the site into `out/` and publishes that artifact. No Vercel project or database is required for MVP v1.
+
+## GitHub Pages
+
+The repository includes a GitHub Actions workflow for static Pages deployment. See [`docs/GITHUB_PAGES.md`](docs/GITHUB_PAGES.md) for the one-time repository setting and deployment behavior.
