@@ -251,3 +251,23 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .brand h1 { font-size: 15px; }
   .inspectorActions { grid-template-columns: 1fr; }
 }
+
+/* v4.2 — user-triggered lazy layers */
+.layerCard { margin-top: 12px; border: 1px solid rgba(103,232,249,.16); border-radius: 12px; background: rgba(8,47,73,.22); overflow: hidden; }
+.layerCard .layerRow { margin-top: 0; border: 0; border-radius: 0; background: transparent; }
+.layerCard.disabled { opacity: .42; }
+.layerCard.layerError { border-color: rgba(248,113,113,.35); background: rgba(127,29,29,.10); }
+.layerLoadBar { position: relative; height: 4px; margin: 0 12px; overflow: hidden; border-radius: 999px; background: rgba(148,163,184,.12); }
+.layerLoadBar i { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit; background: #67e8f9; transition: width .25s ease; }
+.layerLoadBar.state-ready i { width: 100%; background: #34d399; }
+.layerLoadBar.state-error i { width: 100%; background: #f87171; }
+.layerLoadBar.state-off i, .layerLoadBar.state-idle i { width: 0; }
+.layerLoadBar.state-loading i { width: 38%; animation: layerLoading 1.05s ease-in-out infinite; background: linear-gradient(90deg, rgba(34,211,238,.25), #67e8f9, rgba(34,211,238,.25)); }
+@keyframes layerLoading { 0% { transform: translateX(-110%); } 100% { transform: translateX(330%); } }
+.layerStatusLine { min-height: 30px; padding: 6px 12px 9px; display: flex; align-items: center; gap: 7px; color: #cbd5e1; font-size: 9px; }
+.layerStatusLine > span { font-weight: 800; letter-spacing: .04em; }
+.layerStatusLine small { margin-left: auto; color: #64748b; font-size: 8px; text-align: right; }
+.layerStatusLine button { margin-left: auto; border: 1px solid rgba(248,113,113,.35); background: rgba(127,29,29,.22); color: #fecaca; border-radius: 7px; padding: 4px 7px; cursor: pointer; font-size: 8px; font-weight: 800; }
+@media (max-width: 780px) {
+  .layerStatusLine small { max-width: 132px; }
+}

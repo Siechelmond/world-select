@@ -43,9 +43,9 @@ export default function WorldSelectApp() {
   const [earthquakes, setEarthquakes] = useState<SpatialEntity[]>([]);
   const [tleRecords, setTleRecords] = useState<TleRecord[]>([]);
   const [aircraft, setAircraft] = useState<SpatialEntity[]>([]);
-  const [earthquakeLayer, setEarthquakeLayer] = useState(true);
-  const [satelliteLayer, setSatelliteLayer] = useState(true);
-  const [aircraftLayer, setAircraftLayer] = useState(true);
+  const [earthquakeLayer, setEarthquakeLayer] = useState(false);
+  const [satelliteLayer, setSatelliteLayer] = useState(false);
+  const [aircraftLayer, setAircraftLayer] = useState(false);
   const [trafficLayer, setTrafficLayer] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("earth");
   const [earthquakeState, setEarthquakeState] = useState<LoadState>("idle");
@@ -65,6 +65,7 @@ export default function WorldSelectApp() {
   const [streetIndex, setStreetIndex] = useState(0);
   const [streetState, setStreetState] = useState<LoadState>("idle");
   const [streetOpen, setStreetOpen] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState({ earthquakes: 0, satellites: 0, aircraft: 0, traffic: 0 });
 
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + timeOffsetDays * DAY_MS),
@@ -109,8 +110,10 @@ export default function WorldSelectApp() {
   }, [satelliteLayer, aircraftLayer, timeOffsetDays, isMobile]);
 
   useEffect(() => {
+    if (!earthquakeLayer) return;
     const controller = new AbortController();
     setEarthquakeState("loading");
+    setLayerError("earthquakes");
     fetchEarthquakes(controller.signal)
       .then((items) => { setEarthquakes(items); setEarthquakeState("ready"); setLayerError("earthquakes"); })
       .catch((reason: unknown) => {
@@ -119,12 +122,13 @@ export default function WorldSelectApp() {
         setLayerError("earthquakes", reason instanceof Error ? reason.message : "USGS feed error");
       });
     return () => controller.abort();
-  }, [setLayerError]);
+  }, [earthquakeLayer, reloadNonce.earthquakes, setLayerError]);
 
   useEffect(() => {
     if (!satelliteLayer) return;
     const controller = new AbortController();
     setSatelliteState("loading");
+    setLayerError("satellites");
     fetchStationTles(controller.signal)
       .then((records) => {
         setTleRecords(records);
@@ -137,7 +141,7 @@ export default function WorldSelectApp() {
         setLayerError("satellites", reason instanceof Error ? reason.message : "Satellite feed error");
       });
     return () => controller.abort();
-  }, [satelliteLayer, setLayerError]);
+  }, [satelliteLayer, reloadNonce.satellites, setLayerError]);
 
   useEffect(() => {
     if (!aircraftLayer || !aircraftAvailable) {
@@ -151,6 +155,7 @@ export default function WorldSelectApp() {
       controller?.abort();
       controller = new AbortController();
       if (!hasSuccessfulPayload) setAircraftState("loading");
+      setLayerError("aircraft");
       try {
         const items = await fetchAircraftNear({ latitude: aircraftQueryCenter.latitude, longitude: aircraftQueryCenter.longitude, radiusNm: aircraftRadiusNm }, controller.signal);
         if (disposed) return;
@@ -177,17 +182,18 @@ export default function WorldSelectApp() {
     void load();
     const timer = window.setInterval(() => { void load(); }, AIRCRAFT_REFRESH_MS);
     return () => { disposed = true; controller?.abort(); window.clearInterval(timer); };
-  }, [aircraftLayer, aircraftAvailable, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, setLayerError, isMobile]);
+  }, [aircraftLayer, aircraftAvailable, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, reloadNonce.aircraft, setLayerError, isMobile]);
 
   useEffect(() => {
+    if (!trafficLayer || viewMode !== "earth") return;
     const controller = new AbortController();
     setTrafficState("loading");
+    setLayerError("traffic");
     fetchTrafficStatus(controller.signal)
       .then((status) => {
         setTrafficStatus(status);
-        setTrafficLayer(status.configured);
-        setTrafficState(status.configured ? "ready" : "idle");
-        setLayerError("traffic", status.configured ? undefined : "Live traffic needs TOMTOM_API_KEY in Cloudflare");
+        setTrafficState(status.configured ? "ready" : "error");
+        setLayerError("traffic", status.configured ? undefined : "Traffic is not configured yet");
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
@@ -195,7 +201,7 @@ export default function WorldSelectApp() {
         setLayerError("traffic", reason instanceof Error ? reason.message : "Traffic status error");
       });
     return () => controller.abort();
-  }, [setLayerError]);
+  }, [trafficLayer, viewMode, reloadNonce.traffic, setLayerError]);
 
   useEffect(() => {
     if (!cesiumReady || !containerRef.current || !window.Cesium || viewerRef.current) return;
@@ -458,6 +464,9 @@ export default function WorldSelectApp() {
 
   const closeStreet = () => { setStreetOpen(false); setMobilePanel("none"); };
   const resetTime = () => { setTimeOffsetDays(0); setNowTick(Date.now()); };
+  const retryLayer = (layer: "earthquakes" | "satellites" | "aircraft" | "traffic") => {
+    setReloadNonce((current) => ({ ...current, [layer]: current[layer] + 1 }));
+  };
   const togglePanel = (panel: Exclude<MobilePanel, "none">) => setMobilePanel((current) => current === panel ? "none" : panel);
   const currentStreet = streetPhotos[streetIndex] ?? null;
 
@@ -476,15 +485,15 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v4.1 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v4.2 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
         <div className="panelHead"><p className="panelLabel">LAYERS</p><button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button></div>
-        <LayerToggle checked={earthquakeLayer} onChange={setEarthquakeLayer} title="Earthquakes" subtitle={layerErrors.earthquakes ?? `USGS · ${earthquakeState}`} count={earthquakes.length} disabled={viewMode !== "earth"} error={!!layerErrors.earthquakes} />
-        <LayerToggle checked={satelliteLayer} onChange={setSatelliteLayer} title="Satellites" subtitle={layerErrors.satellites ?? `CelesTrak VISUAL + SGP4 · ${satelliteState} · 1s motion`} count={satellites.length} disabled={viewMode !== "earth"} error={!!layerErrors.satellites} />
-        <LayerToggle checked={aircraftLayer} onChange={setAircraftLayer} title="Aircraft" subtitle={layerErrors.aircraft ?? (aircraftAvailable ? `multi-provider ADS-B · ${aircraftState} · 12s observed + 1s motion` : "Live layer · NOW only")} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={!!layerErrors.aircraft} />
-        <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} title="Traffic" subtitle={layerErrors.traffic ?? `TomTom flow · ${trafficState}`} count={trafficStatus?.configured ? 1 : 0} disabled={viewMode !== "earth" || !trafficStatus?.configured} error={!!layerErrors.traffic} />
+        <LayerToggle checked={earthquakeLayer} onChange={setEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
+        <LayerToggle checked={satelliteLayer} onChange={setSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle="CelesTrak · SGP4 live propagation" state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
+        <LayerToggle checked={aircraftLayer} onChange={setAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? "ADS-B · viewport live traffic" : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
+        <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="Ground traffic flow · loads on demand" state={trafficState} count={trafficStatus?.configured && trafficLayer ? 1 : 0} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
         <div className="spaceLayerSummary">
           <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "SPACE"}</em>
           <span>Ground map</span><em>OSM + DE LABELS</em>
@@ -523,14 +532,34 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v4.1 · performance · mobile-first · DE geography</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v4.2 · lazy layers · mobile-first · DE geography</span>
       </footer>
     </main>
   );
 }
 
-function LayerToggle({ checked, onChange, title, subtitle, count, disabled = false, error = false }: { checked: boolean; onChange: (v: boolean) => void; title: string; subtitle: string; count: number; disabled?: boolean; error?: boolean }) {
-  return <label className={`layerRow ${disabled ? "disabled" : ""} ${error ? "layerError" : ""}`}><input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} /><span><strong>{title}</strong><small>{subtitle}</small></span><b>{count}</b></label>;
+function LayerToggle({ checked, onChange, onRetry, title, subtitle, state, count, disabled = false, error }: { checked: boolean; onChange: (v: boolean) => void; onRetry: () => void; title: string; subtitle: string; state: LoadState; count: number; disabled?: boolean; error?: string }) {
+  const effectiveState: LoadState | "off" = checked ? state : "off";
+  const statusText = effectiveState === "off" ? "Off"
+    : effectiveState === "loading" ? "Loading…"
+    : effectiveState === "ready" ? `Live · ${count}`
+    : effectiveState === "error" ? "Unavailable" : "Ready to load";
+  return <div className={`layerCard ${disabled ? "disabled" : ""} ${effectiveState === "error" ? "layerError" : ""}`}>
+    <label className="layerRow">
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+      <span><strong>{title}</strong><small>{subtitle}</small></span><b>{checked && count ? count : ""}</b>
+    </label>
+    <div className={`layerLoadBar state-${effectiveState}`} aria-label={`${title} ${statusText}`}>
+      <i />
+    </div>
+    <div className="layerStatusLine">
+      <span>{statusText}</span>
+      {effectiveState === "loading" && <small>Fetching layer data…</small>}
+      {effectiveState === "ready" && <small>Active with other loaded layers</small>}
+      {effectiveState === "off" && <small>Tap to load</small>}
+      {effectiveState === "error" && <><small>{error ? "Live source unavailable" : "Load failed"}</small><button type="button" onClick={onRetry}>Retry</button></>}
+    </div>
+  </div>;
 }
 
 function Inspector({ entity, onFocus, onStreet, followAircraft, onToggleFollow }: { entity: SpatialEntity; onFocus: () => void; onStreet: () => void; followAircraft: boolean; onToggleFollow: () => void }) {
