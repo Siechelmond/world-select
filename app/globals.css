@@ -122,3 +122,91 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .spaceTitle { top: 90px; }
   .spaceTitle small { display: none; }
 }
+
+/* v3 — Mobile Explore + Street Level + Aircraft */
+.panelHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sheetClose { display: none; border: 0; background: transparent; color: #94a3b8; font-size: 22px; line-height: 1; cursor: pointer; }
+.mobileDock { display: none; }
+.inspectorActions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 18px; }
+.inspectorActions .focusButton { margin-top: 0; }
+.streetButton { width: 100%; border: 1px solid rgba(250,204,21,.28); background: rgba(161,98,7,.16); color: #fef9c3; padding: 10px 12px; border-radius: 10px; cursor: pointer; }
+.streetButton:hover { background: rgba(161,98,7,.26); }
+.streetButton:disabled { opacity: .38; cursor: not-allowed; }
+
+@media (max-width: 780px) {
+  body { overflow: hidden; }
+  .topbar {
+    top: 8px; left: 8px; right: 8px; height: 58px; padding: 0 10px;
+    border-radius: 14px;
+  }
+  .brand .eyebrow { display: none; }
+  .brand h1 { font-size: 16px; }
+  .modeSwitch { position: static; transform: none; margin-left: auto; }
+  .modeSwitch button { padding: 6px 8px; font-size: 9px; }
+  .statusRow { display: none; }
+
+  .layers, .inspector, .timebar {
+    display: none;
+  }
+  .layers.mobileOpen,
+  .inspector.mobileOpen,
+  .timebar.mobileOpen {
+    display: block;
+    position: fixed;
+    z-index: 12;
+    left: 8px;
+    right: 8px;
+    top: auto;
+    bottom: 66px;
+    width: auto;
+    max-height: 54vh;
+    overflow: auto;
+    border-radius: 16px;
+  }
+  .layers.mobileOpen { padding: 16px; }
+  .inspector.mobileOpen { min-height: 0; padding: 16px; }
+  .timebar.mobileOpen {
+    min-height: 0;
+    padding: 16px;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .timebar.mobileOpen .sheetClose { position: absolute; right: 12px; top: 10px; }
+  .timebar.mobileOpen input[type="range"] { width: 100%; }
+  .timebar.mobileOpen .timeActions { justify-content: space-between; }
+  .timebar.mobileOpen .timeActions span { display: inline; }
+  .sheetClose { display: inline-flex; align-items: center; justify-content: center; }
+
+  .mobileDock {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    position: fixed;
+    z-index: 14;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    min-height: 50px;
+    border-radius: 14px;
+    padding: 5px;
+    gap: 4px;
+  }
+  .mobileDock button {
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .04em;
+  }
+  .mobileDock button.active { color: #cffafe; background: rgba(8,145,178,.24); }
+  .mobileDock button:disabled { opacity: .35; }
+
+  .legend { display: none; }
+  .errorBanner { left: 8px; right: 8px; transform: none; bottom: 70px; max-width: none; }
+  .solarSvg { inset: 74px 4px 64px 4px; width: calc(100% - 8px); height: calc(100% - 138px); }
+  .spaceTitle { top: 76px; }
+  .spaceTitle small { display: none; }
+  .planetLabel { font-size: 14px; }
+  .cesium-viewer-toolbar { display: none !important; }
+}

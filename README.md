@@ -39,3 +39,15 @@ The static export is written to `out/`.
 ## Guardrail
 
 This repository is fully isolated. World Select must not modify or depend on Stock Select, Pool Select, their repositories, deployments, databases, secrets, or production environments unless explicitly authorized in a later decision.
+
+## v3 — Mobile Explore, Street Level, Aircraft
+
+World Select v3 adds a mobile-first control model, a keyless Street View link-out and a bounded aircraft layer around the current Earth view center.
+
+- Mobile: Layers, Inspector and Time are bottom sheets opened from a compact dock.
+- Street level: opens Google Maps Street View at the selected Earth entity or current map center using a Maps URL; no Google API key is stored.
+- Aircraft: ADSB.lol observations within a bounded radius of the current map center, refreshed while the layer is active.
+- Provenance remains explicit: aircraft and earthquakes are `OBSERVED`; satellite and planet positions are `CALCULATED`.
+- No database or secret key is introduced in v3.
+
+See `docs/MVP_V3_MOBILE_EXPLORE.md` for scope and acceptance criteria.
