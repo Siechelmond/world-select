@@ -37,6 +37,8 @@ export default function WorldSelectApp() {
   const aircraftTrailRef = useRef(new Map<string, Array<{ longitude: number; latitude: number; altitudeMeters: number }>>());
   const geoLabelIdsRef = useRef(new Set<string>());
   const trafficLayerRef = useRef<any>(null);
+  const aircraftCoverageRef = useRef<any>(null);
+  const aircraftManualGateRef = useRef({ blocked: false });
 
   const [cesiumReady, setCesiumReady] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -82,7 +84,8 @@ export default function WorldSelectApp() {
       longitude: Math.round(viewCenter.longitude / step) * step,
     };
   }, [viewCenter.latitude, viewCenter.longitude, cameraHeight]);
-  const aircraftRadiusNm = cameraHeight < 120_000 ? 90 : cameraHeight < 1_000_000 ? 160 : 220;
+  const aircraftRadiusNm = cameraHeight < 120_000 ? 70 : cameraHeight < 1_000_000 ? 130 : 220;
+  const animateAircraft = cameraHeight < 900_000;
   const streetPoint = selected && selected.kind !== "celestial-body"
     ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
     : viewCenter;
@@ -104,10 +107,10 @@ export default function WorldSelectApp() {
   }, []);
 
   useEffect(() => {
-    if ((!satelliteLayer && !aircraftLayer) || timeOffsetDays !== 0) return;
+    if ((!satelliteLayer && !(aircraftLayer && animateAircraft)) || timeOffsetDays !== 0) return;
     const timer = window.setInterval(() => setNowTick(Date.now()), isMobile ? MOBILE_SATELLITE_TICK_MS : SATELLITE_TICK_MS);
     return () => window.clearInterval(timer);
-  }, [satelliteLayer, aircraftLayer, timeOffsetDays, isMobile]);
+  }, [satelliteLayer, aircraftLayer, animateAircraft, timeOffsetDays, isMobile]);
 
   useEffect(() => {
     if (!earthquakeLayer) return;
@@ -148,40 +151,74 @@ export default function WorldSelectApp() {
       if (!aircraftAvailable) setAircraft([]);
       return;
     }
+    if (aircraftManualGateRef.current.blocked) return;
+
     let disposed = false;
     let controller: AbortController | null = null;
+    let timer: number | undefined;
     let hasSuccessfulPayload = aircraft.length > 0;
-    const load = async () => {
-      controller?.abort();
-      controller = new AbortController();
-      if (!hasSuccessfulPayload) setAircraftState("loading");
-      setLayerError("aircraft");
-      try {
-        const items = await fetchAircraftNear({ latitude: aircraftQueryCenter.latitude, longitude: aircraftQueryCenter.longitude, radiusNm: aircraftRadiusNm }, controller.signal);
-        if (disposed) return;
-        if (items.length || !hasSuccessfulPayload) setAircraft(items);
-        if (items.length) hasSuccessfulPayload = true;
-        for (const item of items) {
-          const trail = aircraftTrailRef.current.get(item.id) ?? [];
-          const last = trail[trail.length - 1];
-          if (!last || Math.abs(last.latitude - item.position.latitude) > 0.0001 || Math.abs(last.longitude - item.position.longitude) > 0.0001) {
-            trail.push({ ...item.position });
-            const maxAircraftTrailPoints = isMobile ? 12 : 30;
-            while (trail.length > maxAircraftTrailPoints) trail.shift();
-            aircraftTrailRef.current.set(item.id, trail);
-          }
+
+    const applyItems = (items: SpatialEntity[]) => {
+      if (items.length || !hasSuccessfulPayload) setAircraft(items);
+      if (items.length) hasSuccessfulPayload = true;
+      for (const item of items) {
+        const trail = aircraftTrailRef.current.get(item.id) ?? [];
+        const last = trail[trail.length - 1];
+        if (!last || Math.abs(last.latitude - item.position.latitude) > 0.0001 || Math.abs(last.longitude - item.position.longitude) > 0.0001) {
+          trail.push({ ...item.position });
+          const maxAircraftTrailPoints = isMobile ? 12 : 30;
+          while (trail.length > maxAircraftTrailPoints) trail.shift();
+          aircraftTrailRef.current.set(item.id, trail);
         }
-        setAircraftState("ready");
-        setLayerError("aircraft", items.length ? undefined : (hasSuccessfulPayload ? "Keeping last aircraft positions while provider returns no new traffic" : `No aircraft returned within ${aircraftRadiusNm} NM of the current view`));
-      } catch (reason: unknown) {
-        if (controller.signal.aborted || disposed) return;
-        if (!hasSuccessfulPayload) setAircraftState("error");
-        setLayerError("aircraft", hasSuccessfulPayload ? "Live refresh delayed · keeping last known aircraft" : (reason instanceof Error ? reason.message : "Aircraft feed error"));
       }
     };
-    void load();
-    const timer = window.setInterval(() => { void load(); }, AIRCRAFT_REFRESH_MS);
-    return () => { disposed = true; controller?.abort(); window.clearInterval(timer); };
+
+    const load = async (initial: boolean): Promise<boolean> => {
+      controller?.abort();
+      controller = new AbortController();
+      if (initial && !hasSuccessfulPayload) {
+        setAircraftState("loading");
+        setLayerError("aircraft");
+      }
+      try {
+        const items = await fetchAircraftNear({ latitude: aircraftQueryCenter.latitude, longitude: aircraftQueryCenter.longitude, radiusNm: aircraftRadiusNm }, controller.signal);
+        if (disposed) return false;
+        applyItems(items);
+        if (!items.length && !hasSuccessfulPayload) {
+          aircraftManualGateRef.current.blocked = true;
+          setAircraftState("error");
+          setLayerError("aircraft", `No aircraft returned within ${aircraftRadiusNm} NM of the current view`);
+          return false;
+        }
+        setAircraftState("ready");
+        setLayerError("aircraft", items.length ? undefined : "Live refresh delayed · keeping last known aircraft");
+        return true;
+      } catch (reason: unknown) {
+        if (controller.signal.aborted || disposed) return false;
+        if (!hasSuccessfulPayload) {
+          aircraftManualGateRef.current.blocked = true;
+          setAircraftState("error");
+          setLayerError("aircraft", reason instanceof Error ? reason.message : "Aircraft feed error");
+          return false;
+        }
+        // Background refreshes never throw the visible layer back into Loading/Error.
+        setAircraftState("ready");
+        setLayerError("aircraft", "Live refresh delayed · keeping last known aircraft");
+        return true;
+      }
+    };
+
+    void (async () => {
+      const ok = await load(true);
+      if (!ok || disposed) return;
+      timer = window.setInterval(() => { void load(false); }, AIRCRAFT_REFRESH_MS);
+    })();
+
+    return () => {
+      disposed = true;
+      controller?.abort();
+      if (timer !== undefined) window.clearInterval(timer);
+    };
   }, [aircraftLayer, aircraftAvailable, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, reloadNonce.aircraft, setLayerError, isMobile]);
 
   useEffect(() => {
@@ -343,42 +380,114 @@ export default function WorldSelectApp() {
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
     if (!viewer || !Cesium) return;
-    if (viewMode !== "earth" || !aircraftLayer || !aircraftAvailable) { clearIds(aircraftIdsRef.current); return; }
+
+    if (aircraftCoverageRef.current) {
+      viewer.entities.remove(aircraftCoverageRef.current);
+      aircraftCoverageRef.current = null;
+    }
+
+    if (viewMode !== "earth" || !aircraftLayer || !aircraftAvailable) {
+      clearIds(aircraftIdsRef.current);
+      return;
+    }
+
+    // Make the real query footprint explicit. Aircraft data is regional, not a fake global layer.
+    aircraftCoverageRef.current = viewer.entities.add({
+      id: "aircraft-query-coverage",
+      position: Cesium.Cartesian3.fromDegrees(aircraftQueryCenter.longitude, aircraftQueryCenter.latitude, 0),
+      ellipse: {
+        semiMajorAxis: aircraftRadiusNm * 1852,
+        semiMinorAxis: aircraftRadiusNm * 1852,
+        material: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.035),
+        outline: true,
+        outlineColor: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.35),
+        height: 0,
+      },
+    });
+
     const liveIds = new Set<string>();
+    const selectedAircraftId = selected?.kind === "aircraft" ? selected.id : null;
+
     for (const spatial of aircraft) {
       liveIds.add(spatial.id);
-      const projected = projectAircraftPosition(spatial, nowTick);
-      const displayEntity: SpatialEntity = { ...spatial, position: projected, dataState: "ESTIMATED", properties: { ...spatial.properties, displayPosition: "estimated between observed ADS-B samples" } };
+      const isSelected = spatial.id === selectedAircraftId;
+      const projected = animateAircraft || isSelected ? projectAircraftPosition(spatial, nowTick) : spatial.position;
+      const displayEntity: SpatialEntity = {
+        ...spatial,
+        position: projected,
+        dataState: animateAircraft || isSelected ? "ESTIMATED" : spatial.dataState,
+        properties: {
+          ...spatial.properties,
+          displayPosition: animateAircraft || isSelected ? "estimated between observed ADS-B samples" : "last observed ADS-B sample",
+        },
+      };
       entityMapRef.current.set(spatial.id, displayEntity);
       const position = Cesium.Cartesian3.fromDegrees(projected.longitude, projected.latitude, projected.altitudeMeters);
-      const observedTrail = aircraftTrailRef.current.get(spatial.id) ?? [];
-      const trailPositions = observedTrail.map((p) => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitudeMeters));
       const existing = viewer.entities.getById(spatial.id);
       const speed = Number(spatial.properties.groundSpeedKt ?? 0);
-      const track = Number(spatial.properties.trackDeg ?? 0);
+
+      // Trails are expensive and visually noisy: only the selected aircraft gets one.
+      const observedTrail = isSelected ? (aircraftTrailRef.current.get(spatial.id) ?? []) : [];
+      const trailPositions = observedTrail.map((p) => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitudeMeters));
+      const pixelSize = cameraHeight > 2_000_000 ? 4 : cameraHeight > 600_000 ? 5 : speed > 250 ? 8 : 7;
+
       if (existing) {
         existing.position = new Cesium.ConstantPositionProperty(position);
-        if (existing.polyline) existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
-        if (existing.label) existing.label.text = new Cesium.ConstantProperty(`✈ ${spatial.name}`);
+        if (existing.point) existing.point.pixelSize = new Cesium.ConstantProperty(pixelSize);
+        if (existing.polyline) {
+          existing.polyline.show = new Cesium.ConstantProperty(isSelected && trailPositions.length > 1);
+          existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
+        }
+        if (existing.label) {
+          existing.label.show = new Cesium.ConstantProperty(isSelected);
+          existing.label.text = new Cesium.ConstantProperty(`✈ ${spatial.name}`);
+        }
       } else {
         aircraftIdsRef.current.add(spatial.id);
         viewer.entities.add({
-          id: spatial.id, position,
-          point: { pixelSize: speed > 250 ? 9 : 7, color: Cesium.Color.fromCssColorString("#facc15"), outlineColor: Cesium.Color.fromCssColorString("#fef9c3"), outlineWidth: 1 },
-          polyline: { positions: trailPositions, width: 2, material: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.65), clampToGround: false },
-          label: {
-            text: `✈ ${spatial.name}`, font: "11px sans-serif", fillColor: Cesium.Color.fromCssColorString("#fef08a"),
-            pixelOffset: new Cesium.Cartesian2(10, -11), showBackground: true,
-            backgroundColor: Cesium.Color.fromCssColorString("#111827").withAlpha(0.65),
+          id: spatial.id,
+          position,
+          point: {
+            pixelSize,
+            color: Cesium.Color.fromCssColorString("#facc15"),
+            outlineColor: Cesium.Color.fromCssColorString("#fef9c3"),
+            outlineWidth: isSelected ? 2 : 0.5,
           },
-          properties: { heading: track },
+          polyline: {
+            show: isSelected && trailPositions.length > 1,
+            positions: trailPositions,
+            width: 2,
+            material: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.65),
+            clampToGround: false,
+          },
+          label: {
+            show: isSelected,
+            text: `✈ ${spatial.name}`,
+            font: "11px sans-serif",
+            fillColor: Cesium.Color.fromCssColorString("#fef08a"),
+            pixelOffset: new Cesium.Cartesian2(10, -11),
+            showBackground: true,
+            backgroundColor: Cesium.Color.fromCssColorString("#111827").withAlpha(0.72),
+          },
         });
       }
     }
+
     for (const id of Array.from(aircraftIdsRef.current) as string[]) {
-      if (!liveIds.has(id)) { viewer.entities.removeById(id); entityMapRef.current.delete(id); aircraftIdsRef.current.delete(id); }
+      if (!liveIds.has(id)) {
+        viewer.entities.removeById(id);
+        entityMapRef.current.delete(id);
+        aircraftIdsRef.current.delete(id);
+      }
     }
-  }, [aircraft, aircraftLayer, aircraftAvailable, viewMode, clearIds, cesiumReady, nowTick]);
+
+    return () => {
+      if (aircraftCoverageRef.current) {
+        viewer.entities.remove(aircraftCoverageRef.current);
+        aircraftCoverageRef.current = null;
+      }
+    };
+  }, [aircraft, aircraftLayer, aircraftAvailable, viewMode, clearIds, cesiumReady, nowTick, animateAircraft, cameraHeight, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, selected]);
 
 
   useEffect(() => {
@@ -465,7 +574,16 @@ export default function WorldSelectApp() {
   const closeStreet = () => { setStreetOpen(false); setMobilePanel("none"); };
   const resetTime = () => { setTimeOffsetDays(0); setNowTick(Date.now()); };
   const retryLayer = (layer: "earthquakes" | "satellites" | "aircraft" | "traffic") => {
+    if (layer === "aircraft") aircraftManualGateRef.current.blocked = false;
     setReloadNonce((current) => ({ ...current, [layer]: current[layer] + 1 }));
+  };
+  const toggleAircraftLayer = (enabled: boolean) => {
+    if (enabled) aircraftManualGateRef.current.blocked = false;
+    else {
+      setAircraftState("idle");
+      setLayerError("aircraft");
+    }
+    setAircraftLayer(enabled);
   };
   const togglePanel = (panel: Exclude<MobilePanel, "none">) => setMobilePanel((current) => current === panel ? "none" : panel);
   const currentStreet = streetPhotos[streetIndex] ?? null;
@@ -485,14 +603,14 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v4.2 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v4.2.2 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
         <div className="panelHead"><p className="panelLabel">LAYERS</p><button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button></div>
         <LayerToggle checked={earthquakeLayer} onChange={setEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
         <LayerToggle checked={satelliteLayer} onChange={setSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle="CelesTrak · SGP4 live propagation" state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
-        <LayerToggle checked={aircraftLayer} onChange={setAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? "ADS-B · viewport live traffic" : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
+        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · regional ${aircraftRadiusNm} NM · ${animateAircraft ? "live motion" : "zoom in for motion"}` : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
         <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="Ground traffic flow · loads on demand" state={trafficState} count={trafficStatus?.configured && trafficLayer ? 1 : 0} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
         <div className="spaceLayerSummary">
           <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "SPACE"}</em>
@@ -532,7 +650,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v4.2 · lazy layers · mobile-first · DE geography</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v4.2.2 · stable layer states · lazy layers · mobile-first · DE geography</span>
       </footer>
     </main>
   );

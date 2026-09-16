@@ -78,3 +78,11 @@ Performance pass: parallel aircraft provider fallback, viewport request quantiza
 
 ## v4.2 — Lazy Layers
 Heavy live layers now load only after an explicit user action and expose visible OFF / LOADING / LIVE / ERROR status bars. Multiple loaded layers continue to run together. See `docs/PERFORMANCE_V4_2_LAZY_LAYERS.md`.
+
+
+## v4.2.1 — stable layer states
+
+Failed manual layer loads stay in `Unavailable` until the user explicitly retries or toggles the layer. Successful Aircraft loads continue background refresh without visible Loading/Error flicker.
+
+## v4.2.2 Aircraft rendering correction
+Aircraft is now an explicit regional ADS-B layer rather than a misleading pseudo-global cloud. The query footprint is visible, mass labels/trails are removed, and detailed motion is enabled at useful zoom levels or for the selected aircraft. See `docs/UAT_V4_2_2_AIRCRAFT_RENDERING.md`.
