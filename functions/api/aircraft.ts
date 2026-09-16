@@ -9,7 +9,12 @@ function bboxForRadius(lat: number, lon: number, radiusNm: number) {
 }
 
 type ProviderResult = { ac: any[]; now: number; total: number; provider: string };
-const PROVIDER_TIMEOUT_MS = 3500;
+const PROVIDER_TIMEOUT_MS = 2800;
+const HEDGE_DELAYS_MS = [0, 250, 500, 750];
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function fetchJson(url: string, userAgent: string) {
   const controller = new AbortController();
@@ -18,7 +23,7 @@ async function fetchJson(url: string, userAgent: string) {
     const response = await fetch(url, {
       headers: { 'User-Agent': userAgent, Accept: 'application/json' },
       signal: controller.signal,
-      cf: { cacheTtl: 8, cacheEverything: true },
+      cf: { cacheTtl: 12, cacheEverything: true },
     } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json() as any;
@@ -28,17 +33,17 @@ async function fetchJson(url: string, userAgent: string) {
 }
 
 async function adsbLol(lat: number, lon: number, radius: number): Promise<ProviderResult> {
-  const payload = await fetchJson(`https://api.adsb.lol/v2/point/${lat.toFixed(4)}/${lon.toFixed(4)}/${radius}`, 'WorldSelect/0.4.1');
+  const payload = await fetchJson(`https://api.adsb.lol/v2/point/${lat.toFixed(4)}/${lon.toFixed(4)}/${radius}`, 'WorldSelect/0.4.2.3');
   return { ac: Array.isArray(payload?.ac) ? payload.ac : [], now: Number(payload?.now ?? Date.now()), total: Number(payload?.total ?? payload?.ac?.length ?? 0), provider: 'adsb.lol' };
 }
 
 async function airplanesLive(lat: number, lon: number, radius: number): Promise<ProviderResult> {
-  const payload = await fetchJson(`https://api.airplanes.live/v2/point/${lat.toFixed(4)}/${lon.toFixed(4)}/${radius}`, 'WorldSelect/0.4.1');
+  const payload = await fetchJson(`https://api.airplanes.live/v2/point/${lat.toFixed(4)}/${lon.toFixed(4)}/${radius}`, 'WorldSelect/0.4.2.3');
   return { ac: Array.isArray(payload?.ac) ? payload.ac : [], now: Number(payload?.now ?? Date.now()), total: Number(payload?.total ?? payload?.ac?.length ?? 0), provider: 'airplanes.live' };
 }
 
 async function adsbFi(lat: number, lon: number, radius: number): Promise<ProviderResult> {
-  const payload = await fetchJson(`https://opendata.adsb.fi/api/v3/lat/${lat.toFixed(4)}/lon/${lon.toFixed(4)}/dist/${radius}`, 'WorldSelect/0.4.1');
+  const payload = await fetchJson(`https://opendata.adsb.fi/api/v3/lat/${lat.toFixed(4)}/lon/${lon.toFixed(4)}/dist/${radius}`, 'WorldSelect/0.4.2.3');
   const ac = Array.isArray(payload?.ac) ? payload.ac : Array.isArray(payload?.aircraft) ? payload.aircraft : [];
   return { ac, now: Number(payload?.now ?? Date.now()), total: Number(payload?.total ?? ac.length), provider: 'adsb.fi' };
 }
@@ -50,7 +55,7 @@ async function openSky(lat: number, lon: number, radius: number): Promise<Provid
   url.searchParams.set('lamax', box.lamax.toFixed(4));
   url.searchParams.set('lomin', box.lomin.toFixed(4));
   url.searchParams.set('lomax', box.lomax.toFixed(4));
-  const payload = await fetchJson(url.toString(), 'WorldSelect/0.4.1');
+  const payload = await fetchJson(url.toString(), 'WorldSelect/0.4.2.3');
   const states = Array.isArray(payload?.states) ? payload.states : [];
   const ac = states.flatMap((s: any[]) => {
     if (!Array.isArray(s) || typeof s[5] !== 'number' || typeof s[6] !== 'number') return [];
@@ -75,24 +80,36 @@ export const onRequestGet = async (context: any) => {
     return Response.json({ error: 'invalid coordinates' }, { status: 400 });
   }
 
-  // All providers run in parallel. A slow/broken primary provider no longer blocks fallbacks.
+  // Serve recent regional data immediately when Cloudflare already has it.
+  const cache = (caches as any).default;
+  const cacheKey = new Request(url.toString(), { method: 'GET' });
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
   const providers = [adsbLol, airplanesLive, adsbFi, openSky];
   const startedAt = Date.now();
-  const results = await Promise.allSettled(providers.map((provider) => provider(lat, lon, radius)));
-  const fulfilled = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-  const selected = fulfilled.find((result) => result.ac.length > 0) ?? fulfilled[0];
 
-  if (!selected) {
-    const failures = results.map((result, index) => result.status === 'rejected'
-      ? `${providers[index].name}: ${String(result.reason?.message ?? result.reason)}`
-      : `${providers[index].name}: unavailable`);
-    return Response.json({ error: 'aircraft providers unavailable', failures }, { status: 502 });
+  // Hedged first-success strategy: do not wait for the slowest provider.
+  const attempts = providers.map((provider, index) => (async () => {
+    if (HEDGE_DELAYS_MS[index]) await sleep(HEDGE_DELAYS_MS[index]);
+    const result = await provider(lat, lon, radius);
+    if (!result.ac.length) throw new Error(`${provider.name}: empty`);
+    return result;
+  })());
+
+  let selected: ProviderResult;
+  try {
+    selected = await Promise.any(attempts);
+  } catch {
+    return Response.json({ error: 'aircraft providers unavailable' }, { status: 502 });
   }
 
-  return Response.json({ ...selected, latencyMs: Date.now() - startedAt }, {
+  const response = Response.json({ ...selected, latencyMs: Date.now() - startedAt }, {
     headers: {
-      'Cache-Control': 'public, max-age=5, s-maxage=8, stale-while-revalidate=20',
+      'Cache-Control': 'public, max-age=10, s-maxage=20, stale-while-revalidate=45',
       'X-World-Select-Aircraft-Provider': selected.provider,
     },
   });
+  context.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
 };

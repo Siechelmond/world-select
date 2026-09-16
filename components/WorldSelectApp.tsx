@@ -229,8 +229,9 @@ export default function WorldSelectApp() {
     fetchTrafficStatus(controller.signal)
       .then((status) => {
         setTrafficStatus(status);
-        setTrafficState(status.configured ? "ready" : "error");
-        setLayerError("traffic", status.configured ? undefined : "Traffic is not configured yet");
+        const usable = status.configured && status.available;
+        setTrafficState(usable ? "ready" : "error");
+        setLayerError("traffic", usable ? undefined : (status.message || "Traffic source unavailable"));
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
@@ -497,7 +498,7 @@ export default function WorldSelectApp() {
       viewer.imageryLayers.remove(trafficLayerRef.current, true);
       trafficLayerRef.current = null;
     }
-    if (viewMode !== "earth" || !trafficLayer || !trafficStatus?.configured) return;
+    if (viewMode !== "earth" || !trafficLayer || !trafficStatus?.configured || !trafficStatus?.available) return;
     const provider = new Cesium.UrlTemplateImageryProvider({
       url: "/api/traffic?z={z}&x={x}&y={y}",
       minimumLevel: 4,
@@ -513,7 +514,7 @@ export default function WorldSelectApp() {
         trafficLayerRef.current = null;
       }
     };
-  }, [trafficLayer, trafficStatus?.configured, viewMode, cesiumReady]);
+  }, [trafficLayer, trafficStatus?.configured, trafficStatus?.available, viewMode, cesiumReady]);
 
   useEffect(() => {
     if (viewMode === "earth") return;
@@ -603,7 +604,7 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v4.2.2 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v4.2.3 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
@@ -650,7 +651,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v4.2.2 · stable layer states · lazy layers · mobile-first · DE geography</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v4.2.3 · stable layer states · lazy layers · mobile-first · DE geography</span>
       </footer>
     </main>
   );

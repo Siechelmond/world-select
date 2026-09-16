@@ -1,7 +1,9 @@
 export type TrafficStatus = {
   configured: boolean;
+  available: boolean;
   provider: string;
   message?: string;
+  upstreamStatus?: number;
 };
 
 export async function fetchTrafficStatus(signal?: AbortSignal): Promise<TrafficStatus> {

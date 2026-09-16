@@ -1,42 +1,119 @@
-export const onRequestGet = async (context: any) => {
+type Env = {
+  TOMTOM_API_KEY?: string;
+};
+
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return Response.json(body, {
+    status,
+    headers: {
+      'Cache-Control': 'no-store',
+      ...headers,
+    },
+  });
+}
+
+async function fetchTomTomTile(apiKey: string, z: number, x: number, y: number) {
+  const upstream = new URL(`https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/${z}/${x}/${y}`);
+  upstream.searchParams.set('apiVersion', '2');
+  upstream.searchParams.set('style', 'light');
+  upstream.searchParams.set('tileSize', '256');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    return await fetch(upstream.toString(), {
+      headers: {
+        'TomTom-Api-Key': apiKey,
+        Accept: 'image/png',
+      },
+      signal: controller.signal,
+      cf: { cacheTtl: 30, cacheEverything: true },
+    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export const onRequestGet = async (context: { request: Request; env: Env }) => {
   const requestUrl = new URL(context.request.url);
   const mode = requestUrl.searchParams.get('mode');
-  const apiKey = context.env?.TOMTOM_API_KEY as string | undefined;
-
-  if (mode === 'status') {
-    return Response.json({
-      configured: Boolean(apiKey),
-      provider: 'TomTom Traffic Flow',
-      message: apiKey ? 'live traffic flow available' : 'TOMTOM_API_KEY not configured',
-    }, { headers: { 'Cache-Control': 'no-store' } });
-  }
+  const apiKey = context.env?.TOMTOM_API_KEY;
 
   if (!apiKey) {
-    return Response.json({ error: 'traffic provider not configured' }, { status: 503 });
+    if (mode === 'status') {
+      return json({
+        configured: false,
+        available: false,
+        provider: 'TomTom Orbis Traffic Flow v2',
+        message: 'TOMTOM_API_KEY not configured',
+      });
+    }
+    return json({ error: 'traffic provider not configured' }, 503);
+  }
+
+  if (mode === 'status') {
+    try {
+      // One low-cost probe tile verifies that the deployed secret is actually accepted.
+      const probe = await fetchTomTomTile(apiKey, 0, 0, 0);
+      if (!probe.ok) {
+        return json({
+          configured: true,
+          available: false,
+          provider: 'TomTom Orbis Traffic Flow v2',
+          upstreamStatus: probe.status,
+          message: `TomTom rejected the traffic request (HTTP ${probe.status})`,
+        });
+      }
+      return json({
+        configured: true,
+        available: true,
+        provider: 'TomTom Orbis Traffic Flow v2',
+        message: 'live traffic flow available',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Traffic probe failed';
+      return json({
+        configured: true,
+        available: false,
+        provider: 'TomTom Orbis Traffic Flow v2',
+        message,
+      });
+    }
   }
 
   const z = Number(requestUrl.searchParams.get('z'));
   const x = Number(requestUrl.searchParams.get('x'));
   const y = Number(requestUrl.searchParams.get('y'));
-  if (![z, x, y].every(Number.isInteger) || z < 0 || z > 22 || x < 0 || y < 0) {
-    return Response.json({ error: 'invalid tile coordinates' }, { status: 400 });
+  const maxTile = Number.isInteger(z) && z >= 0 && z <= 22 ? (2 ** z) - 1 : -1;
+
+  if (
+    ![z, x, y].every(Number.isInteger) ||
+    z < 0 || z > 22 ||
+    x < 0 || y < 0 ||
+    x > maxTile || y > maxTile
+  ) {
+    return json({ error: 'invalid tile coordinates' }, 400);
   }
 
-  const upstream = `https://api.tomtom.com/traffic/map/4/tile/flow/relative0/${z}/${x}/${y}.png?key=${encodeURIComponent(apiKey)}&tileSize=256`;
-  const response = await fetch(upstream, {
-    cf: { cacheTtl: 30, cacheEverything: true },
-  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+  try {
+    const response = await fetchTomTomTile(apiKey, z, x, y);
+    if (!response.ok) {
+      return json({
+        error: 'TomTom traffic request failed',
+        upstreamStatus: response.status,
+      }, 502);
+    }
 
-  if (!response.ok) {
-    return Response.json({ error: `TomTom traffic HTTP ${response.status}` }, { status: 502 });
+    return new Response(response.body, {
+      status: 200,
+      headers: {
+        'Content-Type': response.headers.get('Content-Type') || 'image/png',
+        'Cache-Control': 'public, max-age=20, s-maxage=30',
+        'X-World-Select-Source': 'TomTom Orbis Traffic Flow v2',
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Traffic upstream error';
+    return json({ error: message }, 502);
   }
-
-  return new Response(response.body, {
-    status: 200,
-    headers: {
-      'Content-Type': response.headers.get('Content-Type') || 'image/png',
-      'Cache-Control': 'public, max-age=20, s-maxage=30',
-      'X-World-Select-Source': 'TomTom Traffic Flow',
-    },
-  });
 };

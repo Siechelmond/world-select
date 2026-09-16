@@ -1,3 +1,5 @@
+> Current stabilization: **v4.2.4 Traffic Orbis**
+
 # World Select
 
 World Select is an isolated browser-based spatial-intelligence prototype for exploring Earth, orbit and the Solar System through normalized spatial entities.
@@ -86,3 +88,8 @@ Failed manual layer loads stay in `Unavailable` until the user explicitly retrie
 
 ## v4.2.2 Aircraft rendering correction
 Aircraft is now an explicit regional ADS-B layer rather than a misleading pseudo-global cloud. The query footprint is visible, mass labels/trails are removed, and detailed motion is enabled at useful zoom levels or for the selected aircraft. See `docs/UAT_V4_2_2_AIRCRAFT_RENDERING.md`.
+
+
+## v4.2.3 aircraft latency hotfix
+
+Aircraft proxy now returns the first successful provider immediately, hedges fallbacks with short delays, and uses Cloudflare edge cache for recent regional snapshots.
