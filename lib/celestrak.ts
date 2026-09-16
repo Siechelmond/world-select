@@ -1,9 +1,7 @@
 import * as satellite from "satellite.js";
 import type { SpatialEntity } from "@/lib/spatial";
 
-const STATIONS_TLE = "https://celestrak.org/NORAD/elements/gp.php?GROUP=STATIONS&FORMAT=TLE";
-
-type TleRecord = { name: string; line1: string; line2: string };
+export type TleRecord = { name: string; line1: string; line2: string };
 
 function parseTle(text: string): TleRecord[] {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -15,12 +13,14 @@ function parseTle(text: string): TleRecord[] {
   return out;
 }
 
-export async function fetchStationSatellites(at: Date, signal?: AbortSignal): Promise<SpatialEntity[]> {
-  const response = await fetch(STATIONS_TLE, { signal, cache: "no-store" });
-  if (!response.ok) throw new Error(`CelesTrak returned HTTP ${response.status}`);
-  const records = parseTle(await response.text());
-  const gmst = satellite.gstime(at);
+export async function fetchStationTles(signal?: AbortSignal): Promise<TleRecord[]> {
+  const response = await fetch("/api/satellites", { signal, cache: "no-store" });
+  if (!response.ok) throw new Error(`Satellite proxy returned HTTP ${response.status}`);
+  return parseTle(await response.text());
+}
 
+export function propagateTles(records: TleRecord[], at: Date): SpatialEntity[] {
+  const gmst = satellite.gstime(at);
   return records.flatMap((record) => {
     try {
       const satrec = satellite.twoline2satrec(record.line1, record.line2);
@@ -30,6 +30,7 @@ export async function fetchStationSatellites(at: Date, signal?: AbortSignal): Pr
       const longitude = satellite.degreesLong(gd.longitude);
       const latitude = satellite.degreesLat(gd.latitude);
       const altitudeMeters = gd.height * 1000;
+      if (![longitude, latitude, altitudeMeters].every(Number.isFinite)) return [];
       const norad = record.line1.slice(2, 7).trim();
       return [{
         id: `celestrak:${norad}`,
@@ -42,7 +43,7 @@ export async function fetchStationSatellites(at: Date, signal?: AbortSignal): Pr
         properties: {
           noradCatalogNumber: norad,
           altitudeKm: Number((altitudeMeters / 1000).toFixed(1)),
-          propagation: "SGP4 from current GP/TLE",
+          propagation: "SGP4 from cached current GP/TLE",
         },
       } satisfies SpatialEntity];
     } catch {

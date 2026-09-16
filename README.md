@@ -51,3 +51,7 @@ World Select v3 adds a mobile-first control model, a keyless Street View link-ou
 - No database or secret key is introduced in v3.
 
 See `docs/MVP_V3_MOBILE_EXPLORE.md` for scope and acceptance criteria.
+
+## v3.1 stabilization
+
+v3.1 moves CelesTrak, ADSB.lol and KartaView requests behind Cloudflare Pages Functions in `functions/api/`, adds continuous SGP4 satellite motion, correct globe occlusion for earthquake markers, per-layer diagnostics, and an in-app KartaView street-level viewer. See `docs/UAT_V3_1_STABILIZATION.md`.
