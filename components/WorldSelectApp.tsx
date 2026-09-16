@@ -501,8 +501,9 @@ export default function WorldSelectApp() {
     if (viewMode !== "earth" || !trafficLayer || !trafficStatus?.configured || !trafficStatus?.available) return;
     const provider = new Cesium.UrlTemplateImageryProvider({
       url: "/api/traffic?z={z}&x={x}&y={y}",
-      minimumLevel: 4,
-      maximumLevel: 18,
+      minimumLevel: 0,
+      maximumLevel: 20,
+      tilingScheme: new Cesium.WebMercatorTilingScheme(),
       credit: "Traffic © TomTom",
     });
     const layer = viewer.imageryLayers.addImageryProvider(provider);
@@ -604,7 +605,7 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v4.2.3 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v4.2.5 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
@@ -612,7 +613,7 @@ export default function WorldSelectApp() {
         <LayerToggle checked={earthquakeLayer} onChange={setEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
         <LayerToggle checked={satelliteLayer} onChange={setSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle="CelesTrak · SGP4 live propagation" state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
         <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · regional ${aircraftRadiusNm} NM · ${animateAircraft ? "live motion" : "zoom in for motion"}` : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
-        <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="Ground traffic flow · loads on demand" state={trafficState} count={trafficStatus?.configured && trafficLayer ? 1 : 0} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
+        <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="Ground traffic flow · loads on demand" state={trafficState} count={0} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
         <div className="spaceLayerSummary">
           <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "SPACE"}</em>
           <span>Ground map</span><em>OSM + DE LABELS</em>
@@ -651,17 +652,17 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v4.2.3 · stable layer states · lazy layers · mobile-first · DE geography</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v4.2.5 · traffic rendering · stable layer states · lazy layers · mobile-first · DE geography</span>
       </footer>
     </main>
   );
 }
 
-function LayerToggle({ checked, onChange, onRetry, title, subtitle, state, count, disabled = false, error }: { checked: boolean; onChange: (v: boolean) => void; onRetry: () => void; title: string; subtitle: string; state: LoadState; count: number; disabled?: boolean; error?: string }) {
+function LayerToggle({ checked, onChange, onRetry, title, subtitle, state, count, disabled = false, error }: { checked: boolean; onChange: (v: boolean) => void; onRetry: () => void; title: string; subtitle: string; state: LoadState; count?: number; disabled?: boolean; error?: string }) {
   const effectiveState: LoadState | "off" = checked ? state : "off";
   const statusText = effectiveState === "off" ? "Off"
     : effectiveState === "loading" ? "Loading…"
-    : effectiveState === "ready" ? `Live · ${count}`
+    : effectiveState === "ready" ? (count ? `Live · ${count}` : "Live")
     : effectiveState === "error" ? "Unavailable" : "Ready to load";
   return <div className={`layerCard ${disabled ? "disabled" : ""} ${effectiveState === "error" ? "layerError" : ""}`}>
     <label className="layerRow">

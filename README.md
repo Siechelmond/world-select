@@ -93,3 +93,7 @@ Aircraft is now an explicit regional ADS-B layer rather than a misleading pseudo
 ## v4.2.3 aircraft latency hotfix
 
 Aircraft proxy now returns the first successful provider immediately, hedges fallbacks with short delays, and uses Cloudflare edge cache for recent regional snapshots.
+
+## v4.2.5 traffic rendering
+
+Traffic rendering now requests TomTom Orbis raster flow tiles from zoom level 0 upward, using an explicit Web Mercator tiling scheme. The Traffic layer status shows `Live` rather than an artificial count of one.
