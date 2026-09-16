@@ -159,7 +159,7 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
     top: auto;
     bottom: 66px;
     width: auto;
-    max-height: 54vh;
+    max-height: min(52vh, 520px);
     overflow: auto;
     border-radius: 16px;
   }
@@ -257,10 +257,12 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 .layerCard .layerRow { margin-top: 0; border: 0; border-radius: 0; background: transparent; }
 .layerCard.disabled { opacity: .42; }
 .layerCard.layerError { border-color: rgba(248,113,113,.35); background: rgba(127,29,29,.10); }
+.layerCard.layerDegraded { border-color: rgba(251,191,36,.36); background: rgba(120,53,15,.10); }
 .layerLoadBar { position: relative; height: 4px; margin: 0 12px; overflow: hidden; border-radius: 999px; background: rgba(148,163,184,.12); }
 .layerLoadBar i { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit; background: #67e8f9; transition: width .25s ease; }
 .layerLoadBar.state-ready i { width: 100%; background: #34d399; }
 .layerLoadBar.state-error i { width: 100%; background: #f87171; }
+.layerLoadBar.state-degraded i { width: 100%; background: #fbbf24; }
 .layerLoadBar.state-off i, .layerLoadBar.state-idle i { width: 0; }
 .layerLoadBar.state-loading i { width: 38%; animation: layerLoading 1.05s ease-in-out infinite; background: linear-gradient(90deg, rgba(34,211,238,.25), #67e8f9, rgba(34,211,238,.25)); }
 @keyframes layerLoading { 0% { transform: translateX(-110%); } 100% { transform: translateX(330%); } }
@@ -270,4 +272,12 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 .layerStatusLine button { margin-left: auto; border: 1px solid rgba(248,113,113,.35); background: rgba(127,29,29,.22); color: #fecaca; border-radius: 7px; padding: 4px 7px; cursor: pointer; font-size: 8px; font-weight: 800; }
 @media (max-width: 780px) {
   .layerStatusLine small { max-width: 132px; }
+}
+
+/* v4.3 stabilization */
+@media (max-width: 780px) {
+  .layerCard { margin-top: 9px; }
+  .layerRow { padding: 10px; }
+  .layerStatusLine { min-height: 27px; padding-bottom: 7px; }
+  .layers.mobileOpen, .inspector.mobileOpen, .timebar.mobileOpen { overscroll-behavior: contain; }
 }

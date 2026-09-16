@@ -97,3 +97,6 @@ Aircraft proxy now returns the first successful provider immediately, hedges fal
 ## v4.2.5 traffic rendering
 
 Traffic rendering now requests TomTom Orbis raster flow tiles from zoom level 0 upward, using an explicit Web Mercator tiling scheme. The Traffic layer status shows `Live` rather than an artificial count of one.
+
+## v4.3 stabilization
+See `docs/UAT_V4_3_STABILIZATION.md`.

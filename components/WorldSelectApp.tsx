@@ -13,7 +13,7 @@ import { fetchTrafficStatus, type TrafficStatus } from "@/lib/traffic";
 
 declare global { interface Window { Cesium?: any } }
 
-type LoadState = "idle" | "loading" | "ready" | "error";
+type LoadState = "idle" | "loading" | "ready" | "degraded" | "error";
 type ViewMode = "earth" | "space";
 type MobilePanel = "none" | "layers" | "inspector" | "time" | "street";
 type EarthPoint = { latitude: number; longitude: number };
@@ -190,7 +190,7 @@ export default function WorldSelectApp() {
           setLayerError("aircraft", `No aircraft returned within ${aircraftRadiusNm} NM of the current view`);
           return false;
         }
-        setAircraftState("ready");
+        setAircraftState(items.length ? "ready" : (hasSuccessfulPayload ? "degraded" : "error"));
         setLayerError("aircraft", items.length ? undefined : "Live refresh delayed · keeping last known aircraft");
         return true;
       } catch (reason: unknown) {
@@ -201,8 +201,8 @@ export default function WorldSelectApp() {
           setLayerError("aircraft", reason instanceof Error ? reason.message : "Aircraft feed error");
           return false;
         }
-        // Background refreshes never throw the visible layer back into Loading/Error.
-        setAircraftState("ready");
+        // Background refreshes keep the last valid snapshot visible and mark the layer degraded.
+        setAircraftState("degraded");
         setLayerError("aircraft", "Live refresh delayed · keeping last known aircraft");
         return true;
       }
@@ -346,37 +346,54 @@ export default function WorldSelectApp() {
     if (!viewer || !Cesium) return;
     if (viewMode !== "earth" || !satelliteLayer) { clearIds(satIdsRef.current); return; }
     const liveIds = new Set<string>();
+    const selectedSatelliteId = selected?.kind === "satellite" ? selected.id : null;
     for (const spatial of satellites) {
       liveIds.add(spatial.id); entityMapRef.current.set(spatial.id, spatial);
       const position = Cesium.Cartesian3.fromDegrees(spatial.position.longitude, spatial.position.latitude, spatial.position.altitudeMeters);
       const existing = viewer.entities.getById(spatial.id);
+      const isSelected = spatial.id === selectedSatelliteId;
       const trail = satelliteTrailRef.current.get(spatial.id) ?? [];
-      const last = trail[trail.length - 1];
-      const moved = !last || Cesium.Cartesian3.distance(last, position) > 2_000;
-      if (moved) trail.push(position);
-      const maxTrailPoints = isMobile ? 10 : 30;
-      while (trail.length > maxTrailPoints) trail.shift();
-      satelliteTrailRef.current.set(spatial.id, trail);
+      if (isSelected) {
+        const last = trail[trail.length - 1];
+        const moved = !last || Cesium.Cartesian3.distance(last, position) > 2_000;
+        if (moved) trail.push(position);
+        const maxTrailPoints = isMobile ? 12 : 36;
+        while (trail.length > maxTrailPoints) trail.shift();
+        satelliteTrailRef.current.set(spatial.id, trail);
+      } else if (trail.length) {
+        satelliteTrailRef.current.delete(spatial.id);
+      }
+      const pixelSize = cameraHeight > 5_000_000 ? 4 : cameraHeight > 1_500_000 ? 6 : 8;
+      const trailPositions = isSelected ? [...trail] : [];
+      const showLabel = isSelected || spatial.name.includes("ISS") || spatial.name.includes("TIANHE");
       if (existing) {
         existing.position = new Cesium.ConstantPositionProperty(position);
-        if (existing.polyline) existing.polyline.positions = new Cesium.ConstantProperty([...trail]);
+        if (existing.point) existing.point.pixelSize = new Cesium.ConstantProperty(pixelSize);
+        if (existing.polyline) {
+          existing.polyline.show = new Cesium.ConstantProperty(isSelected && trailPositions.length > 1);
+          existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
+        }
+        if (existing.label) {
+          existing.label.show = new Cesium.ConstantProperty(showLabel);
+          existing.label.text = new Cesium.ConstantProperty(showLabel ? spatial.name : "");
+        }
       } else {
         satIdsRef.current.add(spatial.id);
         viewer.entities.add({
           id: spatial.id, position,
-          point: { pixelSize: 9, color: Cesium.Color.fromCssColorString("#67e8f9"), outlineColor: Cesium.Color.WHITE, outlineWidth: 1 },
-          polyline: { positions: [...trail], width: 1.5, material: Cesium.Color.fromCssColorString("#67e8f9").withAlpha(0.45) },
+          point: { pixelSize, color: Cesium.Color.fromCssColorString("#67e8f9"), outlineColor: Cesium.Color.WHITE, outlineWidth: isSelected ? 2 : 0.5 },
+          polyline: { show: isSelected && trailPositions.length > 1, positions: trailPositions, width: 1.5, material: Cesium.Color.fromCssColorString("#67e8f9").withAlpha(0.55) },
           label: {
-            text: spatial.name.includes("ISS") || spatial.name.includes("TIANHE") ? spatial.name : "",
+            show: showLabel, text: showLabel ? spatial.name : "",
             font: "11px sans-serif", fillColor: Cesium.Color.WHITE, pixelOffset: new Cesium.Cartesian2(10, -10),
           },
         });
       }
     }
     for (const id of Array.from(satIdsRef.current) as string[]) {
-      if (!liveIds.has(id)) { viewer.entities.removeById(id); entityMapRef.current.delete(id); satIdsRef.current.delete(id); }
+      if (!liveIds.has(id)) { viewer.entities.removeById(id); entityMapRef.current.delete(id); satIdsRef.current.delete(id); satelliteTrailRef.current.delete(id); }
     }
-  }, [satellites, satelliteLayer, viewMode, clearIds, cesiumReady, isMobile]);
+  }, [satellites, satelliteLayer, viewMode, clearIds, cesiumReady, isMobile, cameraHeight, selected]);
 
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
@@ -506,10 +523,19 @@ export default function WorldSelectApp() {
       tilingScheme: new Cesium.WebMercatorTilingScheme(),
       credit: "Traffic © TomTom",
     });
+    const onTileError = (error: any) => {
+      setTrafficState("degraded");
+      const status = Number(error?.statusCode ?? 0);
+      setLayerError("traffic", status ? `Traffic tile request failed (HTTP ${status}) · keeping loaded tiles` : "Traffic tile refresh delayed · keeping loaded tiles");
+    };
+    provider.errorEvent?.addEventListener(onTileError);
     const layer = viewer.imageryLayers.addImageryProvider(provider);
-    layer.alpha = 0.72;
+    layer.alpha = 1.0;
+    layer.brightness = 1.08;
+    layer.contrast = 1.12;
     trafficLayerRef.current = layer;
     return () => {
+      provider.errorEvent?.removeEventListener(onTileError);
       if (trafficLayerRef.current && viewerRef.current) {
         viewerRef.current.imageryLayers.remove(trafficLayerRef.current, true);
         trafficLayerRef.current = null;
@@ -605,7 +631,7 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v4.2.5 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v4.3 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
@@ -652,7 +678,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v4.2.5 · traffic rendering · stable layer states · lazy layers · mobile-first · DE geography</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v4.3 · stabilization bundle · traffic · aircraft · satellites · layer states · mobile</span>
       </footer>
     </main>
   );
@@ -663,8 +689,9 @@ function LayerToggle({ checked, onChange, onRetry, title, subtitle, state, count
   const statusText = effectiveState === "off" ? "Off"
     : effectiveState === "loading" ? "Loading…"
     : effectiveState === "ready" ? (count ? `Live · ${count}` : "Live")
+    : effectiveState === "degraded" ? (count ? `Degraded · ${count}` : "Degraded")
     : effectiveState === "error" ? "Unavailable" : "Ready to load";
-  return <div className={`layerCard ${disabled ? "disabled" : ""} ${effectiveState === "error" ? "layerError" : ""}`}>
+  return <div className={`layerCard ${disabled ? "disabled" : ""} ${effectiveState === "error" ? "layerError" : ""} ${effectiveState === "degraded" ? "layerDegraded" : ""}`}>
     <label className="layerRow">
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
       <span><strong>{title}</strong><small>{subtitle}</small></span><b>{checked && count ? count : ""}</b>
@@ -676,6 +703,7 @@ function LayerToggle({ checked, onChange, onRetry, title, subtitle, state, count
       <span>{statusText}</span>
       {effectiveState === "loading" && <small>Fetching layer data…</small>}
       {effectiveState === "ready" && <small>Active with other loaded layers</small>}
+      {effectiveState === "degraded" && <small>{error ?? "Keeping last valid data"}</small>}
       {effectiveState === "off" && <small>Tap to load</small>}
       {effectiveState === "error" && <><small>{error ? "Live source unavailable" : "Load failed"}</small><button type="button" onClick={onRetry}>Retry</button></>}
     </div>
