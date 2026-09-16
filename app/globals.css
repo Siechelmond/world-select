@@ -214,7 +214,7 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 /* v3.1 stabilization */
 .layerRow.layerError { border-color: rgba(248,113,113,.35); background: rgba(127,29,29,.10); }
 .layerRow.layerError small { color: #fca5a5; }
-.streetViewer { position: fixed; z-index: 20; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(920px, calc(100vw - 36px)); height: min(650px, calc(100vh - 80px)); border-radius: 18px; padding: 14px; display: grid; grid-template-rows: auto 1fr auto auto; gap: 10px; }
+.streetViewer { position: fixed; z-index: 20; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(920px, calc(100vw - 36px)); height: min(650px, calc(100vh - 80px)); border-radius: 18px; padding: 14px; display: grid; grid-template-rows: auto auto 1fr auto auto; gap: 10px; }
 .streetHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .streetHead strong { font-size: 11px; color: #cbd5e1; }
 .streetHead button { border: 0; background: transparent; color: #cbd5e1; font-size: 28px; cursor: pointer; }
@@ -280,4 +280,15 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .layerRow { padding: 10px; }
   .layerStatusLine { min-height: 27px; padding-bottom: 7px; }
   .layers.mobileOpen, .inspector.mobileOpen, .timebar.mobileOpen { overscroll-behavior: contain; }
+}
+
+/* v4.4 — aircraft glyphs + Google Street View */
+.streetProviderSwitch { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.streetProviderSwitch button { border: 1px solid rgba(103,232,249,.16); background: rgba(15,23,42,.7); color: #94a3b8; border-radius: 9px; padding: 8px 10px; cursor: pointer; font-size: 9px; font-weight: 800; }
+.streetProviderSwitch button.active { color: #cffafe; background: rgba(8,145,178,.22); border-color: rgba(103,232,249,.32); }
+.streetProviderSwitch button:disabled { opacity: .35; cursor: not-allowed; }
+.googleStreetPano { position: absolute; inset: 0; background: #020617; }
+.googleStreetPano > div:not(.streetMessage) { position: absolute !important; inset: 0; }
+@media (max-width: 780px) {
+  .streetProviderSwitch button { padding: 7px 6px; font-size: 8px; }
 }

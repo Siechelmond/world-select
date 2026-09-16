@@ -12,11 +12,12 @@ function json(body: unknown, status = 200, headers: Record<string, string> = {})
   });
 }
 
-async function fetchTomTomTile(apiKey: string, z: number, x: number, y: number) {
-  const upstream = new URL(`https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/${z}/${x}/${y}`);
+async function fetchTomTomTile(apiKey: string, z: number, x: number, y: number, kind: 'flow' | 'incidents' = 'flow') {
+  const path = kind === 'incidents' ? 'incidents/raster/tile' : 'flow/raster/tile';
+  const upstream = new URL(`https://api.tomtom.com/maps/orbis/traffic/${path}/${z}/${x}/${y}`);
   upstream.searchParams.set('apiVersion', '2');
   upstream.searchParams.set('style', 'light');
-  upstream.searchParams.set('tileSize', '256');
+  if (kind === 'flow') upstream.searchParams.set('tileSize', '256');
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -54,7 +55,7 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
   if (mode === 'status') {
     try {
       // One low-cost probe tile verifies that the deployed secret is actually accepted.
-      const probe = await fetchTomTomTile(apiKey, 0, 0, 0);
+      const probe = await fetchTomTomTile(apiKey, 0, 0, 0, 'flow');
       if (!probe.ok) {
         return json({
           configured: true,
@@ -81,6 +82,7 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
     }
   }
 
+  const kind = requestUrl.searchParams.get('kind') === 'incidents' ? 'incidents' : 'flow';
   const z = Number(requestUrl.searchParams.get('z'));
   const x = Number(requestUrl.searchParams.get('x'));
   const y = Number(requestUrl.searchParams.get('y'));
@@ -96,10 +98,10 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
   }
 
   try {
-    const response = await fetchTomTomTile(apiKey, z, x, y);
+    const response = await fetchTomTomTile(apiKey, z, x, y, kind);
     if (!response.ok) {
       return json({
-        error: 'TomTom traffic request failed',
+        error: `TomTom traffic ${kind} request failed`,
         upstreamStatus: response.status,
       }, 502);
     }
@@ -109,7 +111,7 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
       headers: {
         'Content-Type': response.headers.get('Content-Type') || 'image/png',
         'Cache-Control': 'public, max-age=20, s-maxage=30',
-        'X-World-Select-Source': 'TomTom Orbis Traffic Flow v2',
+        'X-World-Select-Source': kind === 'incidents' ? 'TomTom Orbis Traffic Incidents v2' : 'TomTom Orbis Traffic Flow v2',
       },
     });
   } catch (error) {

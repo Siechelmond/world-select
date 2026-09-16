@@ -100,3 +100,10 @@ Traffic rendering now requests TomTom Orbis raster flow tiles from zoom level 0 
 
 ## v4.3 stabilization
 See `docs/UAT_V4_3_STABILIZATION.md`.
+
+
+## v4.4 Explore bundle
+- Aircraft plane glyphs with heading
+- TomTom traffic incidents overlay alongside flow
+- Lazy in-app Google Street View with KartaView fallback
+- See `docs/UAT_V4_4_EXPLORE.md`

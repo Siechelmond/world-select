@@ -11,11 +11,12 @@ import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/sp
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
 import { fetchTrafficStatus, type TrafficStatus } from "@/lib/traffic";
 
-declare global { interface Window { Cesium?: any } }
+declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any> } }
 
 type LoadState = "idle" | "loading" | "ready" | "degraded" | "error";
 type ViewMode = "earth" | "space";
 type MobilePanel = "none" | "layers" | "inspector" | "time" | "street";
+type StreetProvider = "google" | "kartaview";
 type EarthPoint = { latitude: number; longitude: number };
 type LayerError = { earthquakes?: string; satellites?: string; aircraft?: string; street?: string; traffic?: string };
 
@@ -25,6 +26,8 @@ const MOBILE_SATELLITE_TICK_MS = 2_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
+const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
+const AIRCRAFT_ICON = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path fill="white" stroke="#111827" stroke-width="2" d="M32 3c3 0 5 4 5 9v12l20 12v6L37 36v13l8 7v5l-13-4-13 4v-5l8-7V36L7 42v-6l20-12V12c0-5 2-9 5-9Z"/></svg>`)}`;
 
 export default function WorldSelectApp() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -37,6 +40,7 @@ export default function WorldSelectApp() {
   const aircraftTrailRef = useRef(new Map<string, Array<{ longitude: number; latitude: number; altitudeMeters: number }>>());
   const geoLabelIdsRef = useRef(new Set<string>());
   const trafficLayerRef = useRef<any>(null);
+  const trafficIncidentLayerRef = useRef<any>(null);
   const aircraftCoverageRef = useRef<any>(null);
   const aircraftManualGateRef = useRef({ blocked: false });
 
@@ -67,6 +71,7 @@ export default function WorldSelectApp() {
   const [streetIndex, setStreetIndex] = useState(0);
   const [streetState, setStreetState] = useState<LoadState>("idle");
   const [streetOpen, setStreetOpen] = useState(false);
+  const [streetProvider, setStreetProvider] = useState<StreetProvider>(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
   const [reloadNonce, setReloadNonce] = useState({ earthquakes: 0, satellites: 0, aircraft: 0, traffic: 0 });
 
   const selectedTime = useMemo(
@@ -449,27 +454,36 @@ export default function WorldSelectApp() {
       const trailPositions = observedTrail.map((p) => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitudeMeters));
       const pixelSize = cameraHeight > 2_000_000 ? 4 : cameraHeight > 600_000 ? 5 : speed > 250 ? 8 : 7;
 
+      const headingDeg = Number(spatial.properties.trackDeg ?? 0);
+      const iconSize = Math.max(14, pixelSize * (isSelected ? 4.1 : 3.2));
       if (existing) {
         existing.position = new Cesium.ConstantPositionProperty(position);
-        if (existing.point) existing.point.pixelSize = new Cesium.ConstantProperty(pixelSize);
+        if (existing.billboard) {
+          existing.billboard.width = new Cesium.ConstantProperty(iconSize);
+          existing.billboard.height = new Cesium.ConstantProperty(iconSize);
+          existing.billboard.rotation = new Cesium.ConstantProperty(Cesium.Math.toRadians(-headingDeg));
+          existing.billboard.color = new Cesium.ConstantProperty(isSelected ? Cesium.Color.fromCssColorString("#fde047") : Cesium.Color.fromCssColorString("#facc15"));
+        }
         if (existing.polyline) {
           existing.polyline.show = new Cesium.ConstantProperty(isSelected && trailPositions.length > 1);
           existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
         }
         if (existing.label) {
           existing.label.show = new Cesium.ConstantProperty(isSelected);
-          existing.label.text = new Cesium.ConstantProperty(`✈ ${spatial.name}`);
+          existing.label.text = new Cesium.ConstantProperty(`${spatial.name}`);
         }
       } else {
         aircraftIdsRef.current.add(spatial.id);
         viewer.entities.add({
           id: spatial.id,
           position,
-          point: {
-            pixelSize,
-            color: Cesium.Color.fromCssColorString("#facc15"),
-            outlineColor: Cesium.Color.fromCssColorString("#fef9c3"),
-            outlineWidth: isSelected ? 2 : 0.5,
+          billboard: {
+            image: AIRCRAFT_ICON,
+            width: iconSize,
+            height: iconSize,
+            rotation: Cesium.Math.toRadians(-headingDeg),
+            color: isSelected ? Cesium.Color.fromCssColorString("#fde047") : Cesium.Color.fromCssColorString("#facc15"),
+            disableDepthTestDistance: 3_000_000,
           },
           polyline: {
             show: isSelected && trailPositions.length > 1,
@@ -480,10 +494,10 @@ export default function WorldSelectApp() {
           },
           label: {
             show: isSelected,
-            text: `✈ ${spatial.name}`,
+            text: `${spatial.name}`,
             font: "11px sans-serif",
             fillColor: Cesium.Color.fromCssColorString("#fef08a"),
-            pixelOffset: new Cesium.Cartesian2(10, -11),
+            pixelOffset: new Cesium.Cartesian2(13, -13),
             showBackground: true,
             backgroundColor: Cesium.Color.fromCssColorString("#111827").withAlpha(0.72),
           },
@@ -515,6 +529,10 @@ export default function WorldSelectApp() {
       viewer.imageryLayers.remove(trafficLayerRef.current, true);
       trafficLayerRef.current = null;
     }
+    if (trafficIncidentLayerRef.current) {
+      viewer.imageryLayers.remove(trafficIncidentLayerRef.current, true);
+      trafficIncidentLayerRef.current = null;
+    }
     if (viewMode !== "earth" || !trafficLayer || !trafficStatus?.configured || !trafficStatus?.available) return;
     const provider = new Cesium.UrlTemplateImageryProvider({
       url: "/api/traffic?z={z}&x={x}&y={y}",
@@ -534,11 +552,29 @@ export default function WorldSelectApp() {
     layer.brightness = 1.08;
     layer.contrast = 1.12;
     trafficLayerRef.current = layer;
+
+    const incidentProvider = new Cesium.UrlTemplateImageryProvider({
+      url: "/api/traffic?kind=incidents&z={z}&x={x}&y={y}",
+      minimumLevel: 0,
+      maximumLevel: 20,
+      tilingScheme: new Cesium.WebMercatorTilingScheme(),
+      credit: "Traffic incidents © TomTom",
+    });
+    incidentProvider.errorEvent?.addEventListener(onTileError);
+    const incidentLayer = viewer.imageryLayers.addImageryProvider(incidentProvider);
+    incidentLayer.alpha = 0.82;
+    trafficIncidentLayerRef.current = incidentLayer;
+
     return () => {
       provider.errorEvent?.removeEventListener(onTileError);
+      incidentProvider.errorEvent?.removeEventListener(onTileError);
       if (trafficLayerRef.current && viewerRef.current) {
         viewerRef.current.imageryLayers.remove(trafficLayerRef.current, true);
         trafficLayerRef.current = null;
+      }
+      if (trafficIncidentLayerRef.current && viewerRef.current) {
+        viewerRef.current.imageryLayers.remove(trafficIncidentLayerRef.current, true);
+        trafficIncidentLayerRef.current = null;
       }
     };
   }, [trafficLayer, trafficStatus?.configured, trafficStatus?.available, viewMode, cesiumReady]);
@@ -585,19 +621,37 @@ export default function WorldSelectApp() {
     });
   }, [selected]);
 
-  const openStreet = useCallback(() => {
-    if (viewMode !== "earth") return;
-    setStreetOpen(true); setMobilePanel("street"); setStreetState("loading"); setStreetIndex(0); setStreetPhotos([]); setLayerError("street");
+  const loadKartaViewStreet = useCallback(() => {
+    setStreetProvider("kartaview");
+    setStreetState("loading");
+    setStreetIndex(0);
+    setStreetPhotos([]);
+    setLayerError("street");
     const controller = new AbortController();
     fetchStreetPhotos(streetPoint.latitude, streetPoint.longitude, controller.signal)
       .then((photos) => {
-        setStreetPhotos(photos); setStreetState("ready");
+        setStreetPhotos(photos); setStreetState(photos.length ? "ready" : "error");
         if (!photos.length) setLayerError("street", "No KartaView street imagery found at this location");
       })
       .catch((reason: unknown) => {
         setStreetState("error"); setLayerError("street", reason instanceof Error ? reason.message : "Street imagery error");
       });
-  }, [streetPoint.latitude, streetPoint.longitude, viewMode, setLayerError]);
+  }, [streetPoint.latitude, streetPoint.longitude, setLayerError]);
+
+  const openStreet = useCallback(() => {
+    if (viewMode !== "earth") return;
+    setStreetOpen(true);
+    setMobilePanel("street");
+    setStreetIndex(0);
+    setStreetPhotos([]);
+    setLayerError("street");
+    if (GOOGLE_MAPS_API_KEY) {
+      setStreetProvider("google");
+      setStreetState("loading");
+    } else {
+      loadKartaViewStreet();
+    }
+  }, [viewMode, loadKartaViewStreet, setLayerError]);
 
   const closeStreet = () => { setStreetOpen(false); setMobilePanel("none"); };
   const resetTime = () => { setTimeOffsetDays(0); setNowTick(Date.now()); };
@@ -631,7 +685,7 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v4.3 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v4.4 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
@@ -663,8 +717,13 @@ export default function WorldSelectApp() {
       </section>
 
       {streetOpen && <StreetViewer
+        provider={streetProvider} googleApiKey={GOOGLE_MAPS_API_KEY}
         state={streetState} photo={currentStreet} index={streetIndex} total={streetPhotos.length}
         error={layerErrors.street} point={streetPoint} onClose={closeStreet}
+        onGoogleReady={() => { setStreetState("ready"); setLayerError("street"); }}
+        onGoogleFallback={(message) => { setLayerError("street", message); loadKartaViewStreet(); }}
+        onUseGoogle={() => { if (GOOGLE_MAPS_API_KEY) { setStreetProvider("google"); setStreetState("loading"); setLayerError("street"); } }}
+        onUseKartaView={loadKartaViewStreet}
         onPrevious={() => setStreetIndex((i) => Math.max(0, i - 1))}
         onNext={() => setStreetIndex((i) => Math.min(streetPhotos.length - 1, i + 1))}
       />}
@@ -678,7 +737,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v4.3 · stabilization bundle · traffic · aircraft · satellites · layer states · mobile</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v4.4 · explore bundle · aircraft icons · Google Street View · traffic incidents</span>
       </footer>
     </main>
   );
@@ -720,17 +779,82 @@ function Inspector({ entity, onFocus, onStreet, followAircraft, onToggleFollow }
   return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" ? <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button> : <button className="streetButton" onClick={onStreet}>Street imagery</button>}</div>}</>;
 }
 
-function StreetViewer({ state, photo, index, total, error, point, onClose, onPrevious, onNext }: { state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onPrevious: () => void; onNext: () => void }) {
+function StreetViewer({ provider, googleApiKey, state, photo, index, total, error, point, onClose, onPrevious, onNext, onGoogleReady, onGoogleFallback, onUseGoogle, onUseKartaView }: { provider: StreetProvider; googleApiKey: string; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onPrevious: () => void; onNext: () => void; onGoogleReady: () => void; onGoogleFallback: (message: string) => void; onUseGoogle: () => void; onUseKartaView: () => void }) {
   return <section className="streetViewer glass" aria-label="Street-level imagery">
-    <div className="streetHead"><div><p className="panelLabel">STREET LEVEL · KARTAVIEW</p><strong>{point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}</strong></div><button onClick={onClose}>×</button></div>
-    <div className="streetFrame">
-      {state === "loading" && <div className="streetMessage">Searching public street imagery…</div>}
-      {state !== "loading" && !photo && <div className="streetMessage"><strong>NO COVERAGE</strong><span>{error ?? "No public KartaView imagery was found near this point."}</span></div>}
-      {photo && <div className="streetImage" role="img" aria-label="KartaView street-level photo" style={{ backgroundImage: `url("${photo.imageUrl.replace(/"/g, "%22")}")` }} />}
+    <div className="streetHead"><div><p className="panelLabel">STREET LEVEL · {provider === "google" ? "GOOGLE STREET VIEW" : "KARTAVIEW"}</p><strong>{point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}</strong></div><button onClick={onClose}>×</button></div>
+    <div className="streetProviderSwitch" role="group" aria-label="Street imagery provider">
+      <button className={provider === "google" ? "active" : ""} disabled={!googleApiKey} onClick={onUseGoogle}>Google Street View</button>
+      <button className={provider === "kartaview" ? "active" : ""} onClick={onUseKartaView}>KartaView fallback</button>
     </div>
-    <div className="streetControls"><button onClick={onPrevious} disabled={index <= 0}>← Previous</button><span>{total ? `${index + 1} / ${total}` : "No imagery"}</span><button onClick={onNext} disabled={!total || index >= total - 1}>Next →</button></div>
-    {photo && <div className="streetMeta"><span>Captured: {photo.capturedAt ? new Date(photo.capturedAt).toLocaleString() : "unknown"}</span><span>Source: KartaView community imagery</span></div>}
+    <div className="streetFrame">
+      {provider === "google" ? <GoogleStreetPanorama apiKey={googleApiKey} point={point} onReady={onGoogleReady} onFallback={onGoogleFallback} /> : <>
+        {state === "loading" && <div className="streetMessage">Searching public street imagery…</div>}
+        {state !== "loading" && !photo && <div className="streetMessage"><strong>NO COVERAGE</strong><span>{error ?? "No public KartaView imagery was found near this point."}</span></div>}
+        {photo && <div className="streetImage" role="img" aria-label="KartaView street-level photo" style={{ backgroundImage: `url("${photo.imageUrl.replace(/"/g, "%22")}")` }} />}
+      </>}
+    </div>
+    {provider === "kartaview" ? <>
+      <div className="streetControls"><button onClick={onPrevious} disabled={index <= 0}>← Previous</button><span>{total ? `${index + 1} / ${total}` : "No imagery"}</span><button onClick={onNext} disabled={!total || index >= total - 1}>Next →</button></div>
+      {photo && <div className="streetMeta"><span>Captured: {photo.capturedAt ? new Date(photo.capturedAt).toLocaleString() : "unknown"}</span><span>Source: KartaView community imagery</span></div>}
+    </> : <div className="streetMeta"><span>Interactive 360° panorama</span><span>Source: Google Street View</span></div>}
   </section>;
+}
+
+function GoogleStreetPanorama({ apiKey, point, onReady, onFallback }: { apiKey: string; point: EarthPoint; onReady: () => void; onFallback: (message: string) => void }) {
+  const panoRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    if (!apiKey) { onFallback("Google Street View is not configured · using KartaView fallback"); return; }
+    loadGoogleMaps(apiKey).then((google) => {
+      if (disposed || !panoRef.current) return;
+      const service = new google.maps.StreetViewService();
+      return service.getPanorama({ location: { lat: point.latitude, lng: point.longitude }, radius: 120 })
+        .then(({ data }: any) => {
+          if (disposed || !panoRef.current) return;
+          const location = data?.location;
+          if (!location?.pano) throw new Error("No Google Street View panorama found nearby");
+          new google.maps.StreetViewPanorama(panoRef.current, {
+            pano: location.pano,
+            position: location.latLng,
+            pov: { heading: 0, pitch: 0 },
+            zoom: 1,
+            addressControl: true,
+            fullscreenControl: !window.matchMedia("(max-width: 780px)").matches,
+            motionTracking: false,
+            linksControl: true,
+            panControl: true,
+            zoomControl: true,
+          });
+          onReady();
+        });
+    }).catch((error: unknown) => {
+      if (!disposed) onFallback(error instanceof Error ? `${error.message} · using KartaView fallback` : "Google Street View failed · using KartaView fallback");
+    });
+    return () => { disposed = true; };
+  }, [apiKey, point.latitude, point.longitude]);
+  return <div ref={panoRef} className="googleStreetPano"><div className="streetMessage">Loading Google Street View…</div></div>;
+}
+
+function loadGoogleMaps(apiKey: string): Promise<any> {
+  if (window.google?.maps) return Promise.resolve(window.google);
+  if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
+  window.__worldSelectGoogleMapsPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
+    if (existing) {
+      existing.addEventListener("load", () => resolve(window.google));
+      existing.addEventListener("error", () => reject(new Error("Google Maps JavaScript API could not be loaded")));
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly`;
+    script.async = true;
+    script.defer = true;
+    script.dataset.worldSelectGoogleMaps = "1";
+    script.onload = () => window.google?.maps ? resolve(window.google) : reject(new Error("Google Maps loaded without maps library"));
+    script.onerror = () => reject(new Error("Google Maps JavaScript API could not be loaded"));
+    document.head.appendChild(script);
+  });
+  return window.__worldSelectGoogleMapsPromise;
 }
 
 function SolarSystemView({ planets, sun, onSelect }: { planets: PlanetPosition[]; sun: SpatialEntity; onSelect: (entity: SpatialEntity) => void }) {
