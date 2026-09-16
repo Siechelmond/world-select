@@ -21,7 +21,8 @@ type LayerError = { earthquakes?: string; satellites?: string; aircraft?: string
 
 const DAY_MS = 86_400_000;
 const SATELLITE_TICK_MS = 1_000;
-const AIRCRAFT_REFRESH_MS = 12_000;
+const MOBILE_SATELLITE_TICK_MS = 2_000;
+const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 
@@ -38,6 +39,7 @@ export default function WorldSelectApp() {
   const trafficLayerRef = useRef<any>(null);
 
   const [cesiumReady, setCesiumReady] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const [earthquakes, setEarthquakes] = useState<SpatialEntity[]>([]);
   const [tleRecords, setTleRecords] = useState<TleRecord[]>([]);
   const [aircraft, setAircraft] = useState<SpatialEntity[]>([]);
@@ -72,6 +74,14 @@ export default function WorldSelectApp() {
   const planets = useMemo(() => computePlanetPositions(selectedTime), [selectedTime]);
   const sun = useMemo(() => sunEntity(selectedTime), [selectedTime]);
   const aircraftAvailable = viewMode === "earth" && timeOffsetDays === 0;
+  const aircraftQueryCenter = useMemo(() => {
+    const step = cameraHeight < 300_000 ? 0.05 : cameraHeight < 2_000_000 ? 0.15 : 0.35;
+    return {
+      latitude: Math.round(viewCenter.latitude / step) * step,
+      longitude: Math.round(viewCenter.longitude / step) * step,
+    };
+  }, [viewCenter.latitude, viewCenter.longitude, cameraHeight]);
+  const aircraftRadiusNm = cameraHeight < 120_000 ? 90 : cameraHeight < 1_000_000 ? 160 : 220;
   const streetPoint = selected && selected.kind !== "celestial-body"
     ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
     : viewCenter;
@@ -86,10 +96,17 @@ export default function WorldSelectApp() {
   }, []);
 
   useEffect(() => {
+    const update = () => setIsMobile(window.matchMedia("(max-width: 760px)").matches);
+    update();
+    window.addEventListener("resize", update, { passive: true });
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  useEffect(() => {
     if ((!satelliteLayer && !aircraftLayer) || timeOffsetDays !== 0) return;
-    const timer = window.setInterval(() => setNowTick(Date.now()), SATELLITE_TICK_MS);
+    const timer = window.setInterval(() => setNowTick(Date.now()), isMobile ? MOBILE_SATELLITE_TICK_MS : SATELLITE_TICK_MS);
     return () => window.clearInterval(timer);
-  }, [satelliteLayer, aircraftLayer, timeOffsetDays]);
+  }, [satelliteLayer, aircraftLayer, timeOffsetDays, isMobile]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -129,35 +146,38 @@ export default function WorldSelectApp() {
     }
     let disposed = false;
     let controller: AbortController | null = null;
+    let hasSuccessfulPayload = aircraft.length > 0;
     const load = async () => {
       controller?.abort();
       controller = new AbortController();
-      setAircraftState("loading");
+      if (!hasSuccessfulPayload) setAircraftState("loading");
       try {
-        const items = await fetchAircraftNear({ latitude: viewCenter.latitude, longitude: viewCenter.longitude, radiusNm: 220 }, controller.signal);
+        const items = await fetchAircraftNear({ latitude: aircraftQueryCenter.latitude, longitude: aircraftQueryCenter.longitude, radiusNm: aircraftRadiusNm }, controller.signal);
         if (disposed) return;
-        setAircraft(items);
+        if (items.length || !hasSuccessfulPayload) setAircraft(items);
+        if (items.length) hasSuccessfulPayload = true;
         for (const item of items) {
           const trail = aircraftTrailRef.current.get(item.id) ?? [];
           const last = trail[trail.length - 1];
           if (!last || Math.abs(last.latitude - item.position.latitude) > 0.0001 || Math.abs(last.longitude - item.position.longitude) > 0.0001) {
             trail.push({ ...item.position });
-            if (trail.length > 36) trail.shift();
+            const maxAircraftTrailPoints = isMobile ? 12 : 30;
+            while (trail.length > maxAircraftTrailPoints) trail.shift();
             aircraftTrailRef.current.set(item.id, trail);
           }
         }
         setAircraftState("ready");
-        setLayerError("aircraft", items.length ? undefined : "No aircraft returned within 220 NM of the current view");
+        setLayerError("aircraft", items.length ? undefined : (hasSuccessfulPayload ? "Keeping last aircraft positions while provider returns no new traffic" : `No aircraft returned within ${aircraftRadiusNm} NM of the current view`));
       } catch (reason: unknown) {
         if (controller.signal.aborted || disposed) return;
-        setAircraftState("error");
-        setLayerError("aircraft", reason instanceof Error ? reason.message : "Aircraft feed error");
+        if (!hasSuccessfulPayload) setAircraftState("error");
+        setLayerError("aircraft", hasSuccessfulPayload ? "Live refresh delayed · keeping last known aircraft" : (reason instanceof Error ? reason.message : "Aircraft feed error"));
       }
     };
     void load();
     const timer = window.setInterval(() => { void load(); }, AIRCRAFT_REFRESH_MS);
     return () => { disposed = true; controller?.abort(); window.clearInterval(timer); };
-  }, [aircraftLayer, aircraftAvailable, viewCenter.latitude, viewCenter.longitude, setLayerError]);
+  }, [aircraftLayer, aircraftAvailable, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, setLayerError, isMobile]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -287,8 +307,11 @@ export default function WorldSelectApp() {
       const position = Cesium.Cartesian3.fromDegrees(spatial.position.longitude, spatial.position.latitude, spatial.position.altitudeMeters);
       const existing = viewer.entities.getById(spatial.id);
       const trail = satelliteTrailRef.current.get(spatial.id) ?? [];
-      trail.push(position);
-      if (trail.length > 45) trail.shift();
+      const last = trail[trail.length - 1];
+      const moved = !last || Cesium.Cartesian3.distance(last, position) > 2_000;
+      if (moved) trail.push(position);
+      const maxTrailPoints = isMobile ? 10 : 30;
+      while (trail.length > maxTrailPoints) trail.shift();
       satelliteTrailRef.current.set(spatial.id, trail);
       if (existing) {
         existing.position = new Cesium.ConstantPositionProperty(position);
@@ -309,7 +332,7 @@ export default function WorldSelectApp() {
     for (const id of Array.from(satIdsRef.current) as string[]) {
       if (!liveIds.has(id)) { viewer.entities.removeById(id); entityMapRef.current.delete(id); satIdsRef.current.delete(id); }
     }
-  }, [satellites, satelliteLayer, viewMode, clearIds, cesiumReady]);
+  }, [satellites, satelliteLayer, viewMode, clearIds, cesiumReady, isMobile]);
 
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
@@ -453,7 +476,7 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v4 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v4.1 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
@@ -500,7 +523,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v4 · mobile-first · DE geography</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v4.1 · performance · mobile-first · DE geography</span>
       </footer>
     </main>
   );

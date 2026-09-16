@@ -69,3 +69,8 @@ Traffic is deliberately fail-safe. No traffic is invented when no provider is co
 Then redeploy. The browser never receives the key; raster traffic tiles are proxied through `/api/traffic`.
 
 See `docs/MVP_V4_GROUND_TRAFFIC.md` for acceptance criteria and data semantics.
+
+
+## v4.1 Performance
+
+Performance pass: parallel aircraft provider fallback, viewport request quantization, stale aircraft retention, bounded trails, and mobile-specific motion update rates. See `docs/PERFORMANCE_V4_1.md`.
