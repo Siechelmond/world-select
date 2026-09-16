@@ -13,7 +13,8 @@ export const onRequestGet = async (context: any) => {
   const api = new URL("https://api.openstreetcam.org/2.0/photo/");
   api.searchParams.set("lat", lat.toFixed(6));
   api.searchParams.set("lng", lon.toFixed(6));
-  api.searchParams.set("zoomLevel", "18");
+  api.searchParams.set("zoomLevel", "16");
+  api.searchParams.set("radius", "1500");
   api.searchParams.set("join", "sequence");
   api.searchParams.set("orderBy", "id");
   api.searchParams.set("orderDirection", "desc");
@@ -26,11 +27,12 @@ export const onRequestGet = async (context: any) => {
   const payload: any = await upstream.json();
   const data = Array.isArray(payload?.result?.data) ? payload.result.data : [];
   const photos = data.slice(0, 24).flatMap((item: any) => {
-    const imageUrl = item?.fileUrl || item?.fileurl || item?.url || null;
+    const imageUrl = item?.fileurlProc || item?.fileurlLTh || item?.fileurlTh || item?.fileUrl || item?.fileurl || item?.url || null;
     if (typeof imageUrl !== "string" || !imageUrl.startsWith("http")) return [];
+    const normalizedImageUrl = imageUrl.replace("[[sizeprefix]]", "wrapped_proc");
     return [{
-      id: String(item.id ?? item.photoId ?? imageUrl),
-      imageUrl,
+      id: String(item.id ?? item.photoId ?? normalizedImageUrl),
+      imageUrl: normalizedImageUrl,
       latitude: numberOrNull(item.lat ?? item.latitude),
       longitude: numberOrNull(item.lng ?? item.lon ?? item.longitude),
       heading: numberOrNull(item.heading ?? item.gpsHeading ?? item.compassAngle),

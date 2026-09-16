@@ -231,3 +231,23 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .streetControls { grid-template-columns: 90px 1fr 90px; }
   .streetMeta { display: grid; }
 }
+
+/* v4 — Ground / Traffic / Aircraft motion */
+.followButton {
+  width: 100%;
+  border: 1px solid rgba(250,204,21,.34);
+  background: rgba(161,98,7,.18);
+  color: #fef9c3;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 700;
+}
+.followButton:hover { background: rgba(161,98,7,.28); }
+
+@media (max-width: 780px) {
+  .modeSwitch { gap: 2px; padding: 3px; }
+  .modeSwitch button { padding: 6px 6px; font-size: 8px; }
+  .brand h1 { font-size: 15px; }
+  .inspectorActions { grid-template-columns: 1fr; }
+}

@@ -55,3 +55,17 @@ See `docs/MVP_V3_MOBILE_EXPLORE.md` for scope and acceptance criteria.
 ## v3.1 stabilization
 
 v3.1 moves CelesTrak, ADSB.lol and KartaView requests behind Cloudflare Pages Functions in `functions/api/`, adds continuous SGP4 satellite motion, correct globe occlusion for earthquake markers, per-layer diagnostics, and an in-app KartaView street-level viewer. See `docs/UAT_V3_1_STABILIZATION.md`.
+
+## v4 — Ground / Traffic / Aircraft Motion
+
+World Select v4 adds a mobile-first Earth-to-Ground workflow, German geographic labels, observed aircraft trails with live visual motion/follow, a broader bounded satellite catalogue, and an optional live traffic overlay.
+
+### Traffic configuration
+
+Traffic is deliberately fail-safe. No traffic is invented when no provider is configured. To enable live TomTom Traffic Flow in Cloudflare Pages, add the encrypted project secret:
+
+`TOMTOM_API_KEY=<your TomTom Traffic API key>`
+
+Then redeploy. The browser never receives the key; raster traffic tiles are proxied through `/api/traffic`.
+
+See `docs/MVP_V4_GROUND_TRAFFIC.md` for acceptance criteria and data semantics.
