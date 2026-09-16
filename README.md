@@ -1,4 +1,4 @@
-> Current stabilization: **v4.5 Integrated Ground Bundle**
+> Current stabilization: **v5.0 Live Layer Foundation**
 
 # World Select
 
@@ -116,3 +116,16 @@ See `docs/UAT_V4_3_STABILIZATION.md`.
 - Google Street View now takes over the main Earth viewport instead of opening as a modal card; KartaView remains an in-app fallback.
 - Adds lightweight session annotations / location markers without introducing a database.
 - Existing earthquake and satellite data paths remain unchanged.
+
+
+## v5.0 - Live Layer Foundation
+
+- Repairs the Aircraft provider contract rather than adding another fallback.
+- ADSB.lol now uses the documented `/v2/lat/{lat}/lon/{lon}/dist/{radius}` route.
+- Optional OpenSky OAuth support is server-side; without credentials World Select defaults to ADSB.lol only.
+- Aircraft responses carry explicit provider, coverage, source-age, cached/stale and degraded metadata.
+- Last-good Aircraft data remains visible as `Degraded` after refresh failures.
+- Stale Aircraft are never projected as fresh motion.
+- KartaView fallback now respects its documented 500 m radius and reports truthful `NO COVERAGE`.
+- Adds `npm run verify:contracts` as a regression gate before subsequent bundles.
+- See `docs/UAT_V5_0_LAYER_FOUNDATION.md`.

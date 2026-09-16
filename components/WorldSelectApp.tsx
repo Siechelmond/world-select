@@ -5,15 +5,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SpatialEntity } from "@/lib/spatial";
 import { fetchEarthquakes } from "@/lib/usgs";
 import { fetchStationTles, propagateTles, type TleRecord } from "@/lib/celestrak";
-import { fetchAircraftNear, projectAircraftPosition } from "@/lib/aircraft";
+import { fetchAircraftSnapshot, projectAircraftPosition, type AircraftFeedMeta } from "@/lib/aircraft";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
 import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
 import { fetchTrafficStatus, type TrafficStatus } from "@/lib/traffic";
+import { resolveLayerState, type LayerLoadState as LoadState } from "@/lib/layer-runtime";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any> } }
 
-type LoadState = "idle" | "loading" | "ready" | "degraded" | "error";
 type ViewMode = "earth" | "space";
 type MobilePanel = "none" | "layers" | "inspector" | "time" | "street";
 type StreetProvider = "google" | "kartaview";
@@ -57,6 +57,7 @@ export default function WorldSelectApp() {
   const [earthquakeState, setEarthquakeState] = useState<LoadState>("idle");
   const [satelliteState, setSatelliteState] = useState<LoadState>("idle");
   const [aircraftState, setAircraftState] = useState<LoadState>("idle");
+  const [aircraftMeta, setAircraftMeta] = useState<AircraftFeedMeta | null>(null);
   const [trafficState, setTrafficState] = useState<LoadState>("idle");
   const [trafficStatus, setTrafficStatus] = useState<TrafficStatus | null>(null);
   const [viewCenter, setViewCenter] = useState<EarthPoint>(INITIAL_CENTER);
@@ -154,7 +155,10 @@ export default function WorldSelectApp() {
 
   useEffect(() => {
     if (!aircraftLayer || !aircraftAvailable) {
-      if (!aircraftAvailable) setAircraft([]);
+      if (!aircraftAvailable) {
+        setAircraft([]);
+        setAircraftMeta(null);
+      }
       return;
     }
     let disposed = false;
@@ -182,31 +186,44 @@ export default function WorldSelectApp() {
       controller = new AbortController();
       if (initial && !hasSuccessfulPayload) {
         setAircraftState("loading");
+        setAircraftMeta(null);
         setLayerError("aircraft");
       }
       try {
-        const items = await fetchAircraftNear({ latitude: aircraftQueryCenter.latitude, longitude: aircraftQueryCenter.longitude, radiusNm: aircraftRadiusNm }, controller.signal);
+        const snapshot = await fetchAircraftSnapshot({ latitude: aircraftQueryCenter.latitude, longitude: aircraftQueryCenter.longitude, radiusNm: aircraftRadiusNm }, controller.signal);
         if (disposed) return false;
+        const { entities: items, meta } = snapshot;
+        setAircraftMeta(meta);
         applyItems(items);
+
         if (!items.length && !hasSuccessfulPayload) {
-          setAircraftState("error");
-          setLayerError("aircraft", `No aircraft returned within ${aircraftRadiusNm} NM · use Retry to request again`);
+          setAircraftState(resolveLayerState({ enabled: true, hasData: false, failed: true }));
+          setLayerError("aircraft", `No positioned aircraft returned within ${aircraftRadiusNm} NM · use Retry`);
           return false;
         }
-        const degradedFeed = items.some((item) => item.properties.feedState === "degraded-cached");
-        setAircraftState(items.length ? (degradedFeed ? "degraded" : "ready") : (hasSuccessfulPayload ? "degraded" : "error"));
-        setLayerError("aircraft", items.length ? undefined : "Live refresh delayed · keeping last known aircraft");
+
+        if (!items.length && hasSuccessfulPayload) {
+          setAircraftState(resolveLayerState({ enabled: true, hasData: true, stale: true }));
+          setLayerError("aircraft", "Refresh returned no positioned aircraft · keeping last valid snapshot");
+          return true;
+        }
+
+        const degradedFeed = meta.degraded || meta.stale;
+        setAircraftState(resolveLayerState({ enabled: true, hasData: true, stale: degradedFeed }));
+        setLayerError("aircraft", degradedFeed
+          ? `Using ${meta.cached ? "cached " : ""}${meta.provider} data${meta.sourceAgeSeconds != null ? ` · ${meta.sourceAgeSeconds}s old` : ""}`
+          : undefined);
         return true;
       } catch (reason: unknown) {
         if (controller.signal.aborted || disposed) return false;
         if (!hasSuccessfulPayload) {
-          setAircraftState("error");
+          setAircraftState(resolveLayerState({ enabled: true, hasData: false, failed: true }));
+          setAircraftMeta(null);
           setLayerError("aircraft", reason instanceof Error ? `${reason.message} · use Retry` : "Aircraft feed error · use Retry");
           return false;
         }
-        // Background refreshes keep the last valid snapshot visible and mark the layer degraded.
-        setAircraftState("degraded");
-        setLayerError("aircraft", "Live refresh delayed · keeping last known aircraft");
+        setAircraftState(resolveLayerState({ enabled: true, hasData: true, failed: true }));
+        setLayerError("aircraft", "Live refresh delayed · keeping last valid aircraft snapshot");
         return true;
       }
     };
@@ -432,14 +449,15 @@ export default function WorldSelectApp() {
     for (const spatial of aircraft) {
       liveIds.add(spatial.id);
       const isSelected = spatial.id === selectedAircraftId;
-      const projected = animateAircraft || isSelected ? projectAircraftPosition(spatial, nowTick) : spatial.position;
+      const canProject = spatial.dataState !== "STALE" && (animateAircraft || isSelected);
+      const projected = canProject ? projectAircraftPosition(spatial, nowTick) : spatial.position;
       const displayEntity: SpatialEntity = {
         ...spatial,
         position: projected,
-        dataState: animateAircraft || isSelected ? "ESTIMATED" : spatial.dataState,
+        dataState: canProject ? "ESTIMATED" : spatial.dataState,
         properties: {
           ...spatial.properties,
-          displayPosition: animateAircraft || isSelected ? "estimated between observed ADS-B samples" : "last observed ADS-B sample",
+          displayPosition: canProject ? "estimated between observed ADS-B samples" : spatial.dataState === "STALE" ? "last known stale ADS-B sample" : "last observed ADS-B sample",
         },
       };
       entityMapRef.current.set(spatial.id, displayEntity);
@@ -639,20 +657,28 @@ export default function WorldSelectApp() {
     });
   }, [selected]);
 
-  const loadKartaViewStreet = useCallback(() => {
+  const loadKartaViewStreet = useCallback((fallbackReason?: string) => {
     setStreetProvider("kartaview");
     setStreetState("loading");
     setStreetIndex(0);
     setStreetPhotos([]);
-    setLayerError("street");
+    setLayerError("street", fallbackReason);
     const controller = new AbortController();
     fetchStreetPhotos(streetPoint.latitude, streetPoint.longitude, controller.signal)
       .then((photos) => {
-        setStreetPhotos(photos); setStreetState(photos.length ? "ready" : "error");
-        if (!photos.length) setLayerError("street", "No KartaView street imagery found at this location");
+        setStreetPhotos(photos);
+        setStreetState(photos.length ? "ready" : "error");
+        if (photos.length) {
+          setLayerError("street", fallbackReason ? `${fallbackReason} · KartaView fallback active` : undefined);
+        } else {
+          const noCoverage = "No KartaView imagery found within the documented 500 m search radius";
+          setLayerError("street", fallbackReason ? `${fallbackReason} · ${noCoverage}` : noCoverage);
+        }
       })
       .catch((reason: unknown) => {
-        setStreetState("error"); setLayerError("street", reason instanceof Error ? reason.message : "Street imagery error");
+        const message = reason instanceof Error ? reason.message : "Street imagery error";
+        setStreetState("error");
+        setLayerError("street", fallbackReason ? `${fallbackReason} · ${message}` : message);
       });
   }, [streetPoint.latitude, streetPoint.longitude, setLayerError]);
 
@@ -685,6 +711,7 @@ export default function WorldSelectApp() {
   const toggleAircraftLayer = (enabled: boolean) => {
     if (!enabled) {
       setAircraftState("idle");
+      setAircraftMeta(null);
       setLayerError("aircraft");
     }
     setAircraftLayer(enabled);
@@ -707,14 +734,14 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v4.5 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v5.0 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
         <div className="panelHead"><p className="panelLabel">LAYERS</p><button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button></div>
         <LayerToggle checked={earthquakeLayer} onChange={setEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
         <LayerToggle checked={satelliteLayer} onChange={setSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle="CelesTrak · SGP4 live propagation" state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
-        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · regional ${aircraftRadiusNm} NM · ${animateAircraft ? "live motion" : "zoom in for motion"}` : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
+        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "OpenSky / adsb.lol"} · ${aircraftRadiusNm} NM · ${animateAircraft ? "bounded motion" : "zoom in for motion"}` : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
         <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="Ground traffic flow · loads on demand" state={trafficState} count={0} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
         <div className="spaceLayerSummary">
           <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "SPACE"}</em>
@@ -744,9 +771,9 @@ export default function WorldSelectApp() {
         state={streetState} photo={currentStreet} index={streetIndex} total={streetPhotos.length}
         error={layerErrors.street} point={streetPoint} onClose={closeStreet}
         onGoogleReady={() => { setStreetState("ready"); setLayerError("street"); }}
-        onGoogleFallback={(message) => { setLayerError("street", message); loadKartaViewStreet(); }}
+        onGoogleFallback={(message) => { loadKartaViewStreet(message); }}
         onUseGoogle={() => { if (GOOGLE_MAPS_API_KEY) { setStreetProvider("google"); setStreetState("loading"); setLayerError("street"); } }}
-        onUseKartaView={loadKartaViewStreet}
+        onUseKartaView={() => loadKartaViewStreet()}
         onPrevious={() => setStreetIndex((i) => Math.max(0, i - 1))}
         onNext={() => setStreetIndex((i) => Math.min(streetPhotos.length - 1, i + 1))}
       />}
@@ -760,7 +787,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v4.5 · integrated ground · aircraft recovery · inline Street View · traffic · annotations</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v5.0 · stable live-layer foundation · aircraft provider contract · inline Street View</span>
       </footer>
     </main>
   );
@@ -818,7 +845,7 @@ function StreetViewer({ provider, googleApiKey, state, photo, index, total, erro
     </div>
     {provider === "kartaview" ? <>
       <div className="streetControls"><button onClick={onPrevious} disabled={index <= 0}>← Previous</button><span>{total ? `${index + 1} / ${total}` : "No imagery"}</span><button onClick={onNext} disabled={!total || index >= total - 1}>Next →</button></div>
-      {photo && <div className="streetMeta"><span>Captured: {photo.capturedAt ? new Date(photo.capturedAt).toLocaleString() : "unknown"}</span><span>Source: KartaView community imagery</span></div>}
+      {photo && <div className="streetMeta"><span>Captured: {photo.capturedAt ? new Date(photo.capturedAt).toLocaleString() : "unknown"}</span><span>Source: KartaView community imagery{photo.distanceMeters != null ? ` · ${photo.distanceMeters} m from requested point` : ""}</span></div>}
     </> : <div className="streetMeta"><span>Interactive 360° panorama</span><span>Source: Google Street View</span></div>}
   </section>;
 }

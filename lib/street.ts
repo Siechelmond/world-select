@@ -6,11 +6,12 @@ export type StreetPhoto = {
   heading: number | null;
   capturedAt: string | null;
   sequenceId: string | null;
+  distanceMeters?: number | null;
 };
 
 export async function fetchStreetPhotos(latitude: number, longitude: number, signal?: AbortSignal): Promise<StreetPhoto[]> {
   const response = await fetch(`/api/street?lat=${latitude.toFixed(6)}&lon=${longitude.toFixed(6)}`, { signal, cache: "no-store" });
   if (!response.ok) throw new Error(`Street imagery proxy returned HTTP ${response.status}`);
-  const payload = (await response.json()) as { photos?: StreetPhoto[] };
+  const payload = (await response.json()) as { photos?: StreetPhoto[]; searchRadiusM?: number };
   return payload.photos ?? [];
 }

@@ -1,99 +1,135 @@
-function bboxForRadius(lat: number, lon: number, radiusNm: number) {
-  const latDelta = radiusNm / 60;
-  const lonScale = Math.max(0.2, Math.cos(lat * Math.PI / 180));
-  const lonDelta = radiusNm / (60 * lonScale);
-  return {
-    lamin: Math.max(-90, lat - latDelta), lamax: Math.min(90, lat + latDelta),
-    lomin: Math.max(-180, lon - lonDelta), lomax: Math.min(180, lon + lonDelta),
-  };
-}
+import {
+  bboxForRadius,
+  buildAdsbLolUrl,
+  isUsableSnapshot,
+  normalizeAdsbLol,
+  normalizeOpenSkyStates,
+  sourceAgeSeconds,
+  sourceEpochMs,
+  type ProviderResult,
+} from "./aircraft-core";
 
-type ProviderResult = { ac: any[]; now: number; total: number; provider: string };
-type Provider = { id: string; delayMs: number; run: (lat: number, lon: number, radius: number) => Promise<ProviderResult> };
+type Env = {
+  OPENSKY_CLIENT_ID?: string;
+  OPENSKY_CLIENT_SECRET?: string;
+  OPENSKY_AUTH_MODE?: string;
+};
 
-const PROVIDER_TIMEOUT_MS = 4200;
-const providerCooldownUntil = new Map<string, number>();
+type ProviderName = "adsb.lol" | "opensky";
+type Attempt = { provider: ProviderName; ok: boolean; status?: number; message?: string };
+
+const PROVIDER_TIMEOUT_MS = 5_000;
+const OPEN_SKY_MAX_SOURCE_AGE_SECONDS = 120;
+const FRESH_EDGE_CACHE_MS = 30_000;
+const OPEN_SKY_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
+
+let openSkyTokenCache: { token: string; expiresAtMs: number } | null = null;
 
 class ProviderHttpError extends Error {
   status: number;
-  constructor(status: number) {
-    super(`HTTP ${status}`);
+  constructor(status: number, provider: ProviderName) {
+    super(`${provider} HTTP ${status}`);
     this.status = status;
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return Response.json(body, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      ...headers,
+    },
+  });
 }
 
-function setCooldown(providerId: string, error: unknown) {
-  const now = Date.now();
-  const status = error instanceof ProviderHttpError ? error.status : 0;
-  const cooldownMs = status === 429 ? 180_000 : status === 401 || status === 403 ? 900_000 : 45_000;
-  providerCooldownUntil.set(providerId, now + cooldownMs);
+function openSkyMode(env: Env): "oauth" | "anonymous" | "disabled" {
+  const requested = (env.OPENSKY_AUTH_MODE ?? "auto").toLowerCase();
+  if (requested === "off" || requested === "disabled") return "disabled";
+  if (requested === "anon" || requested === "anonymous") return "anonymous";
+  if (env.OPENSKY_CLIENT_ID && env.OPENSKY_CLIENT_SECRET) return "oauth";
+  return "disabled";
 }
 
-async function fetchJson(url: string, userAgent: string) {
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
-      headers: { 'User-Agent': userAgent, Accept: 'application/json' },
-      signal: controller.signal,
-      cf: { cacheTtl: 20, cacheEverything: true },
-    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
-    if (!response.ok) throw new ProviderHttpError(response.status);
-    return await response.json() as any;
+    return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function adsbLol(lat: number, lon: number, radius: number): Promise<ProviderResult> {
-  const payload = await fetchJson(`https://api.adsb.lol/v2/point/${lat.toFixed(3)}/${lon.toFixed(3)}/${radius}`, 'WorldSelect/0.4.5');
-  return { ac: Array.isArray(payload?.ac) ? payload.ac : [], now: Number(payload?.now ?? Date.now()), total: Number(payload?.total ?? payload?.ac?.length ?? 0), provider: 'adsb.lol' };
-}
+async function getOpenSkyToken(env: Env) {
+  if (!env.OPENSKY_CLIENT_ID || !env.OPENSKY_CLIENT_SECRET) return null;
+  const now = Date.now();
+  if (openSkyTokenCache && openSkyTokenCache.expiresAtMs - 30_000 > now) return openSkyTokenCache.token;
 
-async function airplanesLive(lat: number, lon: number, radius: number): Promise<ProviderResult> {
-  const payload = await fetchJson(`https://api.airplanes.live/v2/point/${lat.toFixed(3)}/${lon.toFixed(3)}/${radius}`, 'WorldSelect/0.4.5');
-  return { ac: Array.isArray(payload?.ac) ? payload.ac : [], now: Number(payload?.now ?? Date.now()), total: Number(payload?.total ?? payload?.ac?.length ?? 0), provider: 'airplanes.live' };
-}
-
-async function adsbFi(lat: number, lon: number, radius: number): Promise<ProviderResult> {
-  const payload = await fetchJson(`https://opendata.adsb.fi/api/v3/lat/${lat.toFixed(3)}/lon/${lon.toFixed(3)}/dist/${radius}`, 'WorldSelect/0.4.5');
-  const ac = Array.isArray(payload?.ac) ? payload.ac : Array.isArray(payload?.aircraft) ? payload.aircraft : [];
-  return { ac, now: Number(payload?.now ?? Date.now()), total: Number(payload?.total ?? ac.length), provider: 'adsb.fi' };
-}
-
-async function openSky(lat: number, lon: number, radius: number): Promise<ProviderResult> {
-  const box = bboxForRadius(lat, lon, radius);
-  const url = new URL('https://opensky-network.org/api/states/all');
-  url.searchParams.set('lamin', box.lamin.toFixed(3));
-  url.searchParams.set('lamax', box.lamax.toFixed(3));
-  url.searchParams.set('lomin', box.lomin.toFixed(3));
-  url.searchParams.set('lomax', box.lomax.toFixed(3));
-  const payload = await fetchJson(url.toString(), 'WorldSelect/0.4.5');
-  const states = Array.isArray(payload?.states) ? payload.states : [];
-  const ac = states.flatMap((s: any[]) => {
-    if (!Array.isArray(s) || typeof s[5] !== 'number' || typeof s[6] !== 'number') return [];
-    const velocityMs = typeof s[9] === 'number' ? s[9] : null;
-    return [{
-      hex: String(s[0] ?? ''), flight: typeof s[1] === 'string' ? s[1].trim() : '', r: null, t: null,
-      lon: s[5], lat: s[6], alt_baro: typeof s[7] === 'number' ? s[7] / 0.3048 : null,
-      alt_geom: typeof s[13] === 'number' ? s[13] / 0.3048 : null,
-      gs: velocityMs == null ? null : velocityMs * 1.943844, track: typeof s[10] === 'number' ? s[10] : null,
-      squawk: s[14] ?? null, seen: typeof s[4] === 'number' ? Math.max(0, Date.now() / 1000 - s[4]) : 0,
-    }];
+  const body = new URLSearchParams({
+    grant_type: "client_credentials",
+    client_id: env.OPENSKY_CLIENT_ID,
+    client_secret: env.OPENSKY_CLIENT_SECRET,
   });
-  return { ac, now: Number(payload?.time ? payload.time * 1000 : Date.now()), total: ac.length, provider: 'opensky' };
+  const response = await fetchWithTimeout(OPEN_SKY_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body,
+  }, 5_000);
+  if (!response.ok) throw new ProviderHttpError(response.status, "opensky");
+  const payload = await response.json() as { access_token?: string; expires_in?: number };
+  if (!payload.access_token) throw new Error("opensky token missing");
+  openSkyTokenCache = {
+    token: payload.access_token,
+    expiresAtMs: now + Math.max(60, Number(payload.expires_in ?? 1800)) * 1000,
+  };
+  return openSkyTokenCache.token;
 }
 
-const PROVIDERS: Provider[] = [
-  { id: 'adsb.lol', delayMs: 0, run: adsbLol },
-  { id: 'opensky', delayMs: 180, run: openSky },
-  { id: 'adsb.fi', delayMs: 650, run: adsbFi },
-  { id: 'airplanes.live', delayMs: 900, run: airplanesLive },
-];
+async function fetchOpenSky(lat: number, lon: number, radiusNm: number, env: Env): Promise<ProviderResult> {
+  const box = bboxForRadius(lat, lon, radiusNm);
+  const url = new URL("https://opensky-network.org/api/states/all");
+  url.searchParams.set("lamin", box.lamin.toFixed(3));
+  url.searchParams.set("lamax", box.lamax.toFixed(3));
+  url.searchParams.set("lomin", box.lomin.toFixed(3));
+  url.searchParams.set("lomax", box.lomax.toFixed(3));
+
+  const authMode = openSkyMode(env);
+  if (authMode === "disabled") throw new Error("opensky disabled");
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (authMode === "oauth") {
+    const token = await getOpenSkyToken(env);
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+
+  let response = await fetchWithTimeout(url.toString(), {
+    headers,
+    cf: { cacheTtl: 20, cacheEverything: true },
+  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+
+  if (response.status === 401 && authMode === "oauth") {
+    openSkyTokenCache = null;
+    const token = await getOpenSkyToken(env);
+    response = await fetchWithTimeout(url.toString(), {
+      headers: { ...headers, Authorization: `Bearer ${token}` },
+      cf: { cacheTtl: 20, cacheEverything: true },
+    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+  }
+
+  if (!response.ok) throw new ProviderHttpError(response.status, "opensky");
+  const result = normalizeOpenSkyStates(await response.json());
+  result.authMode = authMode;
+  return result;
+}
+
+async function fetchAdsbLol(lat: number, lon: number, radiusNm: number): Promise<ProviderResult> {
+  const response = await fetchWithTimeout(buildAdsbLolUrl(lat, lon, radiusNm), {
+    headers: { Accept: "application/json" },
+    cf: { cacheTtl: 20, cacheEverything: true },
+  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+  if (!response.ok) throw new ProviderHttpError(response.status, "adsb.lol");
+  return normalizeAdsbLol(await response.json());
+}
 
 function bucketCoordinate(value: number, step: number) {
   return Math.round(value / step) * step;
@@ -104,74 +140,146 @@ function snapshotKey(origin: string, lat: number, lon: number, radius: number) {
   const bucketLat = bucketCoordinate(lat, step).toFixed(2);
   const bucketLon = bucketCoordinate(lon, step).toFixed(2);
   const radiusBucket = radius <= 80 ? 70 : radius <= 150 ? 130 : 220;
-  return new Request(`${origin}/__world-select-cache/aircraft/${bucketLat}/${bucketLon}/${radiusBucket}`, { method: 'GET' });
+  return new Request(`${origin}/__world-select-cache/aircraft/${bucketLat}/${bucketLon}/${radiusBucket}`, { method: "GET" });
 }
 
-export const onRequestGet = async (context: any) => {
+function attemptFailure(provider: ProviderName, error: unknown): Attempt {
+  if (error instanceof ProviderHttpError) return { provider, ok: false, status: error.status, message: `HTTP ${error.status}` };
+  if (error instanceof Error && error.name === "AbortError") return { provider, ok: false, message: "timeout" };
+  return { provider, ok: false, message: "unavailable" };
+}
+
+async function tryProvider(provider: ProviderName, lat: number, lon: number, radius: number, env: Env, attempts: Attempt[]) {
+  try {
+    const result = provider === "opensky"
+      ? await fetchOpenSky(lat, lon, radius, env)
+      : await fetchAdsbLol(lat, lon, radius);
+    attempts.push({ provider, ok: true });
+    return result;
+  } catch (error) {
+    attempts.push(attemptFailure(provider, error));
+    return null;
+  }
+}
+
+function responsePayload(result: ProviderResult, options: {
+  stale: boolean;
+  degraded: boolean;
+  cached?: boolean;
+  latencyMs: number;
+  lat: number;
+  lon: number;
+  radius: number;
+  attempts?: Attempt[];
+}) {
+  const epochMs = sourceEpochMs(result.now);
+  return {
+    ...result,
+    now: epochMs,
+    stale: options.stale,
+    degraded: options.degraded,
+    cached: Boolean(options.cached),
+    sourceAgeSeconds: sourceAgeSeconds(epochMs),
+    latencyMs: options.latencyMs,
+    region: { latitude: options.lat, longitude: options.lon, radiusNm: options.radius },
+    attempts: options.attempts,
+  };
+}
+
+export const onRequestGet = async (context: { request: Request; env: Env; waitUntil: (promise: Promise<unknown>) => void }) => {
   const url = new URL(context.request.url);
-  const lat = Number(url.searchParams.get('lat'));
-  const lon = Number(url.searchParams.get('lon'));
-  const radius = Math.max(25, Math.min(250, Math.round(Number(url.searchParams.get('radius') ?? 220))));
+  const lat = Number(url.searchParams.get("lat"));
+  const lon = Number(url.searchParams.get("lon"));
+  const radius = Math.max(25, Math.min(250, Math.round(Number(url.searchParams.get("radius") ?? 220))));
+  const mode = url.searchParams.get("mode");
+
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-    return Response.json({ error: 'invalid coordinates' }, { status: 400 });
+    return json({ error: "invalid coordinates" }, 400);
   }
 
   const cache = (caches as any).default;
   const cacheKey = snapshotKey(url.origin, lat, lon, radius);
   const cached = await cache.match(cacheKey);
-  if (cached) {
-    const age = Number(cached.headers.get('X-World-Select-Age-Ms') ?? 0);
-    if (!age || Date.now() - age < 25_000) return cached;
+  if (cached && mode !== "status") {
+    const cachedAt = Number(cached.headers.get("X-World-Select-Cached-At") ?? 0);
+    if (cachedAt > 0 && Date.now() - cachedAt < FRESH_EDGE_CACHE_MS) return cached;
   }
 
-  const now = Date.now();
-  const eligible = PROVIDERS.filter((provider) => (providerCooldownUntil.get(provider.id) ?? 0) <= now);
-  const providers = eligible.length ? eligible : PROVIDERS.slice(0, 2);
   const startedAt = Date.now();
+  const attempts: Attempt[] = [];
+  const modeForOpenSky = openSkyMode(context.env);
+  const oauthAvailable = Boolean(context.env.OPENSKY_CLIENT_ID && context.env.OPENSKY_CLIENT_SECRET) && modeForOpenSky === "oauth";
+  const providerOrder: ProviderName[] = oauthAvailable
+    ? ["opensky", "adsb.lol"]
+    : modeForOpenSky === "anonymous"
+      ? ["adsb.lol", "opensky"]
+      : ["adsb.lol"];
 
-  const attempts = providers.map((provider) => (async () => {
-    if (provider.delayMs) await sleep(provider.delayMs);
-    try {
-      const result = await provider.run(lat, lon, radius);
-      if (!result.ac.length) throw new Error(`${provider.id}: empty`);
-      providerCooldownUntil.delete(provider.id);
-      return result;
-    } catch (error) {
-      setCooldown(provider.id, error);
-      throw error;
-    }
-  })());
-
+  let firstNonEmptyStale: ProviderResult | null = null;
   let selected: ProviderResult | null = null;
-  try {
-    selected = await Promise.any(attempts);
-  } catch {
-    selected = null;
+
+  for (const provider of providerOrder) {
+    const result = await tryProvider(provider, lat, lon, radius, context.env, attempts);
+    if (!result || !result.ac.length) continue;
+    if (isUsableSnapshot(result, OPEN_SKY_MAX_SOURCE_AGE_SECONDS)) {
+      selected = result;
+      break;
+    }
+    firstNonEmptyStale ??= result;
+  }
+
+  if (!selected && firstNonEmptyStale) {
+    const payload = responsePayload(firstNonEmptyStale, {
+      stale: true,
+      degraded: true,
+      latencyMs: Date.now() - startedAt,
+      lat, lon, radius,
+      attempts: mode === "status" ? attempts : undefined,
+    });
+    return json(payload, 200, {
+      "Cache-Control": "public, max-age=5, s-maxage=10",
+      "X-World-Select-Aircraft-Provider": firstNonEmptyStale.provider,
+      "X-World-Select-Aircraft-Stale": "1",
+    });
   }
 
   if (!selected) {
     if (cached) {
       const body = await cached.json() as any;
-      return Response.json({ ...body, stale: true, degraded: true, latencyMs: Date.now() - startedAt }, {
-        headers: {
-          'Cache-Control': 'public, max-age=5, s-maxage=10',
-          'X-World-Select-Aircraft-Provider': String(body?.provider ?? 'cached'),
-          'X-World-Select-Aircraft-Stale': '1',
-        },
+      const payload = {
+        ...body,
+        stale: true,
+        degraded: true,
+        cached: true,
+        latencyMs: Date.now() - startedAt,
+        attempts: mode === "status" ? attempts : undefined,
+      };
+      return json(payload, 200, {
+        "Cache-Control": "public, max-age=5, s-maxage=10",
+        "X-World-Select-Aircraft-Provider": String(body?.provider ?? "cached"),
+        "X-World-Select-Aircraft-Stale": "1",
       });
     }
-    return Response.json({ error: 'aircraft providers unavailable', retryAfterSeconds: 30 }, {
-      status: 502,
-      headers: { 'Cache-Control': 'public, max-age=5, s-maxage=10' },
-    });
+    return json({
+      error: "aircraft providers unavailable",
+      providerOrder,
+      attempts,
+      retryAfterSeconds: 30,
+    }, 502);
   }
 
-  const payload = { ...selected, stale: false, degraded: false, latencyMs: Date.now() - startedAt };
+  const payload = responsePayload(selected, {
+    stale: false,
+    degraded: false,
+    latencyMs: Date.now() - startedAt,
+    lat, lon, radius,
+    attempts: mode === "status" ? attempts : undefined,
+  });
   const response = Response.json(payload, {
     headers: {
-      'Cache-Control': 'public, max-age=12, s-maxage=25, stale-while-revalidate=180',
-      'X-World-Select-Aircraft-Provider': selected.provider,
-      'X-World-Select-Age-Ms': String(Date.now()),
+      "Cache-Control": "public, max-age=15, s-maxage=30, stale-while-revalidate=180",
+      "X-World-Select-Aircraft-Provider": selected.provider,
+      "X-World-Select-Cached-At": String(Date.now()),
     },
   });
   context.waitUntil(cache.put(cacheKey, response.clone()));
