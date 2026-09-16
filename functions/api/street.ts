@@ -32,7 +32,7 @@ export const onRequestGet = async (context: any) => {
   api.searchParams.set("orderDirection", "desc");
 
   const upstream = await fetch(api.toString(), {
-    headers: { "User-Agent": "WorldSelect/0.5.0", Accept: "application/json" },
+    headers: { "User-Agent": "WorldSelect/0.5.1", Accept: "application/json" },
     cf: { cacheTtl: 300, cacheEverything: true },
   } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
 

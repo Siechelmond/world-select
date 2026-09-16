@@ -16,9 +16,20 @@ type Env = {
 };
 
 type ProviderName = "adsb.lol" | "opensky";
-type Attempt = { provider: ProviderName; ok: boolean; status?: number; message?: string };
+type ProviderPhase = "oauth-token" | "states" | "snapshot";
+type Attempt = {
+  provider: ProviderName;
+  ok: boolean;
+  status?: number;
+  message?: string;
+  phase?: ProviderPhase;
+  elapsedMs?: number;
+  authMode?: "anonymous" | "oauth" | "anonymous-fallback";
+};
 
-const PROVIDER_TIMEOUT_MS = 5_000;
+const OPEN_SKY_TOKEN_TIMEOUT_MS = 12_000;
+const OPEN_SKY_STATES_TIMEOUT_MS = 12_000;
+const ADSB_LOL_TIMEOUT_MS = 7_000;
 const OPEN_SKY_MAX_SOURCE_AGE_SECONDS = 120;
 const FRESH_EDGE_CACHE_MS = 30_000;
 const OPEN_SKY_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
@@ -27,9 +38,24 @@ let openSkyTokenCache: { token: string; expiresAtMs: number } | null = null;
 
 class ProviderHttpError extends Error {
   status: number;
-  constructor(status: number, provider: ProviderName) {
+  provider: ProviderName;
+  phase: ProviderPhase;
+  constructor(status: number, provider: ProviderName, phase: ProviderPhase) {
     super(`${provider} HTTP ${status}`);
     this.status = status;
+    this.provider = provider;
+    this.phase = phase;
+  }
+}
+
+class ProviderTimeoutError extends Error {
+  provider: ProviderName;
+  phase: ProviderPhase;
+  constructor(provider: ProviderName, phase: ProviderPhase) {
+    super(`${provider} ${phase} timeout`);
+    this.name = "ProviderTimeoutError";
+    this.provider = provider;
+    this.phase = phase;
   }
 }
 
@@ -48,14 +74,27 @@ function openSkyMode(env: Env): "oauth" | "anonymous" | "disabled" {
   if (requested === "off" || requested === "disabled") return "disabled";
   if (requested === "anon" || requested === "anonymous") return "anonymous";
   if (env.OPENSKY_CLIENT_ID && env.OPENSKY_CLIENT_SECRET) return "oauth";
-  return "disabled";
+  // Keyless OpenSky is a supported, lower-quota mode and is safer than silently
+  // disabling the primary provider when credentials are missing.
+  return "anonymous";
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  provider: ProviderName,
+  phase: ProviderPhase,
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ProviderTimeoutError(provider, phase);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -75,8 +114,8 @@ async function getOpenSkyToken(env: Env) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body,
-  }, 5_000);
-  if (!response.ok) throw new ProviderHttpError(response.status, "opensky");
+  }, OPEN_SKY_TOKEN_TIMEOUT_MS, "opensky", "oauth-token");
+  if (!response.ok) throw new ProviderHttpError(response.status, "opensky", "oauth-token");
   const payload = await response.json() as { access_token?: string; expires_in?: number };
   if (!payload.access_token) throw new Error("opensky token missing");
   openSkyTokenCache = {
@@ -86,48 +125,80 @@ async function getOpenSkyToken(env: Env) {
   return openSkyTokenCache.token;
 }
 
-async function fetchOpenSky(lat: number, lon: number, radiusNm: number, env: Env): Promise<ProviderResult> {
+function openSkyStateUrl(lat: number, lon: number, radiusNm: number) {
   const box = bboxForRadius(lat, lon, radiusNm);
   const url = new URL("https://opensky-network.org/api/states/all");
   url.searchParams.set("lamin", box.lamin.toFixed(3));
   url.searchParams.set("lamax", box.lamax.toFixed(3));
   url.searchParams.set("lomin", box.lomin.toFixed(3));
   url.searchParams.set("lomax", box.lomax.toFixed(3));
+  return url;
+}
 
-  const authMode = openSkyMode(env);
-  if (authMode === "disabled") throw new Error("opensky disabled");
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (authMode === "oauth") {
-    const token = await getOpenSkyToken(env);
-    if (token) headers.Authorization = `Bearer ${token}`;
-  }
-
-  let response = await fetchWithTimeout(url.toString(), {
+async function fetchOpenSkyStates(
+  url: URL,
+  headers: Record<string, string>,
+  authMode: "anonymous" | "oauth" | "anonymous-fallback",
+): Promise<ProviderResult> {
+  const response = await fetchWithTimeout(url.toString(), {
     headers,
     cf: { cacheTtl: 20, cacheEverything: true },
-  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
-
-  if (response.status === 401 && authMode === "oauth") {
-    openSkyTokenCache = null;
-    const token = await getOpenSkyToken(env);
-    response = await fetchWithTimeout(url.toString(), {
-      headers: { ...headers, Authorization: `Bearer ${token}` },
-      cf: { cacheTtl: 20, cacheEverything: true },
-    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
-  }
-
-  if (!response.ok) throw new ProviderHttpError(response.status, "opensky");
+  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } }, OPEN_SKY_STATES_TIMEOUT_MS, "opensky", "states");
+  if (!response.ok) throw new ProviderHttpError(response.status, "opensky", "states");
   const result = normalizeOpenSkyStates(await response.json());
   result.authMode = authMode;
   return result;
 }
 
+async function fetchOpenSky(lat: number, lon: number, radiusNm: number, env: Env): Promise<ProviderResult> {
+  const url = openSkyStateUrl(lat, lon, radiusNm);
+  const authMode = openSkyMode(env);
+  if (authMode === "disabled") throw new Error("opensky disabled");
+
+  if (authMode === "anonymous") {
+    return fetchOpenSkyStates(url, { Accept: "application/json" }, "anonymous");
+  }
+
+  // OAuth is preferred when configured. If only the OAuth token broker is slow or
+  // unavailable, fall back to OpenSky's supported anonymous mode before leaving
+  // the provider entirely. This avoids a cold-start token timeout turning the
+  // whole layer into Unavailable.
+  let token: string | null = null;
+  try {
+    token = await getOpenSkyToken(env);
+  } catch (error) {
+    if (error instanceof ProviderTimeoutError || (error instanceof ProviderHttpError && error.phase === "oauth-token")) {
+      return fetchOpenSkyStates(url, { Accept: "application/json" }, "anonymous-fallback");
+    }
+    throw error;
+  }
+
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    return await fetchOpenSkyStates(url, headers, "oauth");
+  } catch (error) {
+    if (error instanceof ProviderHttpError && error.status === 401) {
+      openSkyTokenCache = null;
+      const refreshed = await getOpenSkyToken(env);
+      if (refreshed) {
+        return fetchOpenSkyStates(url, { Accept: "application/json", Authorization: `Bearer ${refreshed}` }, "oauth");
+      }
+    }
+    throw error;
+  }
+}
+
 async function fetchAdsbLol(lat: number, lon: number, radiusNm: number): Promise<ProviderResult> {
   const response = await fetchWithTimeout(buildAdsbLolUrl(lat, lon, radiusNm), {
-    headers: { Accept: "application/json" },
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "WorldSelect/5.1 (+https://world-select.pages.dev)",
+    },
     cf: { cacheTtl: 20, cacheEverything: true },
-  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
-  if (!response.ok) throw new ProviderHttpError(response.status, "adsb.lol");
+  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } }, ADSB_LOL_TIMEOUT_MS, "adsb.lol", "snapshot");
+  if (!response.ok) throw new ProviderHttpError(response.status, "adsb.lol", "snapshot");
   return normalizeAdsbLol(await response.json());
 }
 
@@ -143,21 +214,26 @@ function snapshotKey(origin: string, lat: number, lon: number, radius: number) {
   return new Request(`${origin}/__world-select-cache/aircraft/${bucketLat}/${bucketLon}/${radiusBucket}`, { method: "GET" });
 }
 
-function attemptFailure(provider: ProviderName, error: unknown): Attempt {
-  if (error instanceof ProviderHttpError) return { provider, ok: false, status: error.status, message: `HTTP ${error.status}` };
-  if (error instanceof Error && error.name === "AbortError") return { provider, ok: false, message: "timeout" };
-  return { provider, ok: false, message: "unavailable" };
+function attemptFailure(provider: ProviderName, error: unknown, elapsedMs: number): Attempt {
+  if (error instanceof ProviderHttpError) {
+    return { provider, ok: false, status: error.status, message: `HTTP ${error.status}`, phase: error.phase, elapsedMs };
+  }
+  if (error instanceof ProviderTimeoutError) {
+    return { provider, ok: false, message: "timeout", phase: error.phase, elapsedMs };
+  }
+  return { provider, ok: false, message: "unavailable", elapsedMs };
 }
 
 async function tryProvider(provider: ProviderName, lat: number, lon: number, radius: number, env: Env, attempts: Attempt[]) {
+  const startedAt = Date.now();
   try {
     const result = provider === "opensky"
       ? await fetchOpenSky(lat, lon, radius, env)
       : await fetchAdsbLol(lat, lon, radius);
-    attempts.push({ provider, ok: true });
+    attempts.push({ provider, ok: true, elapsedMs: Date.now() - startedAt, authMode: result.authMode });
     return result;
   } catch (error) {
-    attempts.push(attemptFailure(provider, error));
+    attempts.push(attemptFailure(provider, error, Date.now() - startedAt));
     return null;
   }
 }
@@ -208,12 +284,9 @@ export const onRequestGet = async (context: { request: Request; env: Env; waitUn
   const startedAt = Date.now();
   const attempts: Attempt[] = [];
   const modeForOpenSky = openSkyMode(context.env);
-  const oauthAvailable = Boolean(context.env.OPENSKY_CLIENT_ID && context.env.OPENSKY_CLIENT_SECRET) && modeForOpenSky === "oauth";
-  const providerOrder: ProviderName[] = oauthAvailable
-    ? ["opensky", "adsb.lol"]
-    : modeForOpenSky === "anonymous"
-      ? ["adsb.lol", "opensky"]
-      : ["adsb.lol"];
+  const providerOrder: ProviderName[] = modeForOpenSky === "disabled"
+    ? ["adsb.lol"]
+    : ["opensky", "adsb.lol"];
 
   let firstNonEmptyStale: ProviderResult | null = null;
   let selected: ProviderResult | null = null;
@@ -262,6 +335,7 @@ export const onRequestGet = async (context: { request: Request; env: Env; waitUn
     }
     return json({
       error: "aircraft providers unavailable",
+      openSkyAuthMode: modeForOpenSky,
       providerOrder,
       attempts,
       retryAfterSeconds: 30,

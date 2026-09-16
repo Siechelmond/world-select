@@ -11,7 +11,7 @@ const streetApi = fs.readFileSync(path.join(root, 'functions/api/street.ts'), 'u
 const checks = [
   ['adsb.lol uses documented lat/lon/dist route', aircraftCore.includes('/v2/lat/${lat.toFixed(3)}/lon/${lon.toFixed(3)}/dist/${radius}')],
   ['legacy adsb.lol /v2/point route removed', !aircraftCore.includes('/v2/point/') && !aircraftApi.includes('/v2/point/')],
-  ['aircraft API has only OpenSky + adsb.lol provider contract', aircraftApi.includes('["opensky", "adsb.lol"]') && aircraftApi.includes('["adsb.lol", "opensky"]')],
+  ['aircraft API has only OpenSky + adsb.lol provider contract', aircraftApi.includes('["opensky", "adsb.lol"]') && !aircraftApi.includes('airplanes.live') && !aircraftApi.includes('adsb.fi')],
   ['aircraft API can return stale/degraded cache', aircraftApi.includes('degraded: true') && aircraftApi.includes('cached: true')],
   ['client consumes aircraft feed metadata', aircraftClient.includes('AircraftFeedMeta') && component.includes('setAircraftMeta(meta)')],
   ['stale aircraft are not projected as fresh motion', component.includes('spatial.dataState !== "STALE"')],

@@ -1,4 +1,4 @@
-> Current stabilization: **v5.0 Live Layer Foundation**
+> Current stabilization: **v5.1 Aircraft Recovery**
 
 # World Select
 
@@ -117,6 +117,15 @@ See `docs/UAT_V4_3_STABILIZATION.md`.
 - Adds lightweight session annotations / location markers without introducing a database.
 - Existing earthquake and satellite data paths remain unchanged.
 
+
+
+## v5.1 - Aircraft Recovery
+
+- OpenSky OAuth and state-vector timeouts are separated and lengthened for Cloudflare cold starts.
+- OAuth-token failure can fall back to supported anonymous OpenSky before the regional adsb.lol fallback.
+- `auto` mode no longer disables OpenSky when credentials are absent.
+- Aircraft status diagnostics expose safe phase + latency metadata, never secrets.
+- See `docs/UAT_V5_1_AIRCRAFT_RECOVERY.md`.
 
 ## v5.0 - Live Layer Foundation
 

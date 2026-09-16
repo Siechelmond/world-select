@@ -21,7 +21,7 @@ export type ProviderResult = {
   total: number;
   provider: "adsb.lol" | "opensky";
   coverage: "regional";
-  authMode?: "anonymous" | "oauth";
+  authMode?: "anonymous" | "oauth" | "anonymous-fallback";
 };
 
 export function bboxForRadius(lat: number, lon: number, radiusNm: number) {

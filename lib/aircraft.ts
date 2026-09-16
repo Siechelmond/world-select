@@ -28,7 +28,7 @@ type AircraftApiResponse = {
   cached?: boolean;
   sourceAgeSeconds?: number;
   latencyMs?: number;
-  authMode?: "anonymous" | "oauth";
+  authMode?: "anonymous" | "oauth" | "anonymous-fallback";
   region?: { latitude: number; longitude: number; radiusNm: number };
 };
 
@@ -43,7 +43,7 @@ export type AircraftFeedMeta = {
   sourceAgeSeconds: number | null;
   latencyMs: number | null;
   total: number;
-  authMode: "anonymous" | "oauth" | null;
+  authMode: "anonymous" | "oauth" | "anonymous-fallback" | null;
   region: { latitude: number; longitude: number; radiusNm: number } | null;
 };
 
