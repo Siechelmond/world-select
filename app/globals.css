@@ -214,20 +214,24 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 /* v3.1 stabilization */
 .layerRow.layerError { border-color: rgba(248,113,113,.35); background: rgba(127,29,29,.10); }
 .layerRow.layerError small { color: #fca5a5; }
-.streetViewer { position: fixed; z-index: 20; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(920px, calc(100vw - 36px)); height: min(650px, calc(100vh - 80px)); border-radius: 18px; padding: 14px; display: grid; grid-template-rows: auto auto 1fr auto auto; gap: 10px; }
-.streetHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.streetViewer { position: fixed; z-index: 4; inset: 0; width: 100vw; height: 100vh; border-radius: 0; padding: 92px 18px 66px; display: grid; grid-template-rows: auto auto 1fr auto auto; gap: 10px; background: #020617; }
+.streetHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; z-index: 1; }
 .streetHead strong { font-size: 11px; color: #cbd5e1; }
-.streetHead button { border: 0; background: transparent; color: #cbd5e1; font-size: 28px; cursor: pointer; }
-.streetFrame { position: relative; overflow: hidden; min-height: 260px; border-radius: 14px; background: rgba(2,6,23,.78); border: 1px solid var(--border); }
-.streetImage { position: absolute; inset: 0; background-position: center; background-size: contain; background-repeat: no-repeat; background-color: #020617; }
+.streetHead button { border: 1px solid rgba(148,163,184,.24); background: rgba(2,6,23,.72); color: #e2e8f0; width: 38px; height: 38px; border-radius: 50%; font-size: 24px; cursor: pointer; }
+.streetFrame { position: relative; overflow: hidden; min-height: 0; border-radius: 14px; background: rgba(2,6,23,.96); border: 1px solid var(--border); }
+.streetImage { position: absolute; inset: 0; background-position: center; background-size: cover; background-repeat: no-repeat; background-color: #020617; }
 .streetMessage { position: absolute; inset: 0; display: grid; place-content: center; gap: 8px; text-align: center; padding: 24px; color: #94a3b8; font-size: 12px; }
 .streetMessage strong { color: #e2e8f0; letter-spacing: .12em; }
 .streetControls { display: grid; grid-template-columns: 120px 1fr 120px; gap: 10px; align-items: center; text-align: center; font-size: 11px; color: #94a3b8; }
 .streetControls button { border: 1px solid rgba(103,232,249,.20); background: rgba(8,145,178,.12); color: #cffafe; border-radius: 9px; padding: 8px; cursor: pointer; }
 .streetControls button:disabled { opacity: .3; cursor: not-allowed; }
 .streetMeta { display: flex; justify-content: space-between; gap: 10px; color: #64748b; font-size: 9px; }
+.emptyActions { display: grid; gap: 8px; width: 100%; }
+.annotationButton { width: 100%; border: 1px solid rgba(251,146,60,.28); background: rgba(154,52,18,.16); color: #ffedd5; padding: 10px 12px; border-radius: 10px; cursor: pointer; }
+.annotationButton:hover { background: rgba(154,52,18,.26); }
+.annotationButton:disabled { opacity: .38; cursor: not-allowed; }
 @media (max-width: 780px) {
-  .streetViewer { left: 8px; right: 8px; top: auto; bottom: 66px; transform: none; width: auto; height: min(68vh, 620px); border-radius: 16px; }
+  .streetViewer { z-index: 4; inset: 0; width: 100vw; height: 100vh; padding: 72px 8px 58px; border-radius: 0; }
   .streetControls { grid-template-columns: 90px 1fr 90px; }
   .streetMeta { display: grid; }
 }
@@ -291,4 +295,17 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 .googleStreetPano > div:not(.streetMessage) { position: absolute !important; inset: 0; }
 @media (max-width: 780px) {
   .streetProviderSwitch button { padding: 7px 6px; font-size: 8px; }
+}
+
+
+/* v4.5 — integrated ground viewport */
+.streetViewer .streetProviderSwitch { z-index: 1; max-width: 460px; }
+.streetViewer .streetFrame { box-shadow: inset 0 0 0 1px rgba(255,255,255,.02); }
+.streetViewer .googleStreetPano { position: absolute; inset: 0; background: #020617; }
+.streetViewer .googleStreetPano > div:not(.streetMessage) { position: absolute !important; inset: 0; }
+.streetViewer + .mobileDock { z-index: 25; }
+@media (max-width: 780px) {
+  .streetViewer .streetProviderSwitch { max-width: none; }
+  .layers.mobileOpen, .inspector.mobileOpen, .timebar.mobileOpen { z-index: 30; }
+  .topbar { z-index: 31; }
 }

@@ -6,7 +6,7 @@ type AdsbAircraft = {
   squawk?: string | null; seen?: number; emergency?: string; category?: string;
 };
 
-type AdsbResponse = { ac?: AdsbAircraft[]; now?: number; total?: number; provider?: string };
+type AdsbResponse = { ac?: AdsbAircraft[]; now?: number; total?: number; provider?: string; stale?: boolean; degraded?: boolean };
 export type AircraftQuery = { latitude: number; longitude: number; radiusNm?: number };
 
 function providerSource(provider?: string) {
@@ -59,6 +59,7 @@ export async function fetchAircraftNear(query: AircraftQuery, signal?: AbortSign
         squawk: aircraft.squawk ?? null, emergency: aircraft.emergency ?? "none",
         category: aircraft.category ?? null, seenSeconds: Number(seenSeconds.toFixed(1)), queryRadiusNm: radiusNm,
         renderModel: "dead-reckoning between observed ADS-B updates",
+        feedState: payload.degraded || payload.stale ? "degraded-cached" : "live",
       },
     } satisfies SpatialEntity];
   });

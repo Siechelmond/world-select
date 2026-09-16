@@ -1,4 +1,4 @@
-> Current stabilization: **v4.2.4 Traffic Orbis**
+> Current stabilization: **v4.5 Integrated Ground Bundle**
 
 # World Select
 
@@ -107,3 +107,12 @@ See `docs/UAT_V4_3_STABILIZATION.md`.
 - TomTom traffic incidents overlay alongside flow
 - Lazy in-app Google Street View with KartaView fallback
 - See `docs/UAT_V4_4_EXPLORE.md`
+
+
+## v4.5 — Integrated Ground Bundle
+- Aircraft recovery: coarser regional edge snapshots, stale-cache fallback, longer provider timeouts, no permanent client lockout after one transient failure.
+- Aircraft keeps plane glyphs, selected-only label/trail, bounded dead-reckoning between observed ADS-B samples.
+- Traffic uses the TomTom Orbis `dark` relative-flow style plus incident overlay for a clearer green/amber/red operational view.
+- Google Street View now takes over the main Earth viewport instead of opening as a modal card; KartaView remains an in-app fallback.
+- Adds lightweight session annotations / location markers without introducing a database.
+- Existing earthquake and satellite data paths remain unchanged.

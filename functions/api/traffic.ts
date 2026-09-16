@@ -16,7 +16,7 @@ async function fetchTomTomTile(apiKey: string, z: number, x: number, y: number, 
   const path = kind === 'incidents' ? 'incidents/raster/tile' : 'flow/raster/tile';
   const upstream = new URL(`https://api.tomtom.com/maps/orbis/traffic/${path}/${z}/${x}/${y}`);
   upstream.searchParams.set('apiVersion', '2');
-  upstream.searchParams.set('style', 'light');
+  upstream.searchParams.set('style', 'dark');
   if (kind === 'flow') upstream.searchParams.set('tileSize', '256');
 
   const controller = new AbortController();
@@ -110,7 +110,7 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
       status: 200,
       headers: {
         'Content-Type': response.headers.get('Content-Type') || 'image/png',
-        'Cache-Control': 'public, max-age=20, s-maxage=30',
+        'Cache-Control': 'public, max-age=25, s-maxage=45, stale-while-revalidate=90',
         'X-World-Select-Source': kind === 'incidents' ? 'TomTom Orbis Traffic Incidents v2' : 'TomTom Orbis Traffic Flow v2',
       },
     });
