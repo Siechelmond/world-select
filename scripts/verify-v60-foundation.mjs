@@ -16,7 +16,7 @@ const checks = [
   ['Street always exposes Back to Globe', component.includes('← Back to Globe')],
   ['camera pose is captured/restored around Street', component.includes('captureCameraPose') && component.includes('restoreCameraPose')],
   ['satellite core includes outer GNSS/GEO regimes', ['GPS-OPS', 'GLO-OPS', 'GALILEO', 'GEO'].every((name) => satellites.includes(name))],
-  ['Starlink is dense opt-in', satellites.includes("catalog === 'dense'") && satellites.includes("{ name: 'STARLINK', limit: 1800 }")],
+  ['Starlink is dense opt-in', satellites.includes("catalog === 'dense'") && satellites.includes("{ name: 'STARLINK'")],
   ['Satellite CORE/DENSE control is visible', component.includes('satelliteCatalogSwitch') && component.includes('DENSE')],
   ['Google Street lookup is separated from the renderer', street.includes('findGoogleStreetCoverage') && street.includes('StreetViewService')],
 ];

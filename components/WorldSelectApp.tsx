@@ -43,7 +43,6 @@ export default function WorldSelectApp() {
   const annotationIdsRef = useRef(new Set<string>());
   const trafficLayerRef = useRef<any>(null);
   const trafficIncidentLayerRef = useRef<any>(null);
-  const aircraftCoverageRef = useRef<any>(null);
   const streetCameraPoseRef = useRef<CesiumCameraPose | null>(null);
   const streetRequestRef = useRef(0);
 
@@ -100,7 +99,10 @@ export default function WorldSelectApp() {
   }, [viewCenter.latitude, viewCenter.longitude, cameraHeight]);
   const aircraftRadiusNm = cameraHeight < 120_000 ? 70 : cameraHeight < 1_000_000 ? 130 : 220;
   const animateAircraft = cameraHeight < 900_000;
-  const streetPoint = selected && selected.kind !== "celestial-body"
+  // Street is map-centered. Selection must never silently redirect a Street lookup
+  // to a satellite/aircraft subpoint that the user did not choose as a ground target.
+  const streetPoint = viewCenter;
+  const annotationPoint = selected && selected.kind !== "celestial-body"
     ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
     : viewCenter;
 
@@ -235,16 +237,20 @@ export default function WorldSelectApp() {
       }
     };
 
-    void (async () => {
-      const ok = await load(true);
-      if (!ok || disposed) return;
-      timer = window.setInterval(() => { void load(false); }, AIRCRAFT_REFRESH_MS);
-    })();
+    const schedule = async (initial: boolean) => {
+      const ok = await load(initial);
+      if (disposed) return;
+      // Never overlap slow provider calls. After a cold failure keep retrying in the
+      // background instead of stopping permanently until the user presses Retry.
+      const delay = ok ? AIRCRAFT_REFRESH_MS : 60_000;
+      timer = window.setTimeout(() => { void schedule(false); }, delay);
+    };
+    void schedule(true);
 
     return () => {
       disposed = true;
       controller?.abort();
-      if (timer !== undefined) window.clearInterval(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [aircraftLayer, aircraftAvailable, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, reloadNonce.aircraft, setLayerError, isMobile]);
 
@@ -375,29 +381,10 @@ export default function WorldSelectApp() {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
     if (!viewer || !Cesium) return;
 
-    if (aircraftCoverageRef.current) {
-      viewer.entities.remove(aircraftCoverageRef.current);
-      aircraftCoverageRef.current = null;
-    }
-
     if (viewMode !== "earth" || !aircraftLayer || !aircraftAvailable) {
       clearIds(aircraftIdsRef.current);
       return;
     }
-
-    // Make the real query footprint explicit. Aircraft data is regional, not a fake global layer.
-    aircraftCoverageRef.current = viewer.entities.add({
-      id: "aircraft-query-coverage",
-      position: Cesium.Cartesian3.fromDegrees(aircraftQueryCenter.longitude, aircraftQueryCenter.latitude, 0),
-      ellipse: {
-        semiMajorAxis: aircraftRadiusNm * 1852,
-        semiMinorAxis: aircraftRadiusNm * 1852,
-        material: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.035),
-        outline: true,
-        outlineColor: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.35),
-        height: 0,
-      },
-    });
 
     const liveIds = new Set<string>();
     const selectedAircraftId = selected?.kind === "aircraft" ? selected.id : null;
@@ -485,12 +472,6 @@ export default function WorldSelectApp() {
       }
     }
 
-    return () => {
-      if (aircraftCoverageRef.current) {
-        viewer.entities.remove(aircraftCoverageRef.current);
-        aircraftCoverageRef.current = null;
-      }
-    };
   }, [aircraft, aircraftLayer, aircraftAvailable, viewMode, clearIds, cesiumReady, nowTick, animateAircraft, cameraHeight, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, selected]);
 
   useEffect(() => {
@@ -750,7 +731,7 @@ export default function WorldSelectApp() {
     const label = window.prompt("Annotation label", "Marker");
     if (!label?.trim()) return;
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setAnnotations((current) => [...current, { id, latitude: streetPoint.latitude, longitude: streetPoint.longitude, label: label.trim().slice(0, 48) }]);
+    setAnnotations((current) => [...current, { id, latitude: annotationPoint.latitude, longitude: annotationPoint.longitude, label: label.trim().slice(0, 48) }]);
   };
   const resetTime = () => { setTimeOffsetDays(0); setNowTick(Date.now()); };
   const retryLayer = (layer: "earthquakes" | "satellites" | "aircraft" | "traffic") => {
@@ -835,7 +816,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v6.0 foundation · modular viewer · street preflight · satellite CORE/DENSE</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v6.0.1 foundation · ground detail · street center · satellite CORE/DENSE</span>
       </footer>
     </main>
   );
@@ -874,7 +855,7 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, followAircraft, onTo
   else if (entity.kind === "aircraft") rows.push(["Provider", String(entity.properties.provider ?? "—")], ["Registration", String(entity.properties.registration ?? "—")], ["Type", String(entity.properties.aircraftType ?? "—")], ["Altitude", `${entity.properties.altitudeFt ?? "—"} ft`], ["Speed", `${entity.properties.groundSpeedKt ?? "—"} kt`], ["Track", `${entity.properties.trackDeg ?? "—"}°`], ["Squawk", String(entity.properties.squawk ?? "—")], ["Motion", String(entity.properties.displayPosition ?? entity.properties.renderModel ?? "—")]);
   else if (entity.kind === "celestial-body") { rows.push(["Distance", `${entity.properties.heliocentricDistanceAu ?? 0} AU`]); if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]); }
   rows.push(["Time", new Date(entity.observedAt).toLocaleString()], ["State", entity.dataState], ["Source", entity.source.label]);
-  return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" ? <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button> : <button className="streetButton" onClick={onStreet}>Street imagery</button>}<button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
+  return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" ? <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button> : <button className="streetButton" onClick={onStreet}>Street at map center</button>}<button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
 }
 
 function StreetViewer({ provider, googleApiKey, googlePanoId, state, photo, index, total, error, point, onClose, onPrevious, onNext, onUseGoogle, onUseKartaView }: { provider: StreetProvider; googleApiKey: string; googlePanoId: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void }) {

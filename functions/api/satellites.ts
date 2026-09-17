@@ -9,10 +9,13 @@ const CORE_GROUPS: CelesTrakGroup[] = [
   { name: 'GEO' },
 ];
 
-// DENSE is intentionally opt-in because the Starlink shell is materially larger.
+// DENSE is intentionally opt-in. It adds multiple LEO constellations so the
+// mode still expands visibly if one large upstream group is temporarily unavailable.
 const DENSE_GROUPS: CelesTrakGroup[] = [
   ...CORE_GROUPS,
-  { name: 'STARLINK', limit: 1800 },
+  { name: 'IRIDIUM-NEXT', limit: 100 },
+  { name: 'ONEWEB', limit: 450 },
+  { name: 'STARLINK', limit: 900 },
 ];
 
 function splitRecords(text: string) {
@@ -40,13 +43,20 @@ export const onRequestGet = async ({ request }: { request: Request }) => {
   }));
 
   const byNorad = new Map<string, { name: string; line1: string; line2: string }>();
-  for (const result of responses) {
-    if (result.status !== 'fulfilled') continue;
+  const okGroups: string[] = [];
+  const failedGroups: string[] = [];
+  responses.forEach((result, index) => {
+    const group = groups[index];
+    if (result.status !== 'fulfilled') {
+      failedGroups.push(group.name);
+      return;
+    }
+    okGroups.push(group.name);
     for (const record of result.value) {
       const norad = record.line1.slice(2, 7).trim();
       if (norad && !byNorad.has(norad)) byNorad.set(norad, record);
     }
-  }
+  });
 
   if (!byNorad.size) return new Response('CelesTrak groups unavailable', { status: 502 });
   const text = Array.from(byNorad.values()).map((r) => `${r.name}\n${r.line1}\n${r.line2}`).join('\n') + '\n';
@@ -56,6 +66,8 @@ export const onRequestGet = async ({ request }: { request: Request }) => {
       'Cache-Control': 'public, max-age=3600, s-maxage=7200',
       'X-World-Select-Satellite-Count': String(byNorad.size),
       'X-World-Select-Satellite-Catalog': catalog,
+      'X-World-Select-Satellite-Groups': okGroups.join(','),
+      'X-World-Select-Satellite-Failed-Groups': failedGroups.join(','),
     },
   });
 };

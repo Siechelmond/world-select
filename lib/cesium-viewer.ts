@@ -1,7 +1,9 @@
 import { GEO_LABELS_EN } from '@/lib/geo-labels';
 
 const ESRI_WORLD_IMAGERY = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer';
+const ESRI_WORLD_STREET = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer';
 const OSM_TILES = 'https://tile.openstreetmap.org/';
+const GROUND_BASEMAP_HEIGHT_M = 650_000;
 
 export type ViewerLifecycle = {
   viewer: any;
@@ -37,14 +39,37 @@ export function createWorldViewer(input: {
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#020617');
   viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000) });
 
-  // Keyless, label-free satellite imagery first. OSM remains an automatic fallback.
+  // Earth uses imagery; Ground switches to a road/city basemap so the user can
+  // actually navigate at city/street scale. OSM is still the keyless fallback.
+  let earthLayer: any = null;
+  let groundLayer: any = null;
+  const applyBasemapMode = (height: number) => {
+    const ground = height < GROUND_BASEMAP_HEIGHT_M;
+    if (earthLayer) earthLayer.show = !ground;
+    if (groundLayer) groundLayer.show = ground;
+  };
+
   void Cesium.ArcGisMapServerImageryProvider.fromUrl(ESRI_WORLD_IMAGERY)
     .then((provider: any) => {
-      if (!viewer.isDestroyed()) viewer.imageryLayers.addImageryProvider(provider, 0);
+      if (viewer.isDestroyed()) return;
+      earthLayer = viewer.imageryLayers.addImageryProvider(provider, 0);
+      applyBasemapMode(viewer.camera.positionCartographic?.height ?? 9_500_000);
     })
     .catch(() => {
       if (viewer.isDestroyed()) return;
-      viewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({ url: OSM_TILES }), 0);
+      earthLayer = viewer.imageryLayers.addImageryProvider(new Cesium.OpenStreetMapImageryProvider({ url: OSM_TILES }), 0);
+      applyBasemapMode(viewer.camera.positionCartographic?.height ?? 9_500_000);
+    });
+
+  void Cesium.ArcGisMapServerImageryProvider.fromUrl(ESRI_WORLD_STREET)
+    .then((provider: any) => {
+      if (viewer.isDestroyed()) return;
+      groundLayer = viewer.imageryLayers.addImageryProvider(provider);
+      applyBasemapMode(viewer.camera.positionCartographic?.height ?? 9_500_000);
+    })
+    .catch(() => {
+      // Ground detail is an enhancement; Earth imagery remains usable if it fails.
+      groundLayer = null;
     });
 
   for (const label of GEO_LABELS_EN) {
@@ -76,7 +101,10 @@ export function createWorldViewer(input: {
     const latitude = Cesium.Math.toDegrees(cartographic.latitude);
     const longitude = Cesium.Math.toDegrees(cartographic.longitude);
     const height = viewer.camera.positionCartographic?.height;
-    if ([latitude, longitude, height].every(Number.isFinite)) onViewChange({ latitude, longitude, height });
+    if ([latitude, longitude, height].every(Number.isFinite)) {
+      applyBasemapMode(height);
+      onViewChange({ latitude, longitude, height });
+    }
   };
 
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
