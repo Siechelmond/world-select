@@ -13,6 +13,8 @@ const mapStack = read('../runtime/maps/controller.ts');
 const routeApi = read('../functions/api/route.ts');
 const routeService = read('../runtime/app/route-service.ts');
 const app = read('../components/WorldSelectApp.tsx');
+const runtimeApp = read('../runtime/app/application.ts');
+const runtimeTypes = read('../runtime/types.ts');
 
 check('global aircraft uses direct OpenSky states/all', aircraftApi.includes('scope === "global"') && aircraftApi.includes('states/all'));
 check('configured gateway no longer shadows direct OpenSky', aircraftApi.includes('if (modeForOpenSky !== "disabled")') && aircraftApi.indexOf('tryProvider("opensky"') < aircraftApi.indexOf('fallbackProviders'));
@@ -29,6 +31,18 @@ check('default map stack is keyless and Google is not loaded at boot', mapStack.
 check('keyless OSRM route proxy exists', routeApi.includes('routing.openstreetmap.de') && routeApi.includes("'foot' | 'car' | 'bike'"));
 check('route flythrough is a runtime camera operation', routeService.includes('requestAnimationFrame') && routeService.includes('camera.setView'));
 check('directions UI exposes WALK/DRIVE/BIKE + FLY', app.includes('>WALK<') && app.includes('>DRIVE<') && app.includes('>BIKE<') && app.includes('>FLY<'));
+
+check('aircraft keeps separate civilian and military last-good stores', aircraftLayer.includes('civilianRecords') && aircraftLayer.includes('militaryRecords') && aircraftLayer.includes('rebuildMergedRecords'));
+check('aircraft startup has a connecting grace instead of immediate unavailable', aircraftLayer.includes('CONNECT_GRACE_MS') && aircraftLayer.includes("this.stats.state = connecting ? 'loading' : 'unavailable'"));
+check('aircraft degraded ALL reports retained source cohorts', aircraftLayer.includes('retaining civilian last-good') && aircraftLayer.includes('ALL currently'));
+check('traffic imagery attaches before advisory status probe completes', trafficLayer.includes('Attach first, validate second') && trafficLayer.includes('this.attachLayers();'));
+check('traffic probe transport failure keeps tile layer active', trafficLayer.includes('traffic tiles remain active and self-validate in the viewport'));
+check('street target follows selected spatial entity', app.includes('selected && selected.kind !== "celestial-body"') && app.includes('Street near entity'));
+check('aircraft inspector keeps street action alongside follow', app.includes('Follow aircraft') && app.includes('Street near entity'));
+check('startup stages live layers after first paint', app.includes('Stage live layers') && app.includes('setLayerEnabled("traffic", true), 1400'));
+check('ISS hover preview is delayed and embeds the Sen live stream', app.includes('SEN_ISS_LIVE_VIDEO_ID') && app.includes('youtube-nocookie.com/embed') && app.includes('setTimeout(() => setReady(true), 500)'));
+check('runtime publishes hover entity without React fleet rerenders', runtimeApp.includes('ScreenSpaceEventType.MOUSE_MOVE') && runtimeTypes.includes('hoveredScreen'));
+check('aircraft route field is honest when no enrichment exists', app.includes('Not available from current ADS-B source'));
 
 let failed = 0;
 for (const [label, pass] of checks) {

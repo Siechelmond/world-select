@@ -29,7 +29,7 @@ invariant((runtimeSource.match(/new this\.Cesium\.Viewer/g) ?? []).length === 1,
 invariant(runtimeSource.includes('new EarthquakeLayer()') && runtimeSource.includes('new SatelliteLayer()') && runtimeSource.includes('new AircraftLayer()') && runtimeSource.includes('new TrafficLayer()'), 'all four F1 workload classes must be registered');
 
 const aircraftSource = readFileSync(new URL('../runtime/layers/aircraft.ts', import.meta.url), 'utf8');
-invariant(aircraftSource.includes("this.stats.state = this.records.size ? 'degraded' : 'unavailable'"), 'aircraft must distinguish last-good degraded from cold unavailable');
+invariant(aircraftSource.includes("this.stats.state = 'degraded'") && aircraftSource.includes("this.stats.state = connecting ? 'loading' : 'unavailable'") && aircraftSource.includes('retaining ${this.civilianRecords.size} civilian + ${this.militaryRecords.size} military last-good records'), 'aircraft must distinguish retained last-good degraded from connecting/cold unavailable');
 invariant(aircraftSource.includes("scope: view.height >= 2_500_000 ? 'global' : 'regional'"), 'aircraft must switch to a worldwide request on globe views');
 invariant(aircraftSource.includes("fetchMilitarySnapshot"), 'aircraft runtime must merge the independent military feed');
 invariant(aircraftSource.includes("setDisplayMode"), 'aircraft runtime must expose all/civilian/military filtering');

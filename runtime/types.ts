@@ -44,6 +44,8 @@ export type RuntimeLayerStats = {
 export type RuntimeSnapshot = {
   camera: CameraView;
   selected: SpatialEntity | null;
+  hovered: SpatialEntity | null;
+  hoveredScreen: { x: number; y: number } | null;
   followAircraft: boolean;
   mapSource: string;
   mapError: string | null;

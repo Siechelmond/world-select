@@ -376,3 +376,18 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .directionsCard { margin-top: 9px; }
   .directionsActions { grid-template-columns: 1fr 1fr; }
 }
+
+
+/* ISS hover live preview: created only after a deliberate 500 ms hover. */
+.issLiveHover { position: fixed; width: 322px; padding: 10px; border-radius: 14px; z-index: 22; pointer-events: none; box-shadow: 0 20px 55px rgba(0,0,0,.42); }
+.issLiveHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.issLiveHead span { display: grid; gap: 2px; }
+.issLiveHead b { font-size: 11px; letter-spacing: .08em; color: #cffafe; }
+.issLiveHead small { font-size: 8px; color: #94a3b8; }
+.issLiveHead em { font-style: normal; font-size: 8px; font-weight: 900; letter-spacing: .08em; color: #fecaca; border: 1px solid rgba(248,113,113,.4); background: rgba(127,29,29,.3); border-radius: 999px; padding: 4px 7px; }
+.issLiveFrame { aspect-ratio: 16 / 9; overflow: hidden; border-radius: 10px; background: #020617; border: 1px solid rgba(103,232,249,.18); }
+.issLiveFrame iframe { display: block; width: 100%; height: 100%; border: 0; pointer-events: none; }
+.issLiveLoading { height: 100%; display: grid; place-items: center; padding: 18px; color: #94a3b8; font-size: 10px; text-align: center; }
+.issLiveMeta { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-top: 7px; color: #94a3b8; font-size: 8px; }
+.issLiveMeta a { color: #67e8f9; text-decoration: none; pointer-events: auto; }
+@media (max-width: 760px) { .issLiveHover { width: min(310px, calc(100vw - 20px)); left: 10px !important; top: 100px !important; } }

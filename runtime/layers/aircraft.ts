@@ -16,6 +16,8 @@ import {
 
 const REFRESH_MS = 30_000;
 const INTERPOLATION_MS = 500;
+const CONNECT_GRACE_MS = 75_000;
+const CONNECT_RETRY_MS = 20_000;
 
 type AircraftDisplayMode = 'all' | 'civilian' | 'military';
 type Query = { latitude: number; longitude: number; radiusNm: number; scope: 'global' | 'regional' };
@@ -73,6 +75,11 @@ export class AircraftLayer implements RuntimeLayer {
   private selectedLabel: any = null;
   private selectedLabelId: string | null = null;
   private records = new Map<string, SpatialEntity>();
+  private civilianRecords = new Map<string, SpatialEntity>();
+  private militaryRecords = new Map<string, SpatialEntity>();
+  private civilianMeta: AircraftFeedMeta | null = null;
+  private militaryMeta: AircraftFeedMeta | null = null;
+  private connectStartedAt: number | null = null;
   private billboards = new Map<string, any>();
   private visibleIds: string[] = [];
   private query: Query = { latitude: 48.2082, longitude: 16.3738, radiusNm: 220, scope: 'global' };
@@ -319,10 +326,22 @@ export class AircraftLayer implements RuntimeLayer {
     this.refreshTimer = window.setTimeout(() => void this.refresh(false), delay);
   }
 
-  private mergeSnapshots(civilian: { entities: SpatialEntity[]; meta: AircraftFeedMeta } | null, military: { entities: SpatialEntity[]; meta: AircraftFeedMeta } | null) {
+  private replaceSourceStore(source: 'civilian' | 'military', snapshot: { entities: SpatialEntity[]; meta: AircraftFeedMeta }) {
     const next = new Map<string, SpatialEntity>();
-    for (const item of civilian?.entities ?? []) next.set(item.id, item);
-    for (const item of military?.entities ?? []) {
+    for (const item of snapshot.entities.slice(0, BUDGETS.maxMaterializedRecords)) next.set(item.id, item);
+    if (source === 'civilian') {
+      this.civilianRecords = next;
+      this.civilianMeta = snapshot.meta;
+    } else {
+      this.militaryRecords = next;
+      this.militaryMeta = snapshot.meta;
+    }
+  }
+
+  private rebuildMergedRecords() {
+    const next = new Map<string, SpatialEntity>();
+    for (const item of this.civilianRecords.values()) next.set(item.id, item);
+    for (const item of this.militaryRecords.values()) {
       const existing = next.get(item.id);
       if (existing) {
         const existingTime = Date.parse(existing.observedAt);
@@ -338,7 +357,7 @@ export class AircraftLayer implements RuntimeLayer {
     }
     this.records = new Map(Array.from(next.entries()).slice(0, BUDGETS.maxMaterializedRecords));
     this.lastMilitaryCount = Array.from(this.records.values()).filter(isMilitary).length;
-    this.lastMeta = civilian?.meta ?? military?.meta ?? null;
+    this.lastMeta = this.civilianMeta ?? this.militaryMeta ?? null;
     if (this.selectedId) {
       const selected = this.records.get(this.selectedId);
       if (selected) this.appendObservedTrail(selected);
@@ -347,14 +366,28 @@ export class AircraftLayer implements RuntimeLayer {
     this.rebuildVisibleCohort();
   }
 
+  private mergeSnapshots(civilian: { entities: SpatialEntity[]; meta: AircraftFeedMeta } | null, military: { entities: SpatialEntity[]; meta: AircraftFeedMeta } | null) {
+    // Each source owns its own last-good store. A successful military refresh must
+    // never replace retained civilian aircraft, and a regional civilian fallback
+    // must never erase the global military cohort. This is the core ALL contract.
+    if (civilian?.entities.length) this.replaceSourceStore('civilian', civilian);
+    if (military?.entities.length) this.replaceSourceStore('military', military);
+    this.rebuildMergedRecords();
+  }
+
   private async refresh(initial: boolean) {
     if (!this.context || !this.stats.enabled || this.destroyed) return;
     this.controller?.abort();
     this.controller = new AbortController();
     const signal = this.controller.signal;
     this.stats.lastAttemptAt = new Date().toISOString();
-    if (initial && !this.records.size) this.stats.state = 'loading';
-    this.stats.error = null;
+    if (initial && !this.records.size) {
+      this.connectStartedAt ??= Date.now();
+      this.stats.state = 'loading';
+      this.stats.error = 'Connecting to ADS-B providers…';
+    } else {
+      this.stats.error = null;
+    }
     this.publish();
 
     const civilianPromise = fetchAircraftSnapshot({
@@ -368,44 +401,71 @@ export class AircraftLayer implements RuntimeLayer {
     const [civilianResult, militaryResult] = await Promise.allSettled([civilianPromise, militaryPromise]);
     if (this.destroyed || !this.stats.enabled || signal.aborted) return;
 
-    const civilian = civilianResult.status === 'fulfilled' ? civilianResult.value : null;
-    const military = militaryResult.status === 'fulfilled' ? militaryResult.value : null;
-    const civilianError = civilianResult.status === 'rejected' ? (civilianResult.reason instanceof Error ? civilianResult.reason.message : 'civilian provider unavailable') : null;
-    const militaryError = militaryResult.status === 'rejected' ? (militaryResult.reason instanceof Error ? militaryResult.reason.message : 'military provider unavailable') : null;
+    const civilian = civilianResult.status === 'fulfilled' && civilianResult.value.entities.length ? civilianResult.value : null;
+    const military = militaryResult.status === 'fulfilled' && militaryResult.value.entities.length ? militaryResult.value : null;
+    const civilianError = civilianResult.status === 'rejected'
+      ? (civilianResult.reason instanceof Error ? civilianResult.reason.message : 'civilian provider unavailable')
+      : civilianResult.value.entities.length ? null : 'civilian provider returned no positioned aircraft';
+    const militaryError = militaryResult.status === 'rejected'
+      ? (militaryResult.reason instanceof Error ? militaryResult.reason.message : 'military provider unavailable')
+      : militaryResult.value.entities.length ? null : 'military provider returned no positioned aircraft';
 
-    if (!(civilian?.entities.length || military?.entities.length)) {
+    if (!(civilian || military)) {
       const message = [civilianError, militaryError].filter(Boolean).join(' · ') || 'No positioned aircraft returned';
-      this.stats.state = this.records.size ? 'degraded' : 'unavailable';
-      this.stats.error = this.records.size ? `${message} · keeping last valid aircraft snapshot` : message;
-      if (!this.records.size) this.lastMeta = null;
+      const hasLastGood = this.civilianRecords.size > 0 || this.militaryRecords.size > 0;
+      if (hasLastGood) {
+        this.rebuildMergedRecords();
+        this.stats.state = 'degraded';
+        this.stats.error = `${message} · retaining ${this.civilianRecords.size} civilian + ${this.militaryRecords.size} military last-good records`;
+        this.publish();
+        this.scheduleRefresh(REFRESH_MS);
+        return;
+      }
+
+      this.connectStartedAt ??= Date.now();
+      const connecting = Date.now() - this.connectStartedAt < CONNECT_GRACE_MS;
+      this.stats.state = connecting ? 'loading' : 'unavailable';
+      this.stats.error = connecting ? `${message} · still connecting, retrying` : message;
+      if (!connecting) this.lastMeta = null;
       this.publish();
-      this.scheduleRefresh(this.records.size ? REFRESH_MS : 30_000);
+      this.scheduleRefresh(connecting ? CONNECT_RETRY_MS : REFRESH_MS);
       return;
     }
 
+    const retainedCivilian = !civilian && this.civilianRecords.size > 0;
+    const retainedMilitary = !military && this.militaryRecords.size > 0;
     this.mergeSnapshots(civilian, military);
+    if (this.records.size) this.connectStartedAt = null;
+
     const requestedGlobal = this.query.scope === 'global';
-    const civilianGlobal = civilian?.meta.coverage === 'worldwide';
-    const anyStale = Boolean(civilian?.meta.stale || civilian?.meta.degraded || military?.meta.stale || military?.meta.degraded);
+    const civilianGlobal = this.civilianMeta?.coverage === 'worldwide';
+    const anyStale = Boolean(
+      this.civilianMeta?.stale || this.civilianMeta?.degraded ||
+      this.militaryMeta?.stale || this.militaryMeta?.degraded ||
+      retainedCivilian || retainedMilitary,
+    );
     const incompleteGlobal = requestedGlobal && !civilianGlobal;
     const degraded = anyStale || incompleteGlobal || Boolean(civilianError) || Boolean(militaryError);
     this.stats.state = degraded ? 'degraded' : 'live';
     this.stats.lastSuccessAt = new Date().toISOString();
+    const hasCivilian = this.civilianRecords.size > 0;
+    const hasMilitary = this.militaryRecords.size > 0;
     this.stats.provenance = {
-      provider: civilian?.meta.provider
-        ? `${civilian.meta.provider}${military?.entities.length ? ' + adsb.lol military' : ''}`
+      provider: hasCivilian
+        ? `${this.civilianMeta?.provider ?? 'civilian ADS-B'}${hasMilitary ? ' + adsb.lol military' : ''}`
         : 'adsb.lol military',
-      coverage: civilianGlobal ? 'worldwide' : civilian?.meta.coverage ?? 'worldwide',
+      coverage: civilianGlobal ? 'worldwide' : this.civilianMeta?.coverage ?? 'worldwide',
       observedAt: this.stats.lastSuccessAt,
-      sourceAgeSeconds: civilian?.meta.sourceAgeSeconds ?? military?.meta.sourceAgeSeconds ?? null,
-      cached: Boolean(civilian?.meta.cached || military?.meta.cached),
-      authMode: civilian?.meta.authMode ?? null,
+      sourceAgeSeconds: this.civilianMeta?.sourceAgeSeconds ?? this.militaryMeta?.sourceAgeSeconds ?? null,
+      cached: Boolean(this.civilianMeta?.cached || this.militaryMeta?.cached || retainedCivilian || retainedMilitary),
+      authMode: this.civilianMeta?.authMode ?? null,
     };
     const notes: string[] = [];
-    if (incompleteGlobal) notes.push('Worldwide civilian feed unavailable; showing regional civilian + global military where available');
-    if (civilianError) notes.push(civilianError);
-    if (militaryError) notes.push(`Military: ${militaryError}`);
-    if (anyStale) notes.push('keeping last-good/stale provider data');
+    if (incompleteGlobal) notes.push('Worldwide civilian feed unavailable; showing retained/regional civilian + global military where available');
+    if (civilianError) notes.push(`${civilianError}${retainedCivilian ? ' · retaining civilian last-good' : ''}`);
+    if (militaryError) notes.push(`Military: ${militaryError}${retainedMilitary ? ' · retaining military last-good' : ''}`);
+    if (anyStale && !notes.length) notes.push('keeping last-good/stale provider data');
+    if (degraded) notes.push(`ALL currently ${this.civilianRecords.size} civilian + ${this.militaryRecords.size} military before dedupe`);
     this.stats.error = degraded ? notes.filter(Boolean).join(' · ') || 'Provider degraded' : null;
     this.publish();
     this.scheduleRefresh(REFRESH_MS);
@@ -423,6 +483,7 @@ export class AircraftLayer implements RuntimeLayer {
   disable() {
     this.stats.enabled = false;
     this.stats.state = 'idle';
+    this.connectStartedAt = null;
     this.controller?.abort();
     if (this.refreshTimer != null) window.clearTimeout(this.refreshTimer);
     if (this.interpolationTimer != null) window.clearInterval(this.interpolationTimer);
@@ -487,6 +548,10 @@ export class AircraftLayer implements RuntimeLayer {
     this.selectedLabel = null;
     this.selectedLabelId = null;
     this.records.clear();
+    this.civilianRecords.clear();
+    this.militaryRecords.clear();
+    this.civilianMeta = null;
+    this.militaryMeta = null;
     this.billboards.clear();
     this.context = null;
   }

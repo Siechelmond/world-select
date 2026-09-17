@@ -106,12 +106,16 @@ export class TrafficLayer implements RuntimeLayer {
       const status = await fetchTrafficStatus(this.controller.signal);
       if (this.destroyed || !this.stats.enabled) return;
       this.status = status;
-      if (!status.configured) throw new Error(status.message || 'Traffic source not configured');
+      if (!status.configured) {
+        this.removeLayers();
+        this.stats.state = 'unavailable';
+        this.stats.error = status.message || 'Traffic source not configured';
+        return;
+      }
 
-      // A status probe is only one tile. If the key is configured but that probe
-      // is temporarily rejected or slow, still attach the viewport-driven tile
-      // providers: Cesium can then request the tiles the user actually sees. Tile
-      // failures are isolated by onTileError and never replace the basemap.
+      // The status probe is advisory only. The viewport tile layer is already
+      // attached by enable(), so one slow/rejected z0 probe can never suppress
+      // traffic that is otherwise loadable in the visible viewport.
       this.attachLayers();
       this.stats.state = status.available ? 'live' : 'degraded';
       this.stats.count = 0;
@@ -126,8 +130,13 @@ export class TrafficLayer implements RuntimeLayer {
     } catch (reason: unknown) {
       if (this.controller?.signal.aborted || this.destroyed) return;
       const message = reason instanceof Error ? reason.message : 'Traffic status failed';
-      this.stats.state = this.flowLayer ? 'degraded' : 'unavailable';
-      this.stats.error = this.flowLayer ? `${message} · keeping loaded traffic tiles` : message;
+      // Keep the same fail-soft behavior that proved useful on main: a status
+      // endpoint failure must not remove or prevent the viewport imagery layer.
+      this.attachLayers();
+      this.stats.state = this.flowLayer ? 'degraded' : 'loading';
+      this.stats.error = this.flowLayer
+        ? `${message} · traffic tiles remain active and self-validate in the viewport`
+        : `${message} · preparing traffic tiles`;
     } finally {
       this.publish();
       this.schedule();
@@ -136,10 +145,14 @@ export class TrafficLayer implements RuntimeLayer {
 
   async enable() {
     this.stats.enabled = true;
+    this.stats.state = this.flowLayer ? this.stats.state : 'loading';
+    // Attach first, validate second. This lets Cesium start requesting the same
+    // visible TomTom tiles that worked on main while the probe runs in parallel.
+    this.attachLayers();
     if (this.flowLayer) this.flowLayer.show = this.sceneActive;
     if (this.incidentLayer) this.incidentLayer.show = this.sceneActive;
     this.publish();
-    await this.refresh(!this.flowLayer);
+    await this.refresh(false);
   }
 
   disable() {

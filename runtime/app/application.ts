@@ -31,6 +31,8 @@ export class WorldSelectRuntime {
   private layers = new LayerManager();
   private listeners = new Set<(snapshot: RuntimeSnapshot) => void>();
   private selected: SpatialEntity | null = null;
+  private hovered: SpatialEntity | null = null;
+  private hoveredScreen: { x: number; y: number } | null = null;
   private followAircraft = false;
   private camera: CameraView = { latitude: 48.2082, longitude: 16.3738, height: 9_500_000, moving: false };
   private sceneActive = true;
@@ -87,6 +89,7 @@ export class WorldSelectRuntime {
     this.cameraService = new CameraService(this.Cesium, this.viewer, (view) => this.handleCamera(view));
     this.clickHandler = new this.Cesium.ScreenSpaceEventHandler(this.viewer.scene.canvas);
     this.clickHandler.setInputAction((movement: any) => this.handlePick(movement.position), this.Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    this.clickHandler.setInputAction((movement: any) => this.handleHover(movement.endPosition), this.Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
     void this.mapStack.initialize();
   }
@@ -109,6 +112,27 @@ export class WorldSelectRuntime {
     if (!view.moving) this.emit();
   }
 
+  private pickedEntity(position: any): SpatialEntity | null {
+    if (!position) return null;
+    const picked = this.viewer.scene.pick(position);
+    const raw = picked?.id;
+    if (raw && typeof raw === 'object' && typeof raw.id === 'string' && typeof raw.kind === 'string') return raw as SpatialEntity;
+    if (typeof raw === 'string') return this.layers.resolveEntity(raw);
+    return null;
+  }
+
+  private handleHover(position: any) {
+    if (this.mapPointCapture || !position) return;
+    const entity = this.pickedEntity(position);
+    const nextId = entity?.id ?? null;
+    if ((this.hovered?.id ?? null) === nextId) return;
+    this.hovered = entity;
+    this.hoveredScreen = entity
+      ? { x: Number(position.x) || 0, y: Number(position.y) || 0 }
+      : null;
+    this.emit();
+  }
+
   private handlePick(position: any) {
     if (this.mapPointCapture) {
       const cartesian = this.viewer.camera.pickEllipsoid(position, this.viewer.scene.globe.ellipsoid);
@@ -124,11 +148,7 @@ export class WorldSelectRuntime {
         return;
       }
     }
-    const picked = this.viewer.scene.pick(position);
-    const raw = picked?.id;
-    let entity: SpatialEntity | null = null;
-    if (raw && typeof raw === 'object' && typeof raw.id === 'string' && typeof raw.kind === 'string') entity = raw as SpatialEntity;
-    else if (typeof raw === 'string') entity = this.layers.resolveEntity(raw);
+    const entity = this.pickedEntity(position);
     if (!entity) return;
     this.select(entity);
   }
@@ -138,6 +158,8 @@ export class WorldSelectRuntime {
     return {
       camera: { ...this.camera },
       selected: this.selected ? { ...this.selected, position: { ...this.selected.position }, properties: { ...this.selected.properties } } : null,
+      hovered: this.hovered ? { ...this.hovered, position: { ...this.hovered.position }, properties: { ...this.hovered.properties } } : null,
+      hoveredScreen: this.hoveredScreen ? { ...this.hoveredScreen } : null,
       followAircraft: this.followAircraft,
       mapSource: map.source,
       mapError: map.error,

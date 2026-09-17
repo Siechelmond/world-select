@@ -25,7 +25,7 @@ type EarthPoint = { latitude: number; longitude: number };
 const DAY_MS = 86_400_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
-const F1_LAYERS: RuntimeLayerId[] = ["earthquakes", "satellites", "aircraft", "traffic"];
+const SEN_ISS_LIVE_VIDEO_ID = process.env.NEXT_PUBLIC_SEN_ISS_LIVE_VIDEO_ID ?? "fO9e9jnhYK8";
 
 function toLoadState(state: RuntimeLayerState): LoadState {
   if (state === "live") return "ready";
@@ -81,8 +81,11 @@ export default function WorldSelectApp() {
   const planets = useMemo(() => computePlanetPositions(selectedTime), [selectedTime]);
   const sun = useMemo(() => sunEntity(selectedTime), [selectedTime]);
   const selected = snapshot?.selected ?? null;
+  const hovered = snapshot?.hovered ?? null;
   const viewCenter = snapshot ? { latitude: snapshot.camera.latitude, longitude: snapshot.camera.longitude } : INITIAL_CENTER;
-  const streetPoint = viewCenter;
+  const streetPoint = selected && selected.kind !== "celestial-body"
+    ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
+    : viewCenter;
   const annotationPoint = selected && selected.kind !== "celestial-body"
     ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
     : viewCenter;
@@ -113,8 +116,16 @@ export default function WorldSelectApp() {
       const unsubscribe = runtime.subscribe((next) => setSnapshot(next));
       setRuntimeReady(true);
       setRuntimeError(null);
-      void Promise.allSettled(F1_LAYERS.map((id) => runtime!.setLayerEnabled(id, true)));
+      // Stage live layers so the keyless basemap becomes interactive before
+      // expensive network/provider work competes for the first paint.
+      const bootTimers = [
+        window.setTimeout(() => void runtime?.setLayerEnabled("earthquakes", true), 150),
+        window.setTimeout(() => void runtime?.setLayerEnabled("satellites", true), 400),
+        window.setTimeout(() => void runtime?.setLayerEnabled("aircraft", true), 900),
+        window.setTimeout(() => void runtime?.setLayerEnabled("traffic", true), 1400),
+      ];
       return () => {
+        bootTimers.forEach((timer) => window.clearTimeout(timer));
         unsubscribe();
         runtime?.destroy();
         if (runtimeRef.current === runtime) runtimeRef.current = null;
@@ -407,12 +418,12 @@ export default function WorldSelectApp() {
     setStreetOpen(false);
     setStreetChecking(false);
     setStreetNotice(null);
-    setMobilePanel("none");
+    setMobilePanel(selected ? "inspector" : "none");
     setViewMode("earth");
     runtime?.setSceneActive(true);
     window.requestAnimationFrame(() => runtime?.restoreCameraPose(pose));
     streetCameraPoseRef.current = null;
-  }, []);
+  }, [selected]);
 
   useEffect(() => {
     if (!streetOpen) return;
@@ -577,6 +588,11 @@ export default function WorldSelectApp() {
         <div className="timeActions"><span>{timeOffsetDays > 0 ? `+${timeOffsetDays}` : timeOffsetDays} days</span><button onClick={resetTime}>NOW</button></div>
       </section>
 
+      {!streetOpen && hovered?.kind === "satellite" && /(^|\s)ISS(\s|$)|ZARYA/i.test(hovered.name) && <IssLiveHoverCard
+        entity={hovered}
+        screen={snapshot?.hoveredScreen ?? null}
+      />}
+
       {streetNotice && <div className="streetNotice" role="status">{streetNotice}</div>}
       {streetOpen && <StreetViewer
         provider={streetProvider}
@@ -626,7 +642,7 @@ function LayerToggle({ checked, onChange, onRetry, title, subtitle, state, count
     <div className={`layerLoadBar state-${effectiveState}`} aria-label={`${title} ${statusText}`}><i /></div>
     <div className="layerStatusLine">
       <span>{statusText}</span>
-      {effectiveState === "loading" && <small>Fetching layer data…</small>}
+      {effectiveState === "loading" && <small>{error ?? "Fetching layer data…"}</small>}
       {effectiveState === "ready" && <small>Active with other runtime layers</small>}
       {effectiveState === "degraded" && <small>{error ?? "Keeping last valid data"}</small>}
       {effectiveState === "off" && <small>Tap to load</small>}
@@ -639,10 +655,57 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, followAircraft, onTo
   const rows: Array<[string, string]> = [];
   if (entity.kind === "earthquake") rows.push(["Magnitude", String(entity.properties.magnitude ?? "—")], ["Depth", `${entity.properties.depthKm ?? "—"} km`]);
   else if (entity.kind === "satellite") rows.push(["NORAD", String(entity.properties.noradCatalogNumber ?? "—")], ["Altitude", `${entity.properties.altitudeKm ?? "—"} km`], ["Propagation", String(entity.properties.propagation ?? "—")]);
-  else if (entity.kind === "aircraft") rows.push(["Provider", String(entity.properties.provider ?? "—")], ["Coverage", String(entity.properties.coverage ?? "—")], ["Class", String(entity.properties.aircraftClass ?? "—")], ["Military", entity.properties.military ? "YES" : "NO"], ["Registration", String(entity.properties.registration ?? "—")], ["Type", String(entity.properties.aircraftType ?? "—")], ["Altitude", `${entity.properties.altitudeFt ?? "—"} ft`], ["Speed", `${entity.properties.groundSpeedKt ?? "—"} kt`], ["Track", `${entity.properties.trackDeg ?? "—"}°`], ["Motion", String(entity.properties.lodContract ?? entity.properties.renderModel ?? "—")]);
-  else if (entity.kind === "celestial-body") { rows.push(["Distance", `${entity.properties.heliocentricDistanceAu ?? 0} AU`]); if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]); }
+  else if (entity.kind === "aircraft") {
+    const origin = entity.properties.originAirport ?? entity.properties.origin;
+    const destination = entity.properties.destinationAirport ?? entity.properties.destination;
+    const route = origin && destination ? `${origin} → ${destination}` : "Not available from current ADS-B source";
+    rows.push(
+      ["Callsign", entity.name],
+      ["ICAO24", String(entity.properties.hex ?? "—").toUpperCase()],
+      ["Provider", String(entity.properties.provider ?? "—")],
+      ["Coverage", String(entity.properties.coverage ?? "—")],
+      ["Class", String(entity.properties.aircraftClass ?? "—")],
+      ["Military", entity.properties.military ? "YES" : "NO"],
+      ["Registration", String(entity.properties.registration ?? "—")],
+      ["Type", String(entity.properties.aircraftType ?? "—")],
+      ["Route", route],
+      ["Altitude", `${entity.properties.altitudeFt ?? "—"} ft`],
+      ["Speed", `${entity.properties.groundSpeedKt ?? "—"} kt`],
+      ["Track", `${entity.properties.trackDeg ?? "—"}°`],
+      ["Squawk", String(entity.properties.squawk ?? "—")],
+      ["Emergency", String(entity.properties.emergency ?? "none")],
+      ["Last seen", entity.properties.seenSeconds != null ? `${entity.properties.seenSeconds}s ago` : "—"],
+      ["Motion", String(entity.properties.lodContract ?? entity.properties.renderModel ?? "—")],
+    );
+  } else if (entity.kind === "celestial-body") { rows.push(["Distance", `${entity.properties.heliocentricDistanceAu ?? 0} AU`]); if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]); }
   rows.push(["Time", new Date(entity.observedAt).toLocaleString()], ["State", entity.dataState], ["Source", entity.source.label]);
-  return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" ? <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button> : <button className="streetButton" onClick={onStreet}>Street at map center</button>}<button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
+  return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" && <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button>}<button className="streetButton" onClick={onStreet}>Street near entity</button><button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
+}
+
+function IssLiveHoverCard({ entity, screen }: { entity: SpatialEntity; screen: { x: number; y: number } | null }) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    setReady(false);
+    const timer = window.setTimeout(() => setReady(true), 500);
+    return () => window.clearTimeout(timer);
+  }, [entity.id]);
+  const left = screen ? `min(${Math.max(12, screen.x + 18)}px, calc(100vw - 340px))` : "calc(50vw - 160px)";
+  const top = screen ? `min(${Math.max(90, screen.y + 18)}px, calc(100vh - 245px))` : "120px";
+  return <aside className="issLiveHover glass" style={{ left, top }} aria-label="ISS live video preview">
+    <div className="issLiveHead"><span><b>ISS · LIVE 4K</b><small>Sen SpaceTV-1 · muted preview</small></span><em>LIVE</em></div>
+    <div className="issLiveFrame">
+      {ready
+        ? <iframe
+            src={`https://www.youtube-nocookie.com/embed/${SEN_ISS_LIVE_VIDEO_ID}?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1`}
+            title="Sen live 4K video from the ISS"
+            allow="autoplay; encrypted-media; picture-in-picture"
+            referrerPolicy="strict-origin-when-cross-origin"
+            allowFullScreen
+          />
+        : <div className="issLiveLoading">Hold on ISS to start live video…</div>}
+    </div>
+    <div className="issLiveMeta"><span>{entity.name}</span><a href="https://www.sen.com/live" target="_blank" rel="noreferrer">Open Sen live ↗</a></div>
+  </aside>;
 }
 
 function StreetViewer({ provider, googleApiKey, googlePanoId, state, photo, index, total, error, point, onClose, onPrevious, onNext, onUseGoogle, onUseKartaView }: { provider: StreetProvider; googleApiKey: string; googlePanoId: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void }) {
