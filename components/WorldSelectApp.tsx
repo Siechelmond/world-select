@@ -11,7 +11,7 @@ import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/sp
 import { fetchTrafficStatus, type TrafficStatus } from "@/lib/traffic";
 import { resolveLayerState, type LayerLoadState as LoadState } from "@/lib/layer-runtime";
 import { captureCameraPose, restoreCameraPose, type CesiumCameraPose } from "@/lib/camera";
-import { createWorldViewer } from "@/lib/cesium-viewer";
+import { createWorldViewer, type GroundMapStyle } from "@/lib/cesium-viewer";
 import { findGoogleStreetCoverage, loadGoogleMaps } from "@/lib/google-street";
 
 declare global { interface Window { Cesium?: any; google?: any } }
@@ -34,6 +34,7 @@ const AIRCRAFT_ICON = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`<s
 export default function WorldSelectApp() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
+  const setMapStyleRef = useRef<((style: GroundMapStyle) => void) | null>(null);
   const entityMapRef = useRef(new Map<string, SpatialEntity>());
   const quakeIdsRef = useRef(new Set<string>());
   const satIdsRef = useRef(new Set<string>());
@@ -57,6 +58,7 @@ export default function WorldSelectApp() {
   const [aircraftLayer, setAircraftLayer] = useState(false);
   const [trafficLayer, setTrafficLayer] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("earth");
+  const [groundMode, setGroundMode] = useState(false);
   const [earthquakeState, setEarthquakeState] = useState<LoadState>("idle");
   const [satelliteState, setSatelliteState] = useState<LoadState>("idle");
   const [aircraftState, setAircraftState] = useState<LoadState>("idle");
@@ -289,9 +291,11 @@ export default function WorldSelectApp() {
       },
     });
     viewerRef.current = lifecycle.viewer;
+    setMapStyleRef.current = lifecycle.setMapStyle;
     return () => {
       lifecycle.destroy();
       viewerRef.current = null;
+      setMapStyleRef.current = null;
     };
   }, [cesiumReady, selectEntity]);
 
@@ -571,15 +575,17 @@ export default function WorldSelectApp() {
 
   const flyEarth = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
-    setViewMode("earth"); setFollowAircraft(false);
+    setViewMode("earth"); setGroundMode(false); setFollowAircraft(false);
+    setMapStyleRef.current?.("earth");
     viewerRef.current.camera.flyTo({ destination: window.Cesium.Cartesian3.fromDegrees(viewCenter.longitude, viewCenter.latitude, 6_500_000), duration: 1.0 });
   }, [viewCenter.latitude, viewCenter.longitude]);
 
   const flyGround = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
-    setViewMode("earth"); setFollowAircraft(false);
+    setViewMode("earth"); setGroundMode(true); setFollowAircraft(false);
+    setMapStyleRef.current?.("ground");
     viewerRef.current.camera.flyTo({
-      destination: window.Cesium.Cartesian3.fromDegrees(viewCenter.longitude, viewCenter.latitude, 18_000),
+      destination: window.Cesium.Cartesian3.fromDegrees(viewCenter.longitude, viewCenter.latitude, 8_000),
       orientation: { heading: 0, pitch: window.Cesium.Math.toRadians(-48), roll: 0 }, duration: 1.2,
     });
   }, [viewCenter.latitude, viewCenter.longitude]);
@@ -720,13 +726,26 @@ export default function WorldSelectApp() {
 
   const closeStreet = useCallback(() => {
     streetRequestRef.current += 1;
+    const pose = streetCameraPoseRef.current;
     setStreetOpen(false);
     setStreetChecking(false);
     setStreetNotice(null);
     setMobilePanel("none");
-    restoreCameraPose(viewerRef.current, window.Cesium, streetCameraPoseRef.current);
+    setViewMode("earth");
+    window.requestAnimationFrame(() => {
+      setMapStyleRef.current?.(groundMode ? "ground" : "earth");
+      restoreCameraPose(viewerRef.current, window.Cesium, pose);
+      viewerRef.current?.scene?.requestRender?.();
+    });
     streetCameraPoseRef.current = null;
-  }, []);
+  }, [groundMode]);
+
+  useEffect(() => {
+    if (!streetOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") closeStreet(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [streetOpen, closeStreet]);
   const addAnnotation = () => {
     const label = window.prompt("Annotation label", "Marker");
     if (!label?.trim()) return;
@@ -759,11 +778,11 @@ export default function WorldSelectApp() {
       <header className="topbar glass">
         <div className="brand"><p className="eyebrow">SPATIAL INTELLIGENCE</p><h1>World Select</h1></div>
         <div className="modeSwitch" role="group" aria-label="View mode">
-          <button className={viewMode === "earth" && cameraHeight >= GROUND_HEIGHT_M ? "active" : ""} onClick={() => { if (streetOpen) closeStreet(); flyEarth(); }}>EARTH</button>
-          <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={() => { if (streetOpen) closeStreet(); flyGround(); }}>GROUND</button>
+          <button className={viewMode === "earth" && !groundMode ? "active" : ""} onClick={() => { if (streetOpen) closeStreet(); flyEarth(); }}>EARTH</button>
+          <button className={viewMode === "earth" && groundMode ? "active" : ""} onClick={() => { if (streetOpen) closeStreet(); flyGround(); }}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={() => { if (streetOpen) closeStreet(); setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>v6.0 foundation · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>v6.0.2 foundation · {viewMode === "earth" && groundMode ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""}`}>
@@ -816,7 +835,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>v6.0.1 foundation · ground detail · street center · satellite CORE/DENSE</span>
+        <span>Earth · Ground · Orbit · Solar System</span><span>v6.0.2 foundation · explicit Ground · robust Street return · satellite CORE/DENSE</span>
       </footer>
     </main>
   );
@@ -860,7 +879,7 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, followAircraft, onTo
 
 function StreetViewer({ provider, googleApiKey, googlePanoId, state, photo, index, total, error, point, onClose, onPrevious, onNext, onUseGoogle, onUseKartaView }: { provider: StreetProvider; googleApiKey: string; googlePanoId: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void }) {
   return <section className="streetViewer glass" aria-label="Street-level imagery">
-    <div className="streetHead"><div><p className="panelLabel">GROUND / STREET · {provider === "google" ? "GOOGLE STREET VIEW" : "KARTAVIEW"}</p><strong>{point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}</strong></div><button className="backToGlobe" onClick={onClose}>← Back to Globe</button></div>
+    <div className="streetHead"><div><p className="panelLabel">GROUND / STREET · {provider === "google" ? "GOOGLE STREET VIEW" : "KARTAVIEW"}</p><strong>{point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}</strong></div><button className="backToGlobe" type="button" onClick={onClose}>← Back to Globe</button></div>
     <div className="streetProviderSwitch" role="group" aria-label="Street imagery provider">
       <button className={provider === "google" ? "active" : ""} disabled={!googleApiKey} onClick={onUseGoogle}>Google Street View</button>
       <button className={provider === "kartaview" ? "active" : ""} onClick={onUseKartaView}>KartaView fallback</button>
