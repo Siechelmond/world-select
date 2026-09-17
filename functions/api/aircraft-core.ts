@@ -11,6 +11,7 @@ export type AircraftRecord = {
   track?: number | null;
   squawk?: string | null;
   seen?: number;
+  seen_pos?: number;
   emergency?: string;
   category?: string | number | null;
   military?: boolean;
@@ -57,9 +58,12 @@ export function sourceAgeSeconds(epochMs: number, nowMs = Date.now()) {
 
 export function normalizeOpenSkyStates(payload: any, coverage: AircraftCoverage = "regional"): ProviderResult {
   const states = Array.isArray(payload?.states) ? payload.states : [];
+  const snapshotEpochS = typeof payload?.time === "number" && payload.time > 0 ? payload.time : Date.now() / 1000;
   const ac = states.flatMap((state: any[]) => {
     if (!Array.isArray(state) || typeof state[5] !== "number" || typeof state[6] !== "number") return [];
     const velocityMs = typeof state[9] === "number" ? state[9] : null;
+    const lastContact = typeof state[4] === "number" ? state[4] : snapshotEpochS;
+    const positionTime = typeof state[3] === "number" ? state[3] : lastContact;
     return [{
       hex: String(state[0] ?? "").trim(),
       flight: typeof state[1] === "string" ? state[1].trim() : "",
@@ -72,7 +76,8 @@ export function normalizeOpenSkyStates(payload: any, coverage: AircraftCoverage 
       gs: velocityMs == null ? null : velocityMs * 1.943844,
       track: typeof state[10] === "number" ? state[10] : null,
       squawk: state[14] ?? null,
-      seen: typeof state[4] === "number" ? Math.max(0, Date.now() / 1000 - state[4]) : 0,
+      seen: Math.max(0, snapshotEpochS - lastContact),
+      seen_pos: Math.max(0, snapshotEpochS - positionTime),
       category: state[17] ?? null,
       military: false,
     } satisfies AircraftRecord];

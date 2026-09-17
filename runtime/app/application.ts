@@ -60,6 +60,10 @@ export class WorldSelectRuntime {
       shouldAnimate: false,
     });
 
+    void this.Cesium.CesiumTerrainProvider.fromUrl('https://terrain.reearth.land/cesium-mesh/ellipsoid')
+      .then((tp: any) => { if (!this.destroyed) this.viewer.terrainProvider = tp; })
+      .catch(() => { /* ellipsoid already set as fallback */ });
+
     this.viewer.scene.globe.enableLighting = true;
     this.viewer.scene.globe.depthTestAgainstTerrain = true;
     this.viewer.scene.backgroundColor = this.Cesium.Color.fromCssColorString('#020617');

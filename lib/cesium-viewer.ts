@@ -4,6 +4,7 @@ const ESRI_WORLD_IMAGERY = 'https://services.arcgisonline.com/ArcGIS/rest/servic
 const ESRI_WORLD_STREET = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer';
 const ESRI_BOUNDARIES_PLACES = 'https://services.arcgisonline.com/arcgis/rest/services/Reference/World_Boundaries_and_Places/MapServer';
 const OSM_TILES = 'https://tile.openstreetmap.org/';
+const REEARTH_TERRAIN_URL = 'https://terrain.reearth.land/cesium-mesh/ellipsoid';
 
 export type GroundMapStyle = 'earth' | 'ground';
 
@@ -12,6 +13,14 @@ export type ViewerLifecycle = {
   setMapStyle: (style: GroundMapStyle) => void;
   destroy: () => void;
 };
+
+async function createTerrainProvider(Cesium: any): Promise<any> {
+  try {
+    return await Cesium.CesiumTerrainProvider.fromUrl(REEARTH_TERRAIN_URL);
+  } catch {
+    return new Cesium.EllipsoidTerrainProvider();
+  }
+}
 
 export function createWorldViewer(input: {
   Cesium: any;
@@ -37,13 +46,15 @@ export function createWorldViewer(input: {
     baseLayer: false,
   });
 
+  void createTerrainProvider(Cesium).then((tp) => {
+    if (!viewer.isDestroyed()) viewer.terrainProvider = tp;
+  });
+
   viewer.scene.globe.enableLighting = true;
   viewer.scene.globe.depthTestAgainstTerrain = true;
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#020617');
   viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000) });
 
-  // Earth/Ground is an explicit product mode. Zooming alone must never swap
-  // the basemap; v6.0.1 did that and caused visible re-tiling/blank flashes.
   let requestedStyle: GroundMapStyle = 'earth';
   let earthLayer: any = null;
   let groundLayer: any = null;
@@ -78,8 +89,6 @@ export function createWorldViewer(input: {
     })
     .catch(() => { groundLayer = null; });
 
-  // Reference labels are overlaid on imagery rather than replacing it. This
-  // increases place-name density while preserving the photographic Earth view.
   void Cesium.ArcGisMapServerImageryProvider.fromUrl(ESRI_BOUNDARIES_PLACES)
     .then((provider: any) => {
       if (viewer.isDestroyed()) return;

@@ -686,7 +686,9 @@ export default function WorldSelectApp() {
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
         <span>Earth · Ground · Orbit · Solar System</span>
-        <span>persistent viewer · global/local provider scopes · keyless default map stack</span>
+        <span className="build-identity" title={`${process.env.NEXT_PUBLIC_BUILD_BRANCH ?? 'local'}@${process.env.NEXT_PUBLIC_BUILD_COMMIT ?? '?'} · ${process.env.NEXT_PUBLIC_BUILD_AT ?? ''}`}>
+          v0.8.0 · {process.env.NEXT_PUBLIC_BUILD_BRANCH ?? 'local'}@{(process.env.NEXT_PUBLIC_BUILD_COMMIT ?? '?').slice(0, 8)}
+        </span>
       </footer>
     </main>
   );

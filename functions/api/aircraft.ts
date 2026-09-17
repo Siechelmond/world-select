@@ -318,30 +318,32 @@ export const onRequestGet = async (context: { request: Request; env: Env; waitUn
   const modeForOpenSky = openSkyMode(context.env);
   const gatewayConfigured = Boolean(context.env.AIRCRAFT_GATEWAY_URL);
 
+  // Independent source stores: every configured civilian provider fires concurrently.
+  // Each settles independently; a slow or dead provider never delays the others.
+  const stores: Promise<ProviderResult | null>[] = [];
+  if (modeForOpenSky !== "disabled") {
+    stores.push(tryProvider("opensky", lat, lon, radius, context.env, scope, attempts));
+  }
+  stores.push(tryProvider("adsb.lol", lat, lon, radius, context.env, "regional", attempts));
+  if (gatewayConfigured) {
+    stores.push(tryProvider("gateway", lat, lon, radius, context.env, "regional", attempts));
+  }
+
+  const results = await Promise.all(stores);
+
+  // Compose: pick the best fresh result; prefer worldwide coverage, then largest count.
   let selected: ProviderResult | null = null;
   let firstNonEmptyStale: ProviderResult | null = null;
 
-  // Global OpenSky is the only source in this chain that satisfies worldwide civilian
-  // coverage. Crucially, a configured gateway no longer hides the direct OpenSky path.
-  if (modeForOpenSky !== "disabled") {
-    const openSky = await tryProvider("opensky", lat, lon, radius, context.env, scope, attempts);
-    if (openSky?.ac.length) {
-      if (isUsableSnapshot(openSky, OPEN_SKY_MAX_SOURCE_AGE_SECONDS)) selected = openSky;
-      else firstNonEmptyStale = openSky;
-    }
-  }
-
-  if (!selected) {
-    // Regional fail-soft sources run concurrently so a dead gateway cannot add another
-    // full timeout before adsb.lol gets a chance to keep the map populated.
-    const fallbackProviders: ProviderName[] = ["adsb.lol", ...(gatewayConfigured ? ["gateway" as const] : [])];
-    const fallbackResults = await Promise.all(fallbackProviders.map((provider) => tryProvider(provider, lat, lon, radius, context.env, "regional", attempts)));
-    for (const result of fallbackResults) {
-      if (!result?.ac.length) continue;
-      if (isUsableSnapshot(result, OPEN_SKY_MAX_SOURCE_AGE_SECONDS)) {
+  for (const result of results) {
+    if (!result?.ac.length) continue;
+    if (isUsableSnapshot(result, OPEN_SKY_MAX_SOURCE_AGE_SECONDS)) {
+      if (!selected
+        || (result.coverage === "worldwide" && selected.coverage !== "worldwide")
+        || (result.coverage === selected.coverage && result.ac.length > selected.ac.length)) {
         selected = result;
-        break;
       }
+    } else {
       firstNonEmptyStale ??= result;
     }
   }
