@@ -1,6 +1,7 @@
 import type { CesiumCameraPose } from '@/lib/camera';
 import { captureCameraPose, restoreCameraPose } from '@/lib/camera';
 import type { SpatialEntity } from '@/lib/spatial';
+import type { RoutePoint, RouteResult } from '@/lib/directions';
 import { AircraftLayer } from '@/runtime/layers/aircraft';
 import { EarthquakeLayer } from '@/runtime/layers/earthquakes';
 import { SatelliteLayer } from '@/runtime/layers/satellites';
@@ -10,6 +11,7 @@ import type { CameraView, RuntimeLayerId, RuntimeSnapshot } from '@/runtime/type
 import { CameraService } from '@/runtime/app/camera-service';
 import { LayerManager } from '@/runtime/app/layer-manager';
 import { RenderGovernor } from '@/runtime/app/render-governor';
+import { RouteService } from '@/runtime/app/route-service';
 
 export type WorldRuntimeOptions = {
   Cesium: any;
@@ -25,6 +27,7 @@ export class WorldSelectRuntime {
   private governor: RenderGovernor;
   private cameraService: CameraService;
   private mapStack: MapStackController;
+  private routeService: RouteService;
   private layers = new LayerManager();
   private listeners = new Set<(snapshot: RuntimeSnapshot) => void>();
   private selected: SpatialEntity | null = null;
@@ -32,6 +35,7 @@ export class WorldSelectRuntime {
   private camera: CameraView = { latitude: 48.2082, longitude: 16.3738, height: 9_500_000, moving: false };
   private sceneActive = true;
   private clickHandler: any;
+  private mapPointCapture: ((point: RoutePoint) => void) | null = null;
   private annotations = new Map<string, any>();
   private destroyed = false;
 
@@ -60,6 +64,7 @@ export class WorldSelectRuntime {
     this.viewer.camera.setView({ destination: this.Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000) });
 
     this.governor = new RenderGovernor(this.viewer);
+    this.routeService = new RouteService(this.Cesium, this.viewer, () => this.governor.request());
     this.mapStack = new MapStackController(this.Cesium, this.viewer, options.googleMapsApiKey ?? '', () => this.emit());
 
     const context = {
@@ -105,6 +110,20 @@ export class WorldSelectRuntime {
   }
 
   private handlePick(position: any) {
+    if (this.mapPointCapture) {
+      const cartesian = this.viewer.camera.pickEllipsoid(position, this.viewer.scene.globe.ellipsoid);
+      if (cartesian) {
+        const cartographic = this.Cesium.Cartographic.fromCartesian(cartesian);
+        const point = {
+          latitude: this.Cesium.Math.toDegrees(cartographic.latitude),
+          longitude: this.Cesium.Math.toDegrees(cartographic.longitude),
+        };
+        const capture = this.mapPointCapture;
+        this.mapPointCapture = null;
+        capture(point);
+        return;
+      }
+    }
     const picked = this.viewer.scene.pick(position);
     const raw = picked?.id;
     let entity: SpatialEntity | null = null;
@@ -145,6 +164,36 @@ export class WorldSelectRuntime {
 
   getSatelliteCatalog() {
     return this.layers.get<SatelliteLayer>('satellites').getCatalog();
+  }
+
+  setAircraftDisplayMode(mode: 'all' | 'civilian' | 'military') {
+    this.layers.get<AircraftLayer>('aircraft').setDisplayMode(mode);
+    this.emit();
+  }
+
+  getAircraftMilitaryCount() {
+    return this.layers.get<AircraftLayer>('aircraft').getMilitaryCount();
+  }
+
+  captureNextMapPoint(handler: (point: RoutePoint) => void) {
+    this.mapPointCapture = handler;
+  }
+
+  cancelMapPointCapture() {
+    this.mapPointCapture = null;
+  }
+
+  showRoute(a: RoutePoint, b: RoutePoint, route: RouteResult) {
+    this.routeService.showRoute(a, b, route);
+  }
+
+  flyRoute(route: RouteResult) {
+    this.routeService.fly(route);
+  }
+
+  clearRoute() {
+    this.mapPointCapture = null;
+    this.routeService.clear(true);
   }
 
   setTimeOffsetDays(days: number) {
@@ -265,6 +314,7 @@ export class WorldSelectRuntime {
     this.listeners.clear();
     this.clickHandler?.destroy?.();
     this.layers.destroy();
+    this.routeService.destroy();
     this.mapStack.destroy();
     this.cameraService.destroy();
     this.governor.destroy();

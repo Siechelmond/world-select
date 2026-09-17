@@ -30,6 +30,8 @@ invariant(runtimeSource.includes('new EarthquakeLayer()') && runtimeSource.inclu
 
 const aircraftSource = readFileSync(new URL('../runtime/layers/aircraft.ts', import.meta.url), 'utf8');
 invariant(aircraftSource.includes("this.stats.state = this.records.size ? 'degraded' : 'unavailable'"), 'aircraft must distinguish last-good degraded from cold unavailable');
-invariant(aircraftSource.includes('coverage: snapshot.meta.coverage'), 'aircraft coverage provenance must remain explicit');
+invariant(aircraftSource.includes("scope: view.height >= 2_500_000 ? 'global' : 'regional'"), 'aircraft must switch to a worldwide request on globe views');
+invariant(aircraftSource.includes("fetchMilitarySnapshot"), 'aircraft runtime must merge the independent military feed');
+invariant(aircraftSource.includes("setDisplayMode"), 'aircraft runtime must expose all/civilian/military filtering');
 
 console.log('qa:runtime PASS — 5000-aircraft deterministic fixture, bounded cohort, runtime ownership, lifecycle/status invariants');

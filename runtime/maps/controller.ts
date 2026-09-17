@@ -5,17 +5,15 @@ const OSM_TILES = 'https://tile.openstreetmap.org/';
 export class MapStackController {
   private Cesium: any;
   private viewer: any;
-  private googleKey: string;
   private destroyed = false;
   private ownedLayers: any[] = [];
   private source = 'initializing';
   private error: string | null = null;
   private onChanged: () => void;
 
-  constructor(Cesium: any, viewer: any, googleKey: string, onChanged: () => void) {
+  constructor(Cesium: any, viewer: any, _googleKey: string, onChanged: () => void) {
     this.Cesium = Cesium;
     this.viewer = viewer;
-    this.googleKey = googleKey;
     this.onChanged = onChanged;
   }
 
@@ -42,37 +40,9 @@ export class MapStackController {
     this.clearLayers();
     this.error = null;
 
-    if (this.googleKey && this.Cesium.Google2DImageryProvider?.fromUrl) {
-      try {
-        this.Cesium.GoogleMaps.defaultApiKey = this.googleKey;
-        const imagery = await this.Cesium.Google2DImageryProvider.fromUrl({
-          key: this.googleKey,
-          mapType: 'satellite',
-          language: 'en-US',
-          region: 'AT',
-        });
-        if (this.destroyed) return;
-        this.addLayer(imagery, 0);
-
-        const labels = await this.Cesium.Google2DImageryProvider.fromUrl({
-          key: this.googleKey,
-          overlayLayerType: 'layerRoadmap',
-          language: 'en-US',
-          region: 'AT',
-        });
-        if (this.destroyed) return;
-        const labelLayer = this.addLayer(labels);
-        labelLayer.alpha = 0.94;
-        this.source = 'Google 2D satellite + English roadmap overlay';
-        this.onChanged();
-        this.viewer.scene.requestRender?.();
-        return;
-      } catch (reason: unknown) {
-        this.error = reason instanceof Error ? reason.message : 'Google Map Tiles unavailable';
-        this.clearLayers();
-      }
-    }
-
+    // Cost guard: the default globe is deliberately keyless. A configured
+    // Google key is reserved for explicit user actions (Street / future 3D),
+    // never consumed just because the app booted or the camera moved.
     try {
       const imagery = await this.Cesium.ArcGisMapServerImageryProvider.fromUrl(ESRI_WORLD_IMAGERY);
       if (this.destroyed) return;
@@ -86,7 +56,7 @@ export class MapStackController {
       } catch {
         // Imagery remains useful even if the reference overlay is unavailable.
       }
-      this.source = 'Esri World Imagery + reference overlay';
+      this.source = 'Esri World Imagery + reference overlay · keyless';
       this.onChanged();
       this.viewer.scene.requestRender?.();
       return;
@@ -97,7 +67,7 @@ export class MapStackController {
 
     const osm = new this.Cesium.OpenStreetMapImageryProvider({ url: OSM_TILES });
     this.addLayer(osm, 0);
-    this.source = 'OpenStreetMap fallback';
+    this.source = 'OpenStreetMap fallback · keyless';
     this.onChanged();
     this.viewer.scene.requestRender?.();
   }

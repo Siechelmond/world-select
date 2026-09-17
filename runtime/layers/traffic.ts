@@ -106,19 +106,23 @@ export class TrafficLayer implements RuntimeLayer {
       const status = await fetchTrafficStatus(this.controller.signal);
       if (this.destroyed || !this.stats.enabled) return;
       this.status = status;
-      const usable = status.configured && status.available;
-      if (!usable) throw new Error(status.message || 'Traffic source unavailable');
+      if (!status.configured) throw new Error(status.message || 'Traffic source not configured');
+
+      // A status probe is only one tile. If the key is configured but that probe
+      // is temporarily rejected or slow, still attach the viewport-driven tile
+      // providers: Cesium can then request the tiles the user actually sees. Tile
+      // failures are isolated by onTileError and never replace the basemap.
       this.attachLayers();
-      this.stats.state = 'live';
+      this.stats.state = status.available ? 'live' : 'degraded';
       this.stats.count = 0;
-      this.stats.lastSuccessAt = new Date().toISOString();
+      this.stats.lastSuccessAt = status.available ? new Date().toISOString() : this.stats.lastSuccessAt;
       this.stats.provenance = {
         provider: status.provider,
         coverage: 'viewport',
         observedAt: this.stats.lastSuccessAt,
         cached: true,
       };
-      this.stats.error = null;
+      this.stats.error = status.available ? null : `${status.message || 'Traffic probe unavailable'} · validating with visible tiles`;
     } catch (reason: unknown) {
       if (this.controller?.signal.aborted || this.destroyed) return;
       const message = reason instanceof Error ? reason.message : 'Traffic status failed';

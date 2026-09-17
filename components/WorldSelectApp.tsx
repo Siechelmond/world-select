@@ -6,6 +6,7 @@ import type { SpatialEntity } from "@/lib/spatial";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
 import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
 import { findGoogleStreetCoverage, loadGoogleMaps } from "@/lib/google-street";
+import { fetchRoute as fetchWorldRoute, formatDistance, formatDuration, type RoutePoint, type RouteProfile, type RouteResult } from "@/lib/directions";
 import type { CesiumCameraPose } from "@/lib/camera";
 import { WorldSelectRuntime } from "@/runtime/app/application";
 import type { RuntimeLayerId, RuntimeLayerState, RuntimeSnapshot } from "@/runtime/types";
@@ -17,6 +18,8 @@ type LoadState = "idle" | "loading" | "ready" | "degraded" | "error";
 type ViewMode = "earth" | "space";
 type MobilePanel = "none" | "layers" | "inspector" | "time" | "street";
 type StreetProvider = "google" | "kartaview";
+type AircraftFilter = "all" | "civilian" | "military";
+type RouteArm = "a" | "b" | null;
 type EarthPoint = { latitude: number; longitude: number };
 
 const DAY_MS = 86_400_000;
@@ -35,6 +38,9 @@ export default function WorldSelectApp() {
   const runtimeRef = useRef<WorldSelectRuntime | null>(null);
   const streetCameraPoseRef = useRef<CesiumCameraPose | null>(null);
   const streetRequestRef = useRef(0);
+  const routeRequestRef = useRef<AbortController | null>(null);
+  const routeARef = useRef<RoutePoint | null>(null);
+  const routeBRef = useRef<RoutePoint | null>(null);
   const resumeAircraftRef = useRef(false);
 
   const [cesiumReady, setCesiumReady] = useState(false);
@@ -44,6 +50,7 @@ export default function WorldSelectApp() {
   const [viewMode, setViewMode] = useState<ViewMode>("earth");
   const [groundMode, setGroundMode] = useState(false);
   const [satelliteCatalog, setSatelliteCatalog] = useState<SatelliteCatalog>("core");
+  const [aircraftFilter, setAircraftFilter] = useState<AircraftFilter>("all");
   const [timeOffsetDays, setTimeOffsetDays] = useState(0);
   const [nowTick, setNowTick] = useState(Date.now());
   const [isMobile, setIsMobile] = useState(false);
@@ -59,6 +66,13 @@ export default function WorldSelectApp() {
   const [googleStreetPanoId, setGoogleStreetPanoId] = useState<string | null>(null);
   const [streetProvider, setStreetProvider] = useState<StreetProvider>(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
   const [annotations, setAnnotations] = useState<Array<{ id: string; latitude: number; longitude: number; label: string }>>([]);
+  const [routeMode, setRouteMode] = useState<RouteProfile>("foot");
+  const [routeA, setRouteA] = useState<RoutePoint | null>(null);
+  const [routeB, setRouteB] = useState<RoutePoint | null>(null);
+  const [routeArm, setRouteArm] = useState<RouteArm>(null);
+  const [routeState, setRouteState] = useState<"idle" | "routing" | "ready" | "error">("idle");
+  const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
+  const [routeError, setRouteError] = useState<string | null>(null);
 
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + timeOffsetDays * DAY_MS),
@@ -161,6 +175,76 @@ export default function WorldSelectApp() {
     runtimeRef.current?.setSatelliteCatalog(catalog);
   }, []);
 
+  const changeAircraftFilter = useCallback((filter: AircraftFilter) => {
+    setAircraftFilter(filter);
+    runtimeRef.current?.setAircraftDisplayMode(filter);
+  }, []);
+
+  const requestRoute = useCallback(async (a: RoutePoint, b: RoutePoint, mode: RouteProfile) => {
+    routeRequestRef.current?.abort();
+    const controller = new AbortController();
+    routeRequestRef.current = controller;
+    setRouteState("routing");
+    setRouteError(null);
+    setRouteResult(null);
+    try {
+      const result = await fetchWorldRoute(a, b, mode, controller.signal);
+      if (controller.signal.aborted) return;
+      setRouteResult(result);
+      setRouteState("ready");
+      runtimeRef.current?.showRoute(a, b, result);
+    } catch (reason: unknown) {
+      if (controller.signal.aborted) return;
+      setRouteState("error");
+      setRouteError(reason instanceof Error ? reason.message : "Route unavailable");
+    }
+  }, []);
+
+  const armRoutePoint = useCallback((which: Exclude<RouteArm, null>) => {
+    const runtime = runtimeRef.current;
+    if (!runtime || viewMode !== "earth") return;
+    if (routeArm === which) {
+      runtime.cancelMapPointCapture();
+      setRouteArm(null);
+      return;
+    }
+    setRouteArm(which);
+    runtime.captureNextMapPoint((point) => {
+      if (which === "a") {
+        routeARef.current = point;
+        setRouteA(point);
+      } else {
+        routeBRef.current = point;
+        setRouteB(point);
+      }
+      setRouteArm(null);
+      const a = which === "a" ? point : routeARef.current;
+      const b = which === "b" ? point : routeBRef.current;
+      if (a && b) void requestRoute(a, b, routeMode);
+    });
+  }, [routeArm, routeMode, requestRoute, viewMode]);
+
+  const changeRouteMode = useCallback((mode: RouteProfile) => {
+    setRouteMode(mode);
+    const a = routeARef.current;
+    const b = routeBRef.current;
+    if (a && b) void requestRoute(a, b, mode);
+  }, [requestRoute]);
+
+  const clearRoute = useCallback(() => {
+    routeRequestRef.current?.abort();
+    routeRequestRef.current = null;
+    routeARef.current = null;
+    routeBRef.current = null;
+    setRouteA(null);
+    setRouteB(null);
+    setRouteArm(null);
+    setRouteResult(null);
+    setRouteError(null);
+    setRouteState("idle");
+    runtimeRef.current?.clearRoute();
+  }, []);
+
   const changeTimeOffset = useCallback((days: number) => {
     const runtime = runtimeRef.current;
     if (!runtime) {
@@ -198,6 +282,15 @@ export default function WorldSelectApp() {
     setStreetError(undefined);
 
     let googleFallbackReason = "";
+    // Start the keyless fallback immediately. Google may need to load its JS API
+    // before it can even answer the coverage question; running KartaView beside it
+    // prevents one blocked provider from serially delaying the second provider.
+    const kartaCoveragePromise = fetchKartaViewCoverage()
+      .then((photos) => ({ photos, error: null as string | null }))
+      .catch((reason: unknown) => ({
+        photos: [] as StreetPhoto[],
+        error: reason instanceof Error ? reason.message : "KartaView unavailable",
+      }));
     try {
       if (GOOGLE_MAPS_API_KEY) {
         try {
@@ -221,37 +314,28 @@ export default function WorldSelectApp() {
         googleFallbackReason = "Google Street View is not configured";
       }
 
-      try {
-        const photos = await fetchKartaViewCoverage();
-        if (streetRequestRef.current !== requestId) return;
-        if (photos.length) {
-          setStreetPhotos(photos);
-          setStreetProvider("kartaview");
-          setStreetState("ready");
-          runtime.setSceneActive(false);
-          setStreetOpen(true);
-          setMobilePanel("street");
-          setStreetNotice(null);
-          setStreetError(googleFallbackReason ? `${googleFallbackReason} · KartaView fallback active` : undefined);
-          return;
-        }
-        const noCoverage = "No street imagery nearby — staying on Globe";
-        setStreetState("error");
-        setStreetOpen(false);
-        setMobilePanel("none");
-        setStreetNotice(noCoverage);
-        setStreetError(googleFallbackReason ? `${googleFallbackReason} · ${noCoverage}` : noCoverage);
-        streetCameraPoseRef.current = null;
-      } catch (reason: unknown) {
-        if (streetRequestRef.current !== requestId) return;
-        const message = reason instanceof Error ? reason.message : "Street imagery error";
-        setStreetState("error");
-        setStreetOpen(false);
-        setMobilePanel("none");
-        setStreetNotice("Street imagery unavailable — staying on Globe");
-        setStreetError(googleFallbackReason ? `${googleFallbackReason} · ${message}` : message);
-        streetCameraPoseRef.current = null;
+      const karta = await kartaCoveragePromise;
+      if (streetRequestRef.current !== requestId) return;
+      if (karta.photos.length) {
+        setStreetPhotos(karta.photos);
+        setStreetProvider("kartaview");
+        setStreetState("ready");
+        runtime.setSceneActive(false);
+        setStreetOpen(true);
+        setMobilePanel("street");
+        setStreetNotice(null);
+        setStreetError(googleFallbackReason ? `${googleFallbackReason} · KartaView fallback active` : undefined);
+        return;
       }
+      const noCoverage = karta.error
+        ? `Street imagery unavailable — staying on Globe`
+        : "No street imagery nearby — staying on Globe";
+      setStreetState("error");
+      setStreetOpen(false);
+      setMobilePanel("none");
+      setStreetNotice(noCoverage);
+      setStreetError([googleFallbackReason, karta.error, noCoverage].filter(Boolean).join(" · "));
+      streetCameraPoseRef.current = null;
     } finally {
       if (streetRequestRef.current === requestId) setStreetChecking(false);
     }
@@ -337,6 +421,11 @@ export default function WorldSelectApp() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [streetOpen, closeStreet]);
 
+  useEffect(() => () => {
+    routeRequestRef.current?.abort();
+    runtimeRef.current?.cancelMapPointCapture();
+  }, []);
+
   const addAnnotation = useCallback(() => {
     const label = window.prompt("Annotation label", "Marker");
     if (!label?.trim()) return;
@@ -377,7 +466,7 @@ export default function WorldSelectApp() {
         </div>
         <div className="statusRow">
           <span className="statusDot" />
-          <span>{runtimeError ? "RUNTIME ERROR" : runtimeReady ? "F1 RUNTIME · ONE VIEWER" : "STARTING RUNTIME"}</span>
+          <span>{runtimeError ? "RUNTIME ERROR" : runtimeReady ? "SPATIAL RUNTIME · ONE VIEWER" : "STARTING RUNTIME"}</span>
         </div>
       </header>
 
@@ -423,6 +512,11 @@ export default function WorldSelectApp() {
             disabled={!aircraftAvailable}
             error={layerStats.aircraft.error ?? undefined}
           />
+          {layerStats.aircraft.enabled && <div className="aircraftFilterSwitch" role="group" aria-label="Aircraft filter">
+            <button className={aircraftFilter === "all" ? "active" : ""} onClick={() => changeAircraftFilter("all")}>ALL</button>
+            <button className={aircraftFilter === "civilian" ? "active" : ""} onClick={() => changeAircraftFilter("civilian")}>CIV</button>
+            <button className={aircraftFilter === "military" ? "active" : ""} onClick={() => changeAircraftFilter("military")}>MIL</button>
+          </div>}
           <LayerToggle
             checked={layerStats.traffic.enabled}
             onChange={(value) => setLayerEnabled("traffic", value)}
@@ -434,13 +528,31 @@ export default function WorldSelectApp() {
             disabled={viewMode !== "earth"}
             error={layerStats.traffic.error ?? undefined}
           />
+          <div className={`directionsCard ${routeState === "error" ? "layerError" : ""}`}>
+            <div className="directionsHead"><span><strong>Directions</strong><small>OSM / OSRM · keyless route + camera flythrough</small></span><b>{routeState === "routing" ? "…" : routeState === "ready" ? "READY" : ""}</b></div>
+            <div className="directionsModes" role="group" aria-label="Route mode">
+              <button className={routeMode === "foot" ? "active" : ""} onClick={() => changeRouteMode("foot")}>WALK</button>
+              <button className={routeMode === "car" ? "active" : ""} onClick={() => changeRouteMode("car")}>DRIVE</button>
+              <button className={routeMode === "bike" ? "active" : ""} onClick={() => changeRouteMode("bike")}>BIKE</button>
+            </div>
+            <div className="directionsActions">
+              <button className={routeArm === "a" ? "active" : ""} onClick={() => armRoutePoint("a")} disabled={viewMode !== "earth"}>{routeArm === "a" ? "CLICK MAP" : routeA ? "A ✓" : "SET A"}</button>
+              <button className={routeArm === "b" ? "active" : ""} onClick={() => armRoutePoint("b")} disabled={viewMode !== "earth"}>{routeArm === "b" ? "CLICK MAP" : routeB ? "B ✓" : "SET B"}</button>
+              <button onClick={() => routeResult && runtimeRef.current?.flyRoute(routeResult)} disabled={!routeResult || routeState === "routing"}>FLY</button>
+              <button onClick={clearRoute} disabled={!routeA && !routeB && !routeResult}>CLEAR</button>
+            </div>
+            {routeResult && <div className="directionsSummary">{formatDistance(routeResult.distanceM)} · {formatDuration(routeResult.durationS)} · {routeMode.toUpperCase()}</div>}
+            {routeState === "routing" && <div className="directionsSummary">Routing on the street network…</div>}
+            {routeError && <div className="directionsError">{routeError}</div>}
+          </div>
         </> : <div className="emptyState"><p>{runtimeError ?? "Starting persistent spatial runtime…"}</p></div>}
         <div className="spaceLayerSummary">
           <span>Viewer</span><em>{runtimeReady ? "PERSISTENT" : "STARTING"}</em>
           <span>Map stack</span><em>{snapshot?.mapSource ?? "INITIALIZING"}</em>
           <span>Ground</span><em>SAME CESIUM SCENE</em>
           <span>Space</span><em>SUN + 8 PLANETS</em>
-          <span>Street</span><em>OPTIONAL PANORAMA</em>
+          <span>Google</span><em>NO BOOT-TIME MAP LOAD</em>
+          <span>Street</span><em>ON-DEMAND ONLY</em>
         </div>
       </aside>
 
@@ -493,7 +605,7 @@ export default function WorldSelectApp() {
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
         <span>Earth · Ground · Orbit · Solar System</span>
-        <span>F1 runtime transplant · one viewer · independent layer lifecycles</span>
+        <span>persistent viewer · global/local provider scopes · keyless default map stack</span>
       </footer>
     </main>
   );
@@ -527,7 +639,7 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, followAircraft, onTo
   const rows: Array<[string, string]> = [];
   if (entity.kind === "earthquake") rows.push(["Magnitude", String(entity.properties.magnitude ?? "—")], ["Depth", `${entity.properties.depthKm ?? "—"} km`]);
   else if (entity.kind === "satellite") rows.push(["NORAD", String(entity.properties.noradCatalogNumber ?? "—")], ["Altitude", `${entity.properties.altitudeKm ?? "—"} km`], ["Propagation", String(entity.properties.propagation ?? "—")]);
-  else if (entity.kind === "aircraft") rows.push(["Provider", String(entity.properties.provider ?? "—")], ["Coverage", String(entity.properties.coverage ?? "—")], ["Registration", String(entity.properties.registration ?? "—")], ["Type", String(entity.properties.aircraftType ?? "—")], ["Altitude", `${entity.properties.altitudeFt ?? "—"} ft`], ["Speed", `${entity.properties.groundSpeedKt ?? "—"} kt`], ["Track", `${entity.properties.trackDeg ?? "—"}°`], ["Motion", String(entity.properties.lodContract ?? entity.properties.renderModel ?? "—")]);
+  else if (entity.kind === "aircraft") rows.push(["Provider", String(entity.properties.provider ?? "—")], ["Coverage", String(entity.properties.coverage ?? "—")], ["Class", String(entity.properties.aircraftClass ?? "—")], ["Military", entity.properties.military ? "YES" : "NO"], ["Registration", String(entity.properties.registration ?? "—")], ["Type", String(entity.properties.aircraftType ?? "—")], ["Altitude", `${entity.properties.altitudeFt ?? "—"} ft`], ["Speed", `${entity.properties.groundSpeedKt ?? "—"} kt`], ["Track", `${entity.properties.trackDeg ?? "—"}°`], ["Motion", String(entity.properties.lodContract ?? entity.properties.renderModel ?? "—")]);
   else if (entity.kind === "celestial-body") { rows.push(["Distance", `${entity.properties.heliocentricDistanceAu ?? 0} AU`]); if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]); }
   rows.push(["Time", new Date(entity.observedAt).toLocaleString()], ["State", entity.dataState], ["Source", entity.source.label]);
   return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" ? <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button> : <button className="streetButton" onClick={onStreet}>Street at map center</button>}<button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;

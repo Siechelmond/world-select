@@ -15,6 +15,7 @@ type AdsbAircraft = {
   seen?: number;
   emergency?: string;
   category?: string | number | null;
+  military?: boolean;
 };
 
 type AircraftApiResponse = {
@@ -29,10 +30,17 @@ type AircraftApiResponse = {
   sourceAgeSeconds?: number;
   latencyMs?: number;
   authMode?: "anonymous" | "oauth" | "anonymous-fallback";
-  region?: { latitude: number; longitude: number; radiusNm: number };
+  region?: { latitude: number; longitude: number; radiusNm: number } | null;
+  requestedScope?: "global" | "regional";
+  source?: "civilian" | "military" | "mixed";
 };
 
-export type AircraftQuery = { latitude: number; longitude: number; radiusNm?: number };
+export type AircraftQuery = {
+  latitude: number;
+  longitude: number;
+  radiusNm?: number;
+  scope?: "global" | "regional";
+};
 
 export type AircraftFeedMeta = {
   provider: string;
@@ -45,6 +53,8 @@ export type AircraftFeedMeta = {
   total: number;
   authMode: "anonymous" | "oauth" | "anonymous-fallback" | null;
   region: { latitude: number; longitude: number; radiusNm: number } | null;
+  requestedScope: "global" | "regional";
+  source: "civilian" | "military" | "mixed";
 };
 
 export type AircraftSnapshot = {
@@ -66,6 +76,21 @@ function responseTimeMs(payload: AircraftApiResponse) {
   return payload.now < 10_000_000_000 ? payload.now * 1000 : payload.now;
 }
 
+function normalizeClass(aircraft: AdsbAircraft) {
+  const category = Number(aircraft.category);
+  const type = String(aircraft.t ?? "").toUpperCase();
+  if (/^(H|HELI)|H60|UH60|CH47|AH64|EC\d|AS\d|B06|R22|R44|S76/.test(type)) return "helicopter";
+  if (/F16|F18|F35|F22|EUFI|T38|HAWK|L39|M346|FA50/.test(type)) return "fastjet";
+  if (/A388|B748|A35|B77|B78|A33|A34/.test(type)) return "widebody";
+  if (/AT7|DH8|SF3|BE20|C130/.test(type)) return "turboprop";
+  // OpenSky extended category 7 is high-performance / fast aircraft; categories
+  // 4-6 cover progressively heavier fixed-wing aircraft.
+  if (category === 7) return "fastjet";
+  if (category === 6) return "widebody";
+  if (category === 2 || category === 3) return "light";
+  return "airliner";
+}
+
 function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialEntity[] {
   const observedResponseMs = responseTimeMs(payload);
   const stale = Boolean(payload.stale || payload.degraded);
@@ -79,6 +104,7 @@ function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialE
     const seenSeconds = typeof aircraft.seen === "number" ? Math.max(0, aircraft.seen) : 0;
     const hex = aircraft.hex?.trim() || `unknown-${index}`;
     const callsign = aircraft.flight?.trim() || aircraft.r?.trim() || hex.toUpperCase();
+    const military = Boolean(aircraft.military || payload.source === "military");
 
     return [{
       id: `aircraft:${hex}`,
@@ -93,6 +119,8 @@ function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialE
         hex,
         registration: aircraft.r ?? null,
         aircraftType: aircraft.t ?? null,
+        aircraftClass: normalizeClass(aircraft),
+        military,
         altitudeFt: Math.round(altitudeFeet),
         groundSpeedKt: typeof aircraft.gs === "number" ? Number(aircraft.gs.toFixed(1)) : null,
         trackDeg: typeof aircraft.track === "number" ? Number(aircraft.track.toFixed(1)) : null,
@@ -109,12 +137,24 @@ function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialE
   });
 }
 
-export async function fetchAircraftSnapshot(query: AircraftQuery, signal?: AbortSignal): Promise<AircraftSnapshot> {
-  const radiusNm = Math.max(25, Math.min(250, Math.round(query.radiusNm ?? 220)));
-  const lat = Number(query.latitude.toFixed(4));
-  const lon = Number(query.longitude.toFixed(4));
-  const response = await fetch(`/api/aircraft?lat=${lat}&lon=${lon}&radius=${radiusNm}`, { signal, cache: "no-store" });
+function metaFromPayload(payload: AircraftApiResponse, entities: SpatialEntity[], requestedScope: "global" | "regional"): AircraftFeedMeta {
+  return {
+    provider: payload.provider ?? "unknown",
+    coverage: payload.coverage ?? "regional",
+    stale: Boolean(payload.stale),
+    degraded: Boolean(payload.degraded),
+    cached: Boolean(payload.cached),
+    sourceAgeSeconds: typeof payload.sourceAgeSeconds === "number" ? payload.sourceAgeSeconds : null,
+    latencyMs: typeof payload.latencyMs === "number" ? payload.latencyMs : null,
+    total: typeof payload.total === "number" ? payload.total : entities.length,
+    authMode: payload.authMode ?? null,
+    region: payload.region ?? null,
+    requestedScope: payload.requestedScope ?? requestedScope,
+    source: payload.source ?? "civilian",
+  };
+}
 
+async function readSnapshot(response: Response, radiusNm: number, requestedScope: "global" | "regional"): Promise<AircraftSnapshot> {
   if (!response.ok) {
     let detail = "";
     try {
@@ -129,29 +169,29 @@ export async function fetchAircraftSnapshot(query: AircraftQuery, signal?: Abort
 
   const payload = await response.json() as AircraftApiResponse;
   const entities = buildEntities(payload, radiusNm);
-  return {
-    entities,
-    meta: {
-      provider: payload.provider ?? "unknown",
-      coverage: payload.coverage ?? "regional",
-      stale: Boolean(payload.stale),
-      degraded: Boolean(payload.degraded),
-      cached: Boolean(payload.cached),
-      sourceAgeSeconds: typeof payload.sourceAgeSeconds === "number" ? payload.sourceAgeSeconds : null,
-      latencyMs: typeof payload.latencyMs === "number" ? payload.latencyMs : null,
-      total: typeof payload.total === "number" ? payload.total : entities.length,
-      authMode: payload.authMode ?? null,
-      region: payload.region ?? null,
-    },
-  };
+  return { entities, meta: metaFromPayload(payload, entities, requestedScope) };
 }
 
-// Backwards-compatible helper for any older call sites.
+export async function fetchAircraftSnapshot(query: AircraftQuery, signal?: AbortSignal): Promise<AircraftSnapshot> {
+  const radiusNm = Math.max(25, Math.min(250, Math.round(query.radiusNm ?? 220)));
+  const lat = Number(query.latitude.toFixed(4));
+  const lon = Number(query.longitude.toFixed(4));
+  const scope = query.scope === "global" ? "global" : "regional";
+  const response = await fetch(`/api/aircraft?lat=${lat}&lon=${lon}&radius=${radiusNm}&scope=${scope}`, { signal, cache: "no-store" });
+  return readSnapshot(response, radiusNm, scope);
+}
+
+export async function fetchMilitarySnapshot(signal?: AbortSignal): Promise<AircraftSnapshot> {
+  const response = await fetch('/api/military', { signal, cache: 'no-store' });
+  return readSnapshot(response, 250, 'global');
+}
+
 export async function fetchAircraftNear(query: AircraftQuery, signal?: AbortSignal): Promise<SpatialEntity[]> {
   return (await fetchAircraftSnapshot(query, signal)).entities;
 }
 
-// Display-only bounded interpolation between actual ADS-B updates. The stored entity remains OBSERVED/STALE.
+// Display-only bounded dead-reckoning between actual ADS-B updates. The stored
+// entity remains OBSERVED/STALE; this never fabricates a new observation.
 export function projectAircraftPosition(entity: SpatialEntity, atMs: number) {
   if (entity.kind !== "aircraft" || entity.dataState === "STALE") return entity.position;
   const speedKt = Number(entity.properties.groundSpeedKt ?? 0);

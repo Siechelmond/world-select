@@ -33,7 +33,7 @@ h1 { font-size: 22px; margin: 0; letter-spacing: -.03em; }
 .statusDot { width: 7px; height: 7px; border-radius: 50%; background: #34d399; box-shadow: 0 0 12px #34d399; }
 .statusDot.bad { background: #f87171; box-shadow: 0 0 12px #f87171; }
 
-.layers { position: fixed; top: 102px; left: 18px; width: 260px; padding: 16px; border-radius: 16px; z-index: 5; }
+.layers { position: fixed; top: 102px; left: 18px; width: 260px; max-height: calc(100vh - 190px); overflow-y: auto; overscroll-behavior: contain; padding: 16px; border-radius: 16px; z-index: 5; }
 .layerRow { margin-top: 12px; display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 12px; border: 1px solid rgba(103,232,249,.16); border-radius: 12px; background: rgba(8,47,73,.22); }
 .layerRow input { accent-color: #22d3ee; }
 .layerRow span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
@@ -330,3 +330,49 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 }
 .streetProviderSwitch { position: relative; z-index: 24; }
 .streetFrame { z-index: 21; }
+
+/* GEV capability recovery: aircraft filters + keyless directions */
+.aircraftFilterSwitch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: -2px 0 10px; }
+.aircraftFilterSwitch button,
+.directionsModes button,
+.directionsActions button {
+  border: 1px solid rgba(103,232,249,.14);
+  background: rgba(15,23,42,.58);
+  color: #64748b;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.aircraftFilterSwitch button.active,
+.directionsModes button.active,
+.directionsActions button.active {
+  color: #cffafe;
+  background: rgba(8,145,178,.2);
+  border-color: rgba(103,232,249,.3);
+}
+.directionsActions button:disabled,
+.directionsModes button:disabled { opacity: .35; cursor: not-allowed; }
+.directionsCard {
+  margin-top: 12px;
+  border: 1px solid rgba(103,232,249,.16);
+  border-radius: 12px;
+  background: rgba(8,47,73,.18);
+  padding: 11px;
+}
+.directionsCard.layerError { border-color: rgba(248,113,113,.35); background: rgba(127,29,29,.10); }
+.directionsHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.directionsHead span { display: grid; gap: 3px; min-width: 0; }
+.directionsHead strong { color: #e2e8f0; font-size: 11px; }
+.directionsHead small { color: #64748b; font-size: 8px; line-height: 1.3; }
+.directionsHead b { color: #67e8f9; font-size: 8px; letter-spacing: .08em; }
+.directionsModes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 9px; }
+.directionsActions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 6px; }
+.directionsActions button { padding: 6px 4px; font-size: 8px; }
+.directionsSummary { margin-top: 8px; color: #a5f3fc; font-size: 9px; line-height: 1.4; }
+.directionsError { margin-top: 8px; color: #fca5a5; font-size: 9px; line-height: 1.4; }
+@media (max-width: 780px) {
+  .directionsCard { margin-top: 9px; }
+  .directionsActions { grid-template-columns: 1fr 1fr; }
+}

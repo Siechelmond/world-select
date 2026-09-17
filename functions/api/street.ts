@@ -31,10 +31,25 @@ export const onRequestGet = async (context: any) => {
   api.searchParams.set("orderBy", "id");
   api.searchParams.set("orderDirection", "desc");
 
-  const upstream = await fetch(api.toString(), {
-    headers: { "User-Agent": "WorldSelect/0.5.1", Accept: "application/json" },
-    cf: { cacheTtl: 300, cacheEverything: true },
-  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+  const upstreamController = new AbortController();
+  const upstreamTimeout = setTimeout(() => upstreamController.abort('KartaView upstream timeout'), 4_000);
+  let upstream: Response;
+  try {
+    upstream = await fetch(api.toString(), {
+      headers: { "User-Agent": "WorldSelect/0.7", Accept: "application/json" },
+      signal: upstreamController.signal,
+      cf: { cacheTtl: 300, cacheEverything: true },
+    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+  } catch {
+    const timedOut = upstreamController.signal.aborted;
+    return Response.json({
+      error: timedOut ? "KartaView upstream timeout" : "KartaView upstream request failed",
+      photos: [],
+      searchRadiusM,
+    }, { status: 504 });
+  } finally {
+    clearTimeout(upstreamTimeout);
+  }
 
   if (!upstream.ok) {
     return Response.json({ error: `KartaView upstream HTTP ${upstream.status}`, photos: [], searchRadiusM }, { status: 502 });
