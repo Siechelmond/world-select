@@ -84,6 +84,9 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 .timebar input[type="range"] { width: 100%; accent-color: #22d3ee; }
 .timeActions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; font-size: 10px; color: #94a3b8; }
 .timeActions button { border: 1px solid rgba(103,232,249,.22); background: rgba(8,145,178,.14); color: #cffafe; border-radius: 8px; padding: 7px 9px; cursor: pointer; font-size: 9px; font-weight: 800; }
+.spaceTimePlayback { display: flex; align-items: center; gap: 4px; }
+.spaceTimePlayback button { padding: 6px 7px; min-width: 42px; }
+.spaceTimePlayback button.active { background: rgba(34,211,238,.24); border-color: rgba(103,232,249,.48); color: #ecfeff; }
 .legendDot.observed { background: var(--orange); box-shadow: 0 0 8px var(--orange); }
 .legendDot.calculated { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 
@@ -352,6 +355,8 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   background: rgba(8,145,178,.2);
   border-color: rgba(103,232,249,.3);
 }
+.aircraftFilterSwitch button small { display: inline-block; margin-left: 3px; color: #94a3b8; font-size: 8px; font-weight: 700; }
+.aircraftFilterSwitch button.active small { color: #cffafe; }
 .directionsActions button:disabled,
 .directionsModes button:disabled { opacity: .35; cursor: not-allowed; }
 .directionsCard {
@@ -450,25 +455,18 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 .kuiperOuter { stroke: rgba(148,163,184,.12); }
 
 .galaxyScene { display: grid; place-items: center; }
-.milkyWayVisual {
-  position: relative; width: min(72vh, 720px); aspect-ratio: 1; border-radius: 50%;
-  transform: rotate(-12deg) scaleY(.64);
-  background:
-    radial-gradient(circle at 50% 50%, rgba(254,240,138,.95) 0 2%, rgba(251,191,36,.48) 4%, rgba(255,255,255,.15) 10%, transparent 18%),
-    repeating-conic-gradient(from 5deg, rgba(147,197,253,.0) 0 10deg, rgba(191,219,254,.20) 12deg 17deg, rgba(255,255,255,.02) 18deg 33deg),
-    radial-gradient(ellipse at center, rgba(96,165,250,.18), rgba(2,6,23,.18) 52%, transparent 68%);
-  box-shadow: inset 0 0 90px rgba(147,197,253,.1), 0 0 70px rgba(59,130,246,.08);
-}
-.galacticCore { position: absolute; left: 50%; top: 50%; width: 9%; aspect-ratio: 1; border-radius: 50%; transform: translate(-50%,-50%); background: #fde68a; box-shadow: 0 0 55px #f59e0b; }
-.galaxyArm { position: absolute; left: 50%; top: 50%; width: 46%; height: 15%; border: 10px solid rgba(191,219,254,.16); border-left-color: transparent; border-bottom-color: transparent; border-radius: 50%; transform-origin: 0 50%; filter: blur(1px); }
-.armA { transform: rotate(12deg) translateY(-50%); }
-.armB { transform: rotate(102deg) translateY(-50%); }
-.armC { transform: rotate(192deg) translateY(-50%); }
-.armD { transform: rotate(282deg) translateY(-50%); }
-.solarHere { position: absolute; left: 68%; top: 58%; display: flex; align-items: center; gap: 10px; transform: scaleY(1.56) rotate(12deg); color: #cffafe; font-size: 11px; letter-spacing: .05em; }
-.solarHere i { width: 11px; height: 11px; border-radius: 50%; background: #22d3ee; box-shadow: 0 0 13px #22d3ee; }
-.solarHere span { white-space: nowrap; font-weight: 800; }
-.solarHere small { color: #94a3b8; font-size: 8px; font-weight: 500; }
+.milkyWaySvg { width: min(78vw, 900px); height: min(72vh, 720px); overflow: visible; }
+.galaxySpiralGlow { fill: none; stroke: rgba(147,197,253,.16); stroke-width: 42; stroke-linecap: round; filter: url(#galaxy-soft); }
+.galaxySpiralArm { fill: none; stroke: rgba(219,234,254,.24); stroke-width: 18; stroke-linecap: round; }
+.galaxyDustLane { fill: none; stroke: rgba(2,6,23,.78); stroke-width: 7; stroke-linecap: round; opacity: .88; }
+.orionSpur { fill: none; stroke: rgba(103,232,249,.34); stroke-width: 10; stroke-linecap: round; stroke-dasharray: 18 9; }
+.solarMarkerDot { fill: #22d3ee; filter: drop-shadow(0 0 8px #22d3ee); }
+.solarMarkerRing { fill: none; stroke: rgba(103,232,249,.7); stroke-width: 2; }
+.solarMarkerLeader { stroke: rgba(103,232,249,.55); stroke-width: 1.5; }
+.solarMarkerText { fill: #cffafe; font-size: 16px; font-weight: 900; letter-spacing: .08em; paint-order: stroke; stroke: #020617; stroke-width: 4px; }
+.solarMarkerSubtext, .orionSpurLabel, .galacticCenterLabel { fill: #94a3b8; font-size: 11px; letter-spacing: .08em; paint-order: stroke; stroke: #020617; stroke-width: 3px; }
+.orionSpurLabel { fill: #a5f3fc; font-size: 10px; }
+.galacticCenterLabel { fill: #fde68a; font-size: 10px; }
 .galaxyFacts {
   position: absolute; right: 18px; bottom: 18px; width: 250px; padding: 13px; border-radius: 12px;
   display: grid; gap: 6px; font-size: 10px; color: #94a3b8;
@@ -497,7 +495,7 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .moonLabel { font-size: 16px; }
   .spaceScaleDisclosure { bottom: 2px; max-width: 94vw; font-size: 8px; }
   .galaxyFacts { left: 10px; right: 10px; bottom: 8px; width: auto; }
-  .milkyWayVisual { width: min(92vw, 620px); }
+  .milkyWaySvg { width: min(96vw, 760px); height: auto; }
 }
 
 /* Space Explorer vertical rhythm: keep scale controls, title and scene separate. */

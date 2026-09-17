@@ -74,6 +74,50 @@ function deterministicBeltPoints(count: number) {
   });
 }
 
+function galaxySpiralPath(arm: number, radiusOffset = 0) {
+  const points = Array.from({ length: 92 }, (_, index) => {
+    const t = index / 91;
+    const radius = 48 + radiusOffset + t * 355;
+    const angle = arm * Math.PI / 2 + 0.22 + t * 5.15;
+    const x = 500 + Math.cos(angle) * radius;
+    const y = 500 + Math.sin(angle) * radius * 0.53;
+    return `${index ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  return points.join(' ');
+}
+
+function deterministicGalaxyStars() {
+  const stars: Array<{ x: number; y: number; r: number; opacity: number; warm: boolean }> = [];
+  for (let arm = 0; arm < 4; arm += 1) {
+    for (let index = 0; index < 105; index += 1) {
+      const t = (index + 4) / 109;
+      const jitter = Math.sin(index * 12.9898 + arm * 78.233) * 19 + Math.sin(index * 2.17 + arm) * 8;
+      const angleJitter = Math.sin(index * 5.37 + arm * 11.1) * 0.055;
+      const radius = 42 + t * 365 + jitter;
+      const angle = arm * Math.PI / 2 + 0.22 + t * 5.15 + angleJitter;
+      stars.push({
+        x: 500 + Math.cos(angle) * radius,
+        y: 500 + Math.sin(angle) * radius * 0.53,
+        r: 0.8 + ((index * 7 + arm * 3) % 5) * 0.34,
+        opacity: 0.28 + ((index * 13 + arm) % 7) * 0.085,
+        warm: (index + arm * 2) % 11 === 0,
+      });
+    }
+  }
+  for (let index = 0; index < 170; index += 1) {
+    const angle = ((index * 137.50776405) % 360) * Math.PI / 180;
+    const radial = 62 + ((index * 53) % 350);
+    stars.push({
+      x: 500 + Math.cos(angle) * radial,
+      y: 500 + Math.sin(angle) * radial * 0.53,
+      r: 0.55 + (index % 3) * 0.25,
+      opacity: 0.12 + (index % 5) * 0.045,
+      warm: false,
+    });
+  }
+  return stars;
+}
+
 export default function SpaceExplorer({ planets, sun, time, onSelect }: Props) {
   const [level, setLevel] = useState<SpaceLevel>("solar");
   const [focusedPlanet, setFocusedPlanet] = useState<string>("Earth");
@@ -289,22 +333,55 @@ function OuterSystemView({ time, onSelect, onSolar }: { time: Date; onSelect: (e
 }
 
 function GalaxyView({ onSolar }: { onSolar: () => void }) {
+  const stars = useMemo(() => deterministicGalaxyStars(), []);
+  const solarAngle = 0.22 + 0.63 * 5.15 + 0.48;
+  const solarRadius = 48 + 0.63 * 355;
+  const solarX = 500 + Math.cos(solarAngle) * solarRadius;
+  const solarY = 500 + Math.sin(solarAngle) * solarRadius * 0.53;
+
   return (
     <div className="galaxyScene">
       <button className="spaceBackButton" onClick={onSolar}>← Solar System</button>
-      <div className="milkyWayVisual" role="img" aria-label="Schematic Milky Way with the Solar System marked in the Orion Spur">
-        <div className="galacticCore" />
-        <div className="galaxyArm armA" />
-        <div className="galaxyArm armB" />
-        <div className="galaxyArm armC" />
-        <div className="galaxyArm armD" />
-        <div className="solarHere"><i /><span>YOU ARE HERE<br/><small>Solar System · Orion Spur</small></span></div>
-      </div>
+      <svg viewBox="0 0 1000 760" className="milkyWaySvg" role="img" aria-label="Milky Way context model with spiral arms, dust lanes and the Solar System marked in the Orion Spur">
+        <defs>
+          <radialGradient id="galaxy-core-glow">
+            <stop offset="0%" stopColor="#fff7c2" stopOpacity="1"/>
+            <stop offset="24%" stopColor="#fbbf24" stopOpacity=".78"/>
+            <stop offset="58%" stopColor="#c084fc" stopOpacity=".18"/>
+            <stop offset="100%" stopColor="#0f172a" stopOpacity="0"/>
+          </radialGradient>
+          <radialGradient id="galaxy-disk-glow">
+            <stop offset="0%" stopColor="#dbeafe" stopOpacity=".18"/>
+            <stop offset="58%" stopColor="#60a5fa" stopOpacity=".08"/>
+            <stop offset="100%" stopColor="#020617" stopOpacity="0"/>
+          </radialGradient>
+          <filter id="galaxy-soft"><feGaussianBlur stdDeviation="5"/></filter>
+          <filter id="galaxy-core-soft"><feGaussianBlur stdDeviation="12"/></filter>
+        </defs>
+        <g transform="translate(0 -120)">
+          <ellipse cx="500" cy="500" rx="450" ry="238" fill="url(#galaxy-disk-glow)" />
+          {[0, 1, 2, 3].map((arm) => <path key={`glow-${arm}`} d={galaxySpiralPath(arm)} className="galaxySpiralGlow" />)}
+          {[0, 1, 2, 3].map((arm) => <path key={`arm-${arm}`} d={galaxySpiralPath(arm)} className="galaxySpiralArm" />)}
+          {[0, 1, 2, 3].map((arm) => <path key={`dust-${arm}`} d={galaxySpiralPath(arm, -13)} className="galaxyDustLane" />)}
+          <path d="M565 510 C625 485 690 484 748 522" className="orionSpur" />
+          {stars.map((star, index) => <circle key={index} cx={star.x} cy={star.y} r={star.r} fill={star.warm ? '#fde68a' : '#dbeafe'} opacity={star.opacity} />)}
+          <ellipse cx="500" cy="500" rx="96" ry="54" fill="url(#galaxy-core-glow)" filter="url(#galaxy-core-soft)" />
+          <ellipse cx="500" cy="500" rx="44" ry="25" fill="#fde68a" opacity=".92" />
+          <circle cx={solarX} cy={solarY} r="7" className="solarMarkerDot" />
+          <circle cx={solarX} cy={solarY} r="16" className="solarMarkerRing" />
+          <line x1={solarX + 14} y1={solarY - 8} x2={solarX + 62} y2={solarY - 48} className="solarMarkerLeader" />
+          <text x={solarX + 70} y={solarY - 52} className="solarMarkerText">YOU ARE HERE</text>
+          <text x={solarX + 70} y={solarY - 34} className="solarMarkerSubtext">Solar System · Orion Spur</text>
+          <text x="500" y="575" textAnchor="middle" className="galacticCenterLabel">GALACTIC CENTER</text>
+          <text x="705" y="476" className="orionSpurLabel">ORION SPUR</text>
+        </g>
+      </svg>
       <div className="galaxyFacts glass">
         <strong>MILKY WAY</strong>
         <span>~100,000 light-years across</span>
         <span>Solar System ≈ 26,000 light-years from the Galactic Center</span>
-        <small>Schematic context view — not a literal photograph or star-by-star map.</small>
+        <span>Spiral-arm + dust-lane context model</span>
+        <small>Spatial context, not a literal photograph or star-by-star reconstruction.</small>
       </div>
     </div>
   );

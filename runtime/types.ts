@@ -41,6 +41,27 @@ export type RuntimeLayerStats = {
   budgets: LayerBudgets;
 };
 
+
+export type AircraftSourceState = 'idle' | 'loading' | 'live' | 'degraded' | 'unavailable';
+
+export type AircraftSourceSummary = {
+  allCount: number;
+  civilian: {
+    state: AircraftSourceState;
+    count: number;
+    provider: string | null;
+    coverage: LayerProvenance['coverage'] | null;
+    error: string | null;
+  };
+  military: {
+    state: AircraftSourceState;
+    count: number;
+    provider: string | null;
+    coverage: LayerProvenance['coverage'] | null;
+    error: string | null;
+  };
+};
+
 export type RuntimeSnapshot = {
   camera: CameraView;
   selected: SpatialEntity | null;
@@ -49,6 +70,7 @@ export type RuntimeSnapshot = {
   followAircraft: boolean;
   mapSource: string;
   mapError: string | null;
+  aircraftSources: AircraftSourceSummary;
   layers: Record<RuntimeLayerId, RuntimeLayerStats>;
 };
 

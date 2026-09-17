@@ -12,6 +12,8 @@ import {
   type LayerContext,
   type RuntimeLayer,
   type RuntimeLayerStats,
+  type AircraftSourceState,
+  type AircraftSourceSummary,
 } from '@/runtime/types';
 
 const REFRESH_MS = 30_000;
@@ -79,6 +81,10 @@ export class AircraftLayer implements RuntimeLayer {
   private militaryRecords = new Map<string, SpatialEntity>();
   private civilianMeta: AircraftFeedMeta | null = null;
   private militaryMeta: AircraftFeedMeta | null = null;
+  private civilianHealthState: AircraftSourceState = 'idle';
+  private militaryHealthState: AircraftSourceState = 'idle';
+  private civilianHealthError: string | null = null;
+  private militaryHealthError: string | null = null;
   private connectStartedAt: number | null = null;
   private billboards = new Map<string, any>();
   private visibleIds: string[] = [];
@@ -113,6 +119,25 @@ export class AircraftLayer implements RuntimeLayer {
   getQuery() { return { ...this.query }; }
   getDisplayMode() { return this.displayMode; }
   getMilitaryCount() { return this.lastMilitaryCount; }
+  getSourceSummary(): AircraftSourceSummary {
+    return {
+      allCount: this.records.size,
+      civilian: {
+        state: this.civilianHealthState,
+        count: this.civilianRecords.size,
+        provider: this.civilianMeta?.provider ?? null,
+        coverage: this.civilianMeta?.coverage ?? null,
+        error: this.civilianHealthError,
+      },
+      military: {
+        state: this.militaryHealthState,
+        count: this.militaryRecords.size,
+        provider: this.militaryMeta?.provider ?? null,
+        coverage: this.militaryMeta?.coverage ?? null,
+        error: this.militaryHealthError,
+      },
+    };
+  }
 
   setDisplayMode(mode: AircraftDisplayMode) {
     if (mode !== 'all' && mode !== 'civilian' && mode !== 'military') return;
@@ -385,6 +410,10 @@ export class AircraftLayer implements RuntimeLayer {
       this.connectStartedAt ??= Date.now();
       this.stats.state = 'loading';
       this.stats.error = 'Connecting to ADS-B providers…';
+      if (!this.civilianRecords.size) this.civilianHealthState = 'loading';
+      if (!this.militaryRecords.size) this.militaryHealthState = 'loading';
+      this.civilianHealthError = null;
+      this.militaryHealthError = null;
     } else {
       this.stats.error = null;
     }
@@ -410,6 +439,21 @@ export class AircraftLayer implements RuntimeLayer {
       ? (militaryResult.reason instanceof Error ? militaryResult.reason.message : 'military provider unavailable')
       : militaryResult.value.entities.length ? null : 'military provider returned no positioned aircraft';
 
+    if (civilian) {
+      this.civilianHealthState = civilian.meta.stale || civilian.meta.degraded ? 'degraded' : 'live';
+      this.civilianHealthError = civilian.meta.stale || civilian.meta.degraded ? 'Civilian feed is serving stale/degraded data' : null;
+    } else if (this.civilianRecords.size) {
+      this.civilianHealthState = 'degraded';
+      this.civilianHealthError = `${civilianError ?? 'Civilian provider unavailable'} · retaining last-good`;
+    }
+    if (military) {
+      this.militaryHealthState = military.meta.stale || military.meta.degraded ? 'degraded' : 'live';
+      this.militaryHealthError = military.meta.stale || military.meta.degraded ? 'Military feed is serving stale/degraded data' : null;
+    } else if (this.militaryRecords.size) {
+      this.militaryHealthState = 'degraded';
+      this.militaryHealthError = `${militaryError ?? 'Military provider unavailable'} · retaining last-good`;
+    }
+
     if (!(civilian || military)) {
       const message = [civilianError, militaryError].filter(Boolean).join(' · ') || 'No positioned aircraft returned';
       const hasLastGood = this.civilianRecords.size > 0 || this.militaryRecords.size > 0;
@@ -426,6 +470,14 @@ export class AircraftLayer implements RuntimeLayer {
       const connecting = Date.now() - this.connectStartedAt < CONNECT_GRACE_MS;
       this.stats.state = connecting ? 'loading' : 'unavailable';
       this.stats.error = connecting ? `${message} · still connecting, retrying` : message;
+      if (!this.civilianRecords.size) {
+        this.civilianHealthState = connecting ? 'loading' : 'unavailable';
+        this.civilianHealthError = civilianError;
+      }
+      if (!this.militaryRecords.size) {
+        this.militaryHealthState = connecting ? 'loading' : 'unavailable';
+        this.militaryHealthError = militaryError;
+      }
       if (!connecting) this.lastMeta = null;
       this.publish();
       this.scheduleRefresh(connecting ? CONNECT_RETRY_MS : REFRESH_MS);
@@ -550,6 +602,10 @@ export class AircraftLayer implements RuntimeLayer {
     this.records.clear();
     this.civilianRecords.clear();
     this.militaryRecords.clear();
+    this.civilianHealthState = 'idle';
+    this.militaryHealthState = 'idle';
+    this.civilianHealthError = null;
+    this.militaryHealthError = null;
     this.civilianMeta = null;
     this.militaryMeta = null;
     this.billboards.clear();

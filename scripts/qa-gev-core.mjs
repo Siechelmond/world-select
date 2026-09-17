@@ -9,6 +9,9 @@ const militaryApi = read('../functions/api/military.ts');
 const aircraftLayer = read('../runtime/layers/aircraft.ts');
 const satelliteLayer = read('../runtime/layers/satellites.ts');
 const trafficLayer = read('../runtime/layers/traffic.ts');
+const trafficApi = read('../functions/api/traffic.ts');
+const googleStreet = read('../lib/google-street.ts');
+const streetWorker = read('../functions/api/street.ts');
 const mapStack = read('../runtime/maps/controller.ts');
 const routeApi = read('../functions/api/route.ts');
 const routeService = read('../runtime/app/route-service.ts');
@@ -52,6 +55,11 @@ check('moon display is explicitly simulated and scaled', spaceModel.includes('da
 check('outer system density is explicitly illustrative', spaceModel.includes('Kuiper Belt density is illustrative') && spaceExplorer.includes('not current ephemerides'));
 check('space explorer is isolated from Earth runtime ownership', !spaceExplorer.includes('WorldSelectRuntime') && !spaceExplorer.includes('setLayerEnabled'));
 check('ISS preview explains dark live-feed states', app.includes('night side') && app.includes('signal loss'));
+check('aircraft filter UI publishes source-specific count/state', runtimeTypes.includes('AircraftSourceSummary') && runtimeApp.includes('aircraftSources') && app.includes('aircraftUiState') && app.includes('aircraftSources?.civilian.count'));
+check('traffic supports Orbis v2 with classic v4 documented fallback', trafficApi.includes("'orbis-v2' | 'classic-v4'") && trafficApi.includes('/maps/orbis/traffic/') && trafficApi.includes('/traffic/map/4/tile/'));
+check('Street View widens Google coverage before keyless fallback', googleStreet.includes('STREET_SEARCH_RADII_M') && googleStreet.includes('[120, 250, 500]') && streetWorker.includes('searchRadiusM = 1000'));
+check('space time playback animates planet and moon clock without touching Earth runtime', app.includes('spacePlaybackRate') && app.includes('spacePlaybackDays') && app.includes('spaceTimePlayback') && app.includes('[1, 7, 30]') && !spaceExplorer.includes('setTimeOffsetDays'));
+check('Milky Way uses spiral arms, dust lanes and Orion Spur marker', spaceExplorer.includes('galaxySpiralPath') && spaceExplorer.includes('galaxyDustLane') && spaceExplorer.includes('ORION SPUR') && spaceExplorer.includes('YOU ARE HERE'));
 
 let failed = 0;
 for (const [label, pass] of checks) {

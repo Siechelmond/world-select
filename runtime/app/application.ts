@@ -163,6 +163,7 @@ export class WorldSelectRuntime {
       followAircraft: this.followAircraft,
       mapSource: map.source,
       mapError: map.error,
+      aircraftSources: this.layers.get<AircraftLayer>('aircraft').getSourceSummary(),
       layers: this.layers.stats(),
     };
   }

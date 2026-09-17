@@ -10,7 +10,7 @@ import { findGoogleStreetCoverage, loadGoogleMaps } from "@/lib/google-street";
 import { fetchRoute as fetchWorldRoute, formatDistance, formatDuration, type RoutePoint, type RouteProfile, type RouteResult } from "@/lib/directions";
 import type { CesiumCameraPose } from "@/lib/camera";
 import { WorldSelectRuntime } from "@/runtime/app/application";
-import type { RuntimeLayerId, RuntimeLayerState, RuntimeSnapshot } from "@/runtime/types";
+import type { AircraftSourceState, RuntimeLayerId, RuntimeLayerState, RuntimeSnapshot } from "@/runtime/types";
 
 declare global { interface Window { Cesium?: any; google?: any } }
 
@@ -28,7 +28,7 @@ const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
 const SEN_ISS_LIVE_VIDEO_ID = process.env.NEXT_PUBLIC_SEN_ISS_LIVE_VIDEO_ID ?? "fO9e9jnhYK8";
 
-function toLoadState(state: RuntimeLayerState): LoadState {
+function toLoadState(state: RuntimeLayerState | AircraftSourceState): LoadState {
   if (state === "live") return "ready";
   if (state === "unavailable") return "error";
   return state;
@@ -53,6 +53,9 @@ export default function WorldSelectApp() {
   const [satelliteCatalog, setSatelliteCatalog] = useState<SatelliteCatalog>("core");
   const [aircraftFilter, setAircraftFilter] = useState<AircraftFilter>("all");
   const [timeOffsetDays, setTimeOffsetDays] = useState(0);
+  const [spacePlaybackDays, setSpacePlaybackDays] = useState(0);
+  const [spacePlaybackRate, setSpacePlaybackRate] = useState(7);
+  const [spacePlaying, setSpacePlaying] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
   const [isMobile, setIsMobile] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("none");
@@ -76,8 +79,8 @@ export default function WorldSelectApp() {
   const [routeError, setRouteError] = useState<string | null>(null);
 
   const selectedTime = useMemo(
-    () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + timeOffsetDays * DAY_MS),
-    [timeOffsetDays, nowTick],
+    () => new Date(nowTick + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
+    [timeOffsetDays, spacePlaybackDays, nowTick],
   );
   const planets = useMemo(() => computePlanetPositions(selectedTime), [selectedTime]);
   const sun = useMemo(() => sunEntity(selectedTime), [selectedTime]);
@@ -103,6 +106,19 @@ export default function WorldSelectApp() {
     const timer = window.setInterval(() => setNowTick(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, [viewMode, timeOffsetDays]);
+
+  useEffect(() => {
+    if (viewMode !== "space" || !spacePlaying) return;
+    const tickMs = 250;
+    const timer = window.setInterval(() => {
+      setSpacePlaybackDays((days) => days + spacePlaybackRate * (tickMs / 1000));
+    }, tickMs);
+    return () => window.clearInterval(timer);
+  }, [viewMode, spacePlaying, spacePlaybackRate]);
+
+  useEffect(() => {
+    if (viewMode !== "space" && spacePlaying) setSpacePlaying(false);
+  }, [viewMode, spacePlaying]);
 
   useEffect(() => {
     if (!cesiumReady || !containerRef.current || !window.Cesium || runtimeRef.current) return;
@@ -283,6 +299,8 @@ export default function WorldSelectApp() {
       return;
     }
     if (days !== 0 && snapshot?.layers.aircraft.enabled) resumeAircraftRef.current = true;
+    setSpacePlaying(false);
+    setSpacePlaybackDays(0);
     setTimeOffsetDays(days);
     runtime.setTimeOffsetDays(days);
     if (days === 0 && resumeAircraftRef.current) {
@@ -292,6 +310,8 @@ export default function WorldSelectApp() {
   }, [snapshot?.layers.aircraft.enabled]);
 
   const resetTime = useCallback(() => {
+    setSpacePlaying(false);
+    setSpacePlaybackDays(0);
     setNowTick(Date.now());
     changeTimeOffset(0);
   }, [changeTimeOffset]);
@@ -474,6 +494,24 @@ export default function WorldSelectApp() {
   const aircraftAvailable = viewMode === "earth";
   const aircraftAtNow = timeOffsetDays === 0;
   const layerStats = snapshot?.layers;
+  const aircraftSources = snapshot?.aircraftSources;
+  const activeAircraftSource = aircraftFilter === "civilian"
+    ? aircraftSources?.civilian
+    : aircraftFilter === "military" ? aircraftSources?.military : null;
+  const aircraftUiState = activeAircraftSource?.state ?? layerStats?.aircraft.state ?? "idle";
+  const aircraftUiCount = aircraftFilter === "all"
+    ? aircraftSources?.allCount ?? layerStats?.aircraft.count ?? 0
+    : activeAircraftSource?.count ?? 0;
+  const aircraftUiError = activeAircraftSource?.error ?? layerStats?.aircraft.error ?? undefined;
+  const aircraftUiSubtitle = !aircraftAvailable
+    ? "EARTH / NOW only"
+    : !aircraftAtNow
+      ? "Live aircraft · NOW only · enable to return to NOW"
+      : aircraftFilter === "civilian"
+        ? `CIV · ${activeAircraftSource?.provider ?? "provider unavailable"} · ${activeAircraftSource?.coverage ?? "coverage unknown"}`
+        : aircraftFilter === "military"
+          ? `MIL · ${activeAircraftSource?.provider ?? "adsb.lol military"} · ${activeAircraftSource?.coverage ?? "worldwide"}`
+          : `ADS-B · ${layerStats?.aircraft.provenance?.provider ?? "provider resolving"} · ${layerStats?.aircraft.provenance?.coverage ?? "coverage resolving"}`;
 
   return (
     <main className="shell">
@@ -536,20 +574,16 @@ export default function WorldSelectApp() {
             onChange={setAircraftEnabled}
             onRetry={() => retryLayer("aircraft")}
             title="Aircraft"
-            subtitle={!aircraftAvailable
-              ? "EARTH / NOW only"
-              : !aircraftAtNow
-                ? "Live aircraft · NOW only · enable to return to NOW"
-                : `ADS-B · ${layerStats.aircraft.provenance?.provider ?? "provider resolving"} · ${layerStats.aircraft.provenance?.coverage ?? "coverage resolving"}`}
-            state={toLoadState(layerStats.aircraft.state)}
-            count={aircraftAtNow ? layerStats.aircraft.count : 0}
+            subtitle={aircraftUiSubtitle}
+            state={toLoadState(aircraftUiState)}
+            count={aircraftAtNow ? aircraftUiCount : 0}
             disabled={!aircraftAvailable}
-            error={layerStats.aircraft.error ?? undefined}
+            error={aircraftUiError}
           />
           {layerStats.aircraft.enabled && <div className="aircraftFilterSwitch" role="group" aria-label="Aircraft filter">
-            <button className={aircraftFilter === "all" ? "active" : ""} onClick={() => changeAircraftFilter("all")}>ALL</button>
-            <button className={aircraftFilter === "civilian" ? "active" : ""} onClick={() => changeAircraftFilter("civilian")}>CIV</button>
-            <button className={aircraftFilter === "military" ? "active" : ""} onClick={() => changeAircraftFilter("military")}>MIL</button>
+            <button className={aircraftFilter === "all" ? "active" : ""} onClick={() => changeAircraftFilter("all")}>ALL <small>{aircraftSources?.allCount ?? 0}</small></button>
+            <button className={aircraftFilter === "civilian" ? "active" : ""} onClick={() => changeAircraftFilter("civilian")}>CIV <small>{aircraftSources?.civilian.count ?? 0}</small></button>
+            <button className={aircraftFilter === "military" ? "active" : ""} onClick={() => changeAircraftFilter("military")}>MIL <small>{aircraftSources?.military.count ?? 0}</small></button>
           </div>}
           <LayerToggle
             checked={layerStats.traffic.enabled}
@@ -608,7 +642,14 @@ export default function WorldSelectApp() {
         <button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button>
         <div><p className="panelLabel">TIME</p><strong>{selectedTime.toLocaleString()}</strong></div>
         <input aria-label="Time offset in days" type="range" min={-365} max={365} step={1} value={timeOffsetDays} onChange={(event: ChangeEvent<HTMLInputElement>) => changeTimeOffset(Number(event.target.value))} />
-        <div className="timeActions"><span>{timeOffsetDays > 0 ? `+${timeOffsetDays}` : timeOffsetDays} days</span><button onClick={resetTime}>NOW</button></div>
+        <div className="timeActions">
+          <span>{(timeOffsetDays + spacePlaybackDays) > 0 ? `+${(timeOffsetDays + spacePlaybackDays).toFixed(spacePlaybackDays ? 1 : 0)}` : (timeOffsetDays + spacePlaybackDays).toFixed(spacePlaybackDays ? 1 : 0)} days</span>
+          {viewMode === "space" && <div className="spaceTimePlayback" role="group" aria-label="Space time playback">
+            <button className={spacePlaying ? "active" : ""} onClick={() => setSpacePlaying((playing) => !playing)}>{spacePlaying ? "PAUSE" : "PLAY"}</button>
+            {[1, 7, 30].map((rate) => <button key={rate} className={spacePlaybackRate === rate ? "active" : ""} onClick={() => setSpacePlaybackRate(rate)}>{rate}D/S</button>)}
+          </div>}
+          <button onClick={resetTime}>NOW</button>
+        </div>
       </section>
 
       {!streetOpen && hovered?.kind === "satellite" && /(^|\s)ISS(\s|$)|ZARYA/i.test(hovered.name) && <IssLiveHoverCard

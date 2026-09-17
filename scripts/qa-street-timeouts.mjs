@@ -7,9 +7,11 @@ const app = fs.readFileSync(new URL('../components/WorldSelectApp.tsx', import.m
 
 const checks = [
   ['Google Maps load has hard timeout', google.includes('GOOGLE_MAPS_LOAD_TIMEOUT_MS') && google.includes('withTimeout(loadPromise')],
-  ['Google coverage has hard timeout', google.includes('STREET_COVERAGE_TIMEOUT_MS') && google.includes("'Google Street View coverage check'")],
+  ['Google coverage has hard timeout', google.includes('STREET_COVERAGE_TIMEOUT_MS') && google.includes('coverage check') && google.includes('requestStreetPanorama')],
   ['KartaView browser proxy has hard timeout', client.includes('STREET_PROXY_TIMEOUT_MS') && client.includes('AbortController')],
   ['KartaView worker upstream has hard timeout', worker.includes('KartaView upstream timeout') && worker.includes('AbortController')],
+  ['Google coverage widens progressively', google.includes('STREET_SEARCH_RADII_M') && google.includes('[120, 250, 500]')],
+  ['KartaView fallback uses wider public search', worker.includes('searchRadiusM = 1000') && worker.includes('itemsPerPage')],
   ['Street failure stays on Globe', app.includes('Street imagery unavailable — staying on Globe') && app.includes('setStreetOpen(false)')],
 ];
 
