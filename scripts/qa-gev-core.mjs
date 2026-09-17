@@ -22,8 +22,8 @@ const spaceExplorer = read('../components/SpaceExplorer.tsx');
 const spaceModel = read('../lib/space.ts');
 
 check('global aircraft uses direct OpenSky states/all', aircraftApi.includes('scope === "global"') && aircraftApi.includes('states/all'));
-check('configured gateway no longer shadows direct OpenSky', aircraftApi.includes('if (modeForOpenSky !== "disabled")') && aircraftApi.indexOf('tryProvider("opensky"') < aircraftApi.indexOf('fallbackProviders'));
-check('regional fallbacks run concurrently', aircraftApi.includes('Promise.all(fallbackProviders.map'));
+check('configured gateway no longer shadows direct OpenSky', aircraftApi.includes('if (modeForOpenSky !== "disabled")') && aircraftApi.indexOf('tryProvider("opensky"') < aircraftApi.indexOf('Promise.all(stores)'));
+check('regional fallbacks run concurrently', aircraftApi.includes('Promise.all(stores)'));
 check('military feed uses adsb.lol global military endpoint', militaryApi.includes('https://api.adsb.lol/v2/mil'));
 check('military feed has last-good stale cache path', militaryApi.includes("'X-World-Select-Aircraft-Stale': '1'"));
 check('aircraft has class-specific glyphs', aircraftLayer.includes('AIRCRAFT_ICONS') && aircraftLayer.includes('helicopter') && aircraftLayer.includes('fastjet'));

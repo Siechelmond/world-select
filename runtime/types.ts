@@ -69,7 +69,10 @@ export type RuntimeSnapshot = {
   hoveredScreen: { x: number; y: number } | null;
   followAircraft: boolean;
   mapSource: string;
+  mapSourceKind: 'esri-imagery' | 'osm' | 'google-3d' | 'initializing';
   mapError: string | null;
+  google3DAvailable: boolean;
+  google3DActive: boolean;
   aircraftSources: AircraftSourceSummary;
   layers: Record<RuntimeLayerId, RuntimeLayerStats>;
 };

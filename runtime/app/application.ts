@@ -166,7 +166,10 @@ export class WorldSelectRuntime {
       hoveredScreen: this.hoveredScreen ? { ...this.hoveredScreen } : null,
       followAircraft: this.followAircraft,
       mapSource: map.source,
+      mapSourceKind: this.mapStack.getSourceKind(),
       mapError: map.error,
+      google3DAvailable: this.mapStack.isGoogle3DAvailable(),
+      google3DActive: this.mapStack.isGoogle3DActive(),
       aircraftSources: this.layers.get<AircraftLayer>('aircraft').getSourceSummary(),
       layers: this.layers.stats(),
     };
@@ -238,6 +241,17 @@ export class WorldSelectRuntime {
     this.governor.setApplicationActive(active);
     this.layers.setSceneActive(active);
     if (active) this.governor.request();
+  }
+
+  async enableGoogle3D(): Promise<boolean> {
+    const ok = await this.mapStack.enableGoogle3D();
+    this.emit();
+    return ok;
+  }
+
+  disableGoogle3D() {
+    this.mapStack.disableGoogle3D();
+    this.emit();
   }
 
   flyEarth() {

@@ -618,9 +618,14 @@ export default function WorldSelectApp() {
         <div className="spaceLayerSummary">
           <span>Viewer</span><em>{runtimeReady ? "PERSISTENT" : "STARTING"}</em>
           <span>Map stack</span><em>{snapshot?.mapSource ?? "INITIALIZING"}</em>
+          {snapshot?.google3DAvailable && <button
+            className={`google3dToggle ${snapshot.google3DActive ? "active" : ""}`}
+            onClick={() => snapshot.google3DActive ? runtimeRef.current?.disableGoogle3D() : void runtimeRef.current?.enableGoogle3D()}
+            aria-pressed={snapshot.google3DActive}
+          >{snapshot.google3DActive ? "3D ON" : "3D OFF"}</button>}
           <span>Ground</span><em>SAME CESIUM SCENE</em>
           <span>Space</span><em>SUN + 8 PLANETS</em>
-          <span>Google</span><em>NO BOOT-TIME MAP LOAD</em>
+          <span>Google</span><em>{snapshot?.google3DAvailable ? "3D TILES AVAILABLE" : "NO BOOT-TIME MAP LOAD"}</em>
           <span>Street</span><em>ON-DEMAND ONLY</em>
         </div>
       </aside>

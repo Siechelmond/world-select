@@ -528,3 +528,25 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .timebar.spaceTimebar.mobileOpen .timeActions { flex-wrap: wrap; justify-content: center; }
   .timebar.spaceTimebar.mobileOpen .spaceTimePlayback { width: 100%; grid-template-columns: repeat(4, 1fr); }
 }
+
+/* Batch 2A: Google 3D Tiles toggle */
+.google3dToggle {
+  grid-column: 1 / -1;
+  border: 1px solid rgba(103,232,249,.22);
+  background: rgba(8,145,178,.14);
+  color: #cffafe;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  cursor: pointer;
+  text-align: center;
+  transition: background .2s ease, border-color .2s ease;
+}
+.google3dToggle.active {
+  background: rgba(34,211,238,.24);
+  border-color: rgba(103,232,249,.48);
+  color: #ecfeff;
+}
+.google3dToggle:hover { background: rgba(34,211,238,.18); }
