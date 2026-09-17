@@ -118,6 +118,27 @@ function deterministicGalaxyStars() {
   return stars;
 }
 
+function deterministicGalaxyClouds() {
+  const clouds: Array<{ x: number; y: number; rx: number; ry: number; rotate: number; opacity: number; warm: boolean }> = [];
+  for (let arm = 0; arm < 4; arm += 1) {
+    for (let index = 0; index < 20; index += 1) {
+      const t = (index + 2) / 23;
+      const radius = 58 + t * 338 + Math.sin(index * 3.1 + arm) * 10;
+      const angle = arm * Math.PI / 2 + 0.22 + t * 5.15 + Math.sin(index * 1.7 + arm) * 0.04;
+      clouds.push({
+        x: 500 + Math.cos(angle) * radius,
+        y: 500 + Math.sin(angle) * radius * 0.53,
+        rx: 25 + ((index * 7 + arm) % 5) * 8,
+        ry: 7 + ((index * 5 + arm) % 4) * 3,
+        rotate: angle * 180 / Math.PI + 90,
+        opacity: 0.055 + ((index + arm) % 5) * 0.014,
+        warm: index < 5,
+      });
+    }
+  }
+  return clouds;
+}
+
 export default function SpaceExplorer({ planets, sun, time, onSelect }: Props) {
   const [level, setLevel] = useState<SpaceLevel>("solar");
   const [focusedPlanet, setFocusedPlanet] = useState<string>("Earth");
@@ -334,6 +355,7 @@ function OuterSystemView({ time, onSelect, onSolar }: { time: Date; onSelect: (e
 
 function GalaxyView({ onSolar }: { onSolar: () => void }) {
   const stars = useMemo(() => deterministicGalaxyStars(), []);
+  const clouds = useMemo(() => deterministicGalaxyClouds(), []);
   const solarAngle = 0.22 + 0.63 * 5.15 + 0.48;
   const solarRadius = 48 + 0.63 * 355;
   const solarX = 500 + Math.cos(solarAngle) * solarRadius;
@@ -355,11 +377,16 @@ function GalaxyView({ onSolar }: { onSolar: () => void }) {
             <stop offset="58%" stopColor="#60a5fa" stopOpacity=".08"/>
             <stop offset="100%" stopColor="#020617" stopOpacity="0"/>
           </radialGradient>
+          <linearGradient id="galaxy-cloud-cool" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor="#dbeafe" stopOpacity="0"/><stop offset="50%" stopColor="#bfdbfe" stopOpacity="1"/><stop offset="100%" stopColor="#dbeafe" stopOpacity="0"/></linearGradient>
+          <linearGradient id="galaxy-cloud-warm" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor="#fde68a" stopOpacity="0"/><stop offset="50%" stopColor="#fef3c7" stopOpacity="1"/><stop offset="100%" stopColor="#fde68a" stopOpacity="0"/></linearGradient>
           <filter id="galaxy-soft"><feGaussianBlur stdDeviation="5"/></filter>
+          <filter id="galaxy-cloud-soft"><feGaussianBlur stdDeviation="10"/></filter>
           <filter id="galaxy-core-soft"><feGaussianBlur stdDeviation="12"/></filter>
         </defs>
         <g transform="translate(0 -120)">
           <ellipse cx="500" cy="500" rx="450" ry="238" fill="url(#galaxy-disk-glow)" />
+          <ellipse cx="500" cy="500" rx="170" ry="70" className="galaxyBulgeHalo" />
+          {clouds.map((cloud, index) => <ellipse key={`cloud-${index}`} cx={cloud.x} cy={cloud.y} rx={cloud.rx} ry={cloud.ry} transform={`rotate(${cloud.rotate.toFixed(1)} ${cloud.x.toFixed(1)} ${cloud.y.toFixed(1)})`} fill={cloud.warm ? 'url(#galaxy-cloud-warm)' : 'url(#galaxy-cloud-cool)'} opacity={cloud.opacity} filter="url(#galaxy-cloud-soft)" />)}
           {[0, 1, 2, 3].map((arm) => <path key={`glow-${arm}`} d={galaxySpiralPath(arm)} className="galaxySpiralGlow" />)}
           {[0, 1, 2, 3].map((arm) => <path key={`arm-${arm}`} d={galaxySpiralPath(arm)} className="galaxySpiralArm" />)}
           {[0, 1, 2, 3].map((arm) => <path key={`dust-${arm}`} d={galaxySpiralPath(arm, -13)} className="galaxyDustLane" />)}
@@ -380,8 +407,8 @@ function GalaxyView({ onSolar }: { onSolar: () => void }) {
         <strong>MILKY WAY</strong>
         <span>~100,000 light-years across</span>
         <span>Solar System ≈ 26,000 light-years from the Galactic Center</span>
-        <span>Spiral-arm + dust-lane context model</span>
-        <small>Spatial context, not a literal photograph or star-by-star reconstruction.</small>
+        <span>Spiral-arm + dust-lane + stellar-cloud context model</span>
+        <small>Scientifically inspired spatial context, not a literal photograph or star-by-star reconstruction.</small>
       </div>
     </div>
   );

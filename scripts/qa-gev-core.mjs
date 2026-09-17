@@ -60,6 +60,13 @@ check('traffic supports Orbis v2 with classic v4 documented fallback', trafficAp
 check('Street View widens Google coverage before keyless fallback', googleStreet.includes('STREET_SEARCH_RADII_M') && googleStreet.includes('[120, 250, 500]') && streetWorker.includes('searchRadiusM = 1000'));
 check('space time playback animates planet and moon clock without touching Earth runtime', app.includes('spacePlaybackRate') && app.includes('spacePlaybackDays') && app.includes('spaceTimePlayback') && app.includes('[1, 7, 30]') && !spaceExplorer.includes('setTimeOffsetDays'));
 check('Milky Way uses spiral arms, dust lanes and Orion Spur marker', spaceExplorer.includes('galaxySpiralPath') && spaceExplorer.includes('galaxyDustLane') && spaceExplorer.includes('ORION SPUR') && spaceExplorer.includes('YOU ARE HERE'));
+check('aircraft trail uses Cesium MaterialProperty and avoids getType render crash', aircraftLayer.includes('ColorMaterialProperty') && !aircraftLayer.includes('polyline.material = new Cesium.ConstantProperty'));
+check('far-globe aircraft LOD reduces visible glyph budget', aircraftLayer.includes('this.cameraHeight > 8_000_000') && aircraftLayer.includes('return 850'));
+check('regional civilian coverage is visualized without changing provider data', aircraftLayer.includes('__runtime:aircraft-regional-coverage') && aircraftLayer.includes("meta.coverage !== 'regional'"));
+check('fresh degraded aircraft remain OBSERVED instead of being mislabeled STALE', read('../lib/aircraft.ts').includes('const stale = Boolean(payload.stale);') && read('../lib/aircraft.ts').includes('degraded-live'));
+check('space time controls have responsive no-overlap layout contract', read('../app/globals.css').includes('.timebar.spaceTimebar') && read('../app/globals.css').includes('grid-template-columns: repeat(4, minmax(46px, auto))'));
+check('Milky Way realism pass adds diffuse stellar clouds and central bulge', spaceExplorer.includes('deterministicGalaxyClouds') && spaceExplorer.includes('galaxyBulgeHalo') && spaceExplorer.includes('stellar-cloud context model'));
+check('failed live layers expose concrete provider diagnostics', app.includes('title={error}') && app.includes('{error ?? "Load failed"}'));
 
 let failed = 0;
 for (const [label, pass] of checks) {

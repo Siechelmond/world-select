@@ -384,7 +384,8 @@ export default function WorldSelectApp() {
       setStreetState("error");
       setStreetOpen(false);
       setMobilePanel("none");
-      setStreetNotice(noCoverage);
+      const diagnostics = [googleFallbackReason, karta.error].filter(Boolean).join(" · ");
+      setStreetNotice(diagnostics ? `${noCoverage} · ${diagnostics}` : noCoverage);
       setStreetError([googleFallbackReason, karta.error, noCoverage].filter(Boolean).join(" · "));
       streetCameraPoseRef.current = null;
     } finally {
@@ -638,7 +639,7 @@ export default function WorldSelectApp() {
           : <div className="emptyState"><div className="reticle">+</div><p>Select an earthquake, satellite, aircraft or planet.</p><div className="emptyActions"><button className="streetButton" onClick={openStreet} disabled={viewMode !== "earth"}>Open street level here</button><button className="annotationButton" onClick={addAnnotation} disabled={viewMode !== "earth"}>Mark this location</button></div></div>}
       </section>
 
-      <section className={`timebar glass ${mobilePanel === "time" ? "mobileOpen" : ""}`}>
+      <section className={`timebar glass ${viewMode === "space" ? "spaceTimebar" : ""} ${mobilePanel === "time" ? "mobileOpen" : ""}`}>
         <button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button>
         <div><p className="panelLabel">TIME</p><strong>{selectedTime.toLocaleString()}</strong></div>
         <input aria-label="Time offset in days" type="range" min={-365} max={365} step={1} value={timeOffsetDays} onChange={(event: ChangeEvent<HTMLInputElement>) => changeTimeOffset(Number(event.target.value))} />
@@ -710,7 +711,7 @@ function LayerToggle({ checked, onChange, onRetry, title, subtitle, state, count
       {effectiveState === "ready" && <small>Active with other runtime layers</small>}
       {effectiveState === "degraded" && <small>{error ?? "Keeping last valid data"}</small>}
       {effectiveState === "off" && <small>Tap to load</small>}
-      {effectiveState === "error" && <><small>{error ? "Live source unavailable" : "Load failed"}</small><button type="button" onClick={onRetry}>Retry</button></>}
+      {effectiveState === "error" && <><small title={error}>{error ?? "Load failed"}</small><button type="button" onClick={onRetry}>Retry</button></>}
     </div>
   </div>;
 }

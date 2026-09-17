@@ -93,7 +93,10 @@ function normalizeClass(aircraft: AdsbAircraft) {
 
 function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialEntity[] {
   const observedResponseMs = responseTimeMs(payload);
-  const stale = Boolean(payload.stale || payload.degraded);
+  // A degraded feed can still contain fresh observations (for example a fresh
+  // regional civilian fallback while global coverage is unavailable). Only an
+  // explicitly stale snapshot marks each aircraft STALE.
+  const stale = Boolean(payload.stale);
 
   return (payload.ac ?? []).flatMap((aircraft, index) => {
     if (typeof aircraft.lat !== "number" || typeof aircraft.lon !== "number") return [];
@@ -131,7 +134,7 @@ function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialE
         queryRadiusNm: radiusNm,
         coverage: payload.coverage ?? "regional",
         renderModel: "bounded interpolation between observed ADS-B updates",
-        feedState: stale ? "degraded-cached" : "live",
+        feedState: stale ? "degraded-cached" : payload.degraded ? "degraded-live" : "live",
       },
     } satisfies SpatialEntity];
   });

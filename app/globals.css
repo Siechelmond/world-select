@@ -456,9 +456,10 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 
 .galaxyScene { display: grid; place-items: center; }
 .milkyWaySvg { width: min(78vw, 900px); height: min(72vh, 720px); overflow: visible; }
-.galaxySpiralGlow { fill: none; stroke: rgba(147,197,253,.16); stroke-width: 42; stroke-linecap: round; filter: url(#galaxy-soft); }
-.galaxySpiralArm { fill: none; stroke: rgba(219,234,254,.24); stroke-width: 18; stroke-linecap: round; }
-.galaxyDustLane { fill: none; stroke: rgba(2,6,23,.78); stroke-width: 7; stroke-linecap: round; opacity: .88; }
+.galaxySpiralGlow { fill: none; stroke: rgba(147,197,253,.12); stroke-width: 48; stroke-linecap: round; filter: url(#galaxy-soft); }
+.galaxySpiralArm { fill: none; stroke: rgba(219,234,254,.18); stroke-width: 15; stroke-linecap: round; }
+.galaxyDustLane { fill: none; stroke: rgba(2,6,23,.84); stroke-width: 9; stroke-linecap: round; opacity: .92; }
+.galaxyBulgeHalo { fill: rgba(253,230,138,.065); filter: url(#galaxy-core-soft); }
 .orionSpur { fill: none; stroke: rgba(103,232,249,.34); stroke-width: 10; stroke-linecap: round; stroke-dasharray: 18 9; }
 .solarMarkerDot { fill: #22d3ee; filter: drop-shadow(0 0 8px #22d3ee); }
 .solarMarkerRing { fill: none; stroke: rgba(103,232,249,.7); stroke-width: 2; }
@@ -510,4 +511,20 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .spaceExplorer .planetSystemScene,
   .spaceExplorer .outerSystemScene,
   .spaceExplorer .galaxyScene { top: 142px; }
+}
+
+/* Recovery 5: space playback controls must never collide with the time slider. */
+.timebar.spaceTimebar { grid-template-columns: 170px minmax(180px, 1fr) auto; }
+.timebar.spaceTimebar .timeActions { gap: 6px; white-space: nowrap; }
+.timebar.spaceTimebar .spaceTimePlayback { display: grid; grid-template-columns: repeat(4, minmax(46px, auto)); gap: 4px; }
+.timebar.spaceTimebar .spaceTimePlayback button { min-width: 46px; padding-inline: 7px; }
+.layerStatusLine small { overflow-wrap: anywhere; }
+@media (max-width: 1320px) and (min-width: 781px) {
+  .timebar.spaceTimebar { grid-template-columns: 160px minmax(220px, 1fr); grid-template-rows: auto auto; row-gap: 6px; padding-bottom: 9px; }
+  .timebar.spaceTimebar .timeActions { grid-column: 1 / -1; justify-content: flex-end; flex-wrap: wrap; }
+}
+@media (max-width: 780px) {
+  .timebar.spaceTimebar.mobileOpen { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  .timebar.spaceTimebar.mobileOpen .timeActions { flex-wrap: wrap; justify-content: center; }
+  .timebar.spaceTimebar.mobileOpen .spaceTimePlayback { width: 100%; grid-template-columns: repeat(4, 1fr); }
 }

@@ -100,6 +100,7 @@ export class AircraftLayer implements RuntimeLayer {
   private followedId: string | null = null;
   private trackerEntity: any = null;
   private trailEntity: any = null;
+  private coverageEntity: any = null;
   private observedTrail: Array<{ longitude: number; latitude: number; altitudeMeters: number }> = [];
   private lastMeta: AircraftFeedMeta | null = null;
   private lastMilitaryCount = 0;
@@ -157,8 +158,12 @@ export class AircraftLayer implements RuntimeLayer {
   }
 
   private visibleBudget() {
-    if (this.cameraHeight > 5_000_000) return BUDGETS.maxVisibleGlyphs;
-    if (this.cameraHeight > 1_500_000) return 3_000;
+    // Far-out globe views need fewer glyphs, not more. This keeps continental
+    // traffic readable and prevents the dense white 'aircraft carpet' seen in UAT.
+    if (this.cameraHeight > 8_000_000) return 850;
+    if (this.cameraHeight > 5_000_000) return 1_250;
+    if (this.cameraHeight > 2_000_000) return 2_100;
+    if (this.cameraHeight > 750_000) return 2_600;
     return 1_800;
   }
 
@@ -196,7 +201,8 @@ export class AircraftLayer implements RuntimeLayer {
       const selected = entity.id === this.selectedId;
       const aircraftClass = String(entity.properties.aircraftClass ?? 'airliner');
       const baseSize = aircraftClass === 'widebody' ? 24 : aircraftClass === 'helicopter' || aircraftClass === 'fastjet' ? 19 : 21;
-      const iconSize = this.cameraHeight > 2_000_000 ? Math.max(13, baseSize - 5) : speed > 250 ? baseSize + 2 : baseSize;
+      const farScale = this.cameraHeight > 8_000_000 ? 0.52 : this.cameraHeight > 5_000_000 ? 0.62 : this.cameraHeight > 2_000_000 ? 0.78 : 1;
+      const iconSize = Math.max(10, (speed > 250 ? baseSize + 2 : baseSize) * farScale);
       const billboard = this.collection.add({
         id: entity,
         image: this.iconFor(entity),
@@ -279,13 +285,13 @@ export class AircraftLayer implements RuntimeLayer {
           polyline: {
             positions,
             width: 2.5,
-            material: Cesium.Color.fromCssColorString(color).withAlpha(0.72),
+            material: new Cesium.ColorMaterialProperty(Cesium.Color.fromCssColorString(color).withAlpha(0.72)),
             clampToGround: false,
           },
         });
       } else {
         this.trailEntity.polyline.positions = new Cesium.ConstantProperty(positions);
-        this.trailEntity.polyline.material = new Cesium.ConstantProperty(Cesium.Color.fromCssColorString(color).withAlpha(0.72));
+        this.trailEntity.polyline.material = new Cesium.ColorMaterialProperty(Cesium.Color.fromCssColorString(color).withAlpha(0.72));
       }
     }
 
@@ -391,6 +397,30 @@ export class AircraftLayer implements RuntimeLayer {
     this.rebuildVisibleCohort();
   }
 
+  private updateCoverageVisual(meta: AircraftFeedMeta | null) {
+    if (!this.context) return;
+    const { Cesium, viewer } = this.context;
+    if (this.coverageEntity) {
+      viewer.entities.remove(this.coverageEntity);
+      this.coverageEntity = null;
+    }
+    if (!this.stats.enabled || !this.sceneActive || !meta || meta.coverage !== 'regional' || !meta.region) return;
+    const radiusMeters = Math.max(25, Math.min(250, meta.region.radiusNm)) * 1852;
+    this.coverageEntity = viewer.entities.add({
+      id: '__runtime:aircraft-regional-coverage',
+      position: Cesium.Cartesian3.fromDegrees(meta.region.longitude, meta.region.latitude),
+      ellipse: {
+        semiMajorAxis: radiusMeters,
+        semiMinorAxis: radiusMeters,
+        height: 500,
+        material: Cesium.Color.fromCssColorString('#67e8f9').withAlpha(0.025),
+        outline: true,
+        outlineColor: Cesium.Color.fromCssColorString('#67e8f9').withAlpha(0.30),
+        outlineWidth: 1,
+      },
+    });
+  }
+
   private mergeSnapshots(civilian: { entities: SpatialEntity[]; meta: AircraftFeedMeta } | null, military: { entities: SpatialEntity[]; meta: AircraftFeedMeta } | null) {
     // Each source owns its own last-good store. A successful military refresh must
     // never replace retained civilian aircraft, and a regional civilian fallback
@@ -398,6 +428,7 @@ export class AircraftLayer implements RuntimeLayer {
     if (civilian?.entities.length) this.replaceSourceStore('civilian', civilian);
     if (military?.entities.length) this.replaceSourceStore('military', military);
     this.rebuildMergedRecords();
+    this.updateCoverageVisual(this.civilianMeta);
   }
 
   private async refresh(initial: boolean) {
@@ -547,6 +578,8 @@ export class AircraftLayer implements RuntimeLayer {
     if (this.labels) this.labels.show = false;
     this.select(null);
     this.clearFollow();
+    if (this.coverageEntity && this.context) this.context.viewer.entities.remove(this.coverageEntity);
+    this.coverageEntity = null;
     this.publish();
     this.context?.requestRender();
   }
@@ -557,7 +590,13 @@ export class AircraftLayer implements RuntimeLayer {
     this.sceneActive = active;
     if (this.collection) this.collection.show = active && this.stats.enabled;
     if (this.labels) this.labels.show = active && this.stats.enabled;
-    if (active && this.stats.enabled) this.tick();
+    if (active && this.stats.enabled) {
+      this.updateCoverageVisual(this.civilianMeta);
+      this.tick();
+    } else if (!active && this.coverageEntity && this.context) {
+      this.context.viewer.entities.remove(this.coverageEntity);
+      this.coverageEntity = null;
+    }
     this.context?.requestRender();
   }
 

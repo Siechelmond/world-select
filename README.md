@@ -138,3 +138,11 @@ See `docs/UAT_V4_3_STABILIZATION.md`.
 - KartaView fallback now respects its documented 500 m radius and reports truthful `NO COVERAGE`.
 - Adds `npm run verify:contracts` as a regression gate before subsequent bundles.
 - See `docs/UAT_V5_0_LAYER_FOUNDATION.md`.
+
+## Recovery 5 (2026-09-17)
+
+Recovery 5 is a regression-safe UAT pass over Recovery 4: Cesium aircraft trail material crash fix, far-globe aircraft LOD and regional-coverage context, correct fresh-vs-stale aircraft semantics, responsive SPACE time controls, provider diagnostics, and a more diffuse Milky Way visual model. See `WORLD_SELECT_RECOVERY_5_MANIFEST.md` and `docs/UAT_RECOVERY_5_2026-09-17.md`.
+
+## Deployment note — Recovery 5 full upload
+
+The active deployment target is **Cloudflare Pages**. The former GitHub Pages workflow is stored only as an inactive reference in `.github/`; the `.github/` directory is present for repository metadata only; its legacy Pages workflow is disabled and is not part of the runtime.
