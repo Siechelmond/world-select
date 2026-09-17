@@ -391,3 +391,125 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 .issLiveMeta { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-top: 7px; color: #94a3b8; font-size: 8px; }
 .issLiveMeta a { color: #67e8f9; text-decoration: none; pointer-events: auto; }
 @media (max-width: 760px) { .issLiveHover { width: min(310px, calc(100vw - 20px)); left: 10px !important; top: 100px !important; } }
+
+/* GEV recovery 3 — hierarchical Space Explorer. Earth runtime remains untouched. */
+.spaceExplorer { touch-action: none; }
+.spaceScaleControls {
+  position: fixed; z-index: 4; top: 112px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 4px; padding: 4px; border-radius: 11px;
+}
+.spaceScaleControls button {
+  border: 0; border-radius: 8px; padding: 7px 9px; cursor: pointer;
+  background: transparent; color: #64748b; font-size: 9px; font-weight: 800; letter-spacing: .08em;
+}
+.spaceScaleControls button.active { color: #cffafe; background: rgba(8,145,178,.24); }
+.spaceScaleControls button:disabled { opacity: .3; cursor: not-allowed; }
+.spaceZoomHint {
+  position: fixed; z-index: 3; left: 50%; bottom: 146px; transform: translateX(-50%);
+  color: #64748b; font-size: 9px; letter-spacing: .06em; pointer-events: none;
+}
+.spaceZoomButtons {
+  position: fixed; z-index: 4; right: 374px; top: 112px; display: grid; gap: 3px; padding: 4px; border-radius: 10px;
+}
+.spaceZoomButtons button {
+  width: 30px; height: 28px; border: 0; border-radius: 7px; cursor: pointer;
+  background: rgba(8,145,178,.12); color: #cffafe; font-size: 18px;
+}
+.spaceZoomButtons button:disabled { opacity: .25; cursor: not-allowed; }
+
+.planetSystemScene, .outerSystemScene, .galaxyScene {
+  position: absolute; inset: 142px 250px 128px 250px; z-index: 2; overflow: hidden;
+}
+.spaceBackButton {
+  position: absolute; z-index: 4; left: 16px; top: 12px; border: 1px solid rgba(103,232,249,.22);
+  background: rgba(2,6,23,.72); color: #cffafe; border-radius: 9px; padding: 8px 11px; cursor: pointer;
+  font-size: 10px; font-weight: 700;
+}
+.planetSystemInfo {
+  position: absolute; z-index: 3; top: 14px; right: 18px; display: flex; flex-direction: column; align-items: flex-end;
+  color: #cbd5e1;
+}
+.planetSystemInfo strong { color: #f8fafc; font-size: 15px; }
+.planetSystemInfo span { color: #64748b; font-size: 9px; margin-top: 3px; }
+.planetSystemSvg, .outerSystemSvg { width: 100%; height: 100%; overflow: visible; }
+.moonOrbit { fill: none; stroke: rgba(148,163,184,.18); stroke-width: 1.2; stroke-dasharray: 5 8; }
+.saturnRing { fill: none; stroke: rgba(254,240,138,.7); stroke-width: 13; opacity: .65; }
+.planetPortrait, .moonGroup { cursor: pointer; }
+.planetPortrait circle { stroke: rgba(255,255,255,.38); stroke-width: 1.5; filter: drop-shadow(0 0 25px rgba(103,232,249,.12)); }
+.jupiterSpot { fill: rgba(153,27,27,.55); }
+.planetDetailLabel { fill: #f8fafc; font-size: 21px; font-weight: 800; letter-spacing: .05em; paint-order: stroke; stroke: #020617; stroke-width: 4px; }
+.moonDot { stroke: rgba(255,255,255,.65); stroke-width: 1; filter: drop-shadow(0 0 5px rgba(255,255,255,.2)); }
+.moonLabel { fill: #cbd5e1; font-size: 13px; paint-order: stroke; stroke: #020617; stroke-width: 3px; }
+.spaceScaleDisclosure {
+  position: absolute; z-index: 3; left: 50%; transform: translateX(-50%); bottom: 10px; white-space: nowrap;
+  color: #64748b; font-size: 9px; background: rgba(2,6,23,.68); border: 1px solid rgba(148,163,184,.12);
+  border-radius: 999px; padding: 6px 10px;
+}
+
+.kuiperInner, .kuiperOuter { fill: none; stroke: rgba(103,232,249,.13); stroke-width: 2; stroke-dasharray: 3 8; }
+.kuiperOuter { stroke: rgba(148,163,184,.12); }
+
+.galaxyScene { display: grid; place-items: center; }
+.milkyWayVisual {
+  position: relative; width: min(72vh, 720px); aspect-ratio: 1; border-radius: 50%;
+  transform: rotate(-12deg) scaleY(.64);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(254,240,138,.95) 0 2%, rgba(251,191,36,.48) 4%, rgba(255,255,255,.15) 10%, transparent 18%),
+    repeating-conic-gradient(from 5deg, rgba(147,197,253,.0) 0 10deg, rgba(191,219,254,.20) 12deg 17deg, rgba(255,255,255,.02) 18deg 33deg),
+    radial-gradient(ellipse at center, rgba(96,165,250,.18), rgba(2,6,23,.18) 52%, transparent 68%);
+  box-shadow: inset 0 0 90px rgba(147,197,253,.1), 0 0 70px rgba(59,130,246,.08);
+}
+.galacticCore { position: absolute; left: 50%; top: 50%; width: 9%; aspect-ratio: 1; border-radius: 50%; transform: translate(-50%,-50%); background: #fde68a; box-shadow: 0 0 55px #f59e0b; }
+.galaxyArm { position: absolute; left: 50%; top: 50%; width: 46%; height: 15%; border: 10px solid rgba(191,219,254,.16); border-left-color: transparent; border-bottom-color: transparent; border-radius: 50%; transform-origin: 0 50%; filter: blur(1px); }
+.armA { transform: rotate(12deg) translateY(-50%); }
+.armB { transform: rotate(102deg) translateY(-50%); }
+.armC { transform: rotate(192deg) translateY(-50%); }
+.armD { transform: rotate(282deg) translateY(-50%); }
+.solarHere { position: absolute; left: 68%; top: 58%; display: flex; align-items: center; gap: 10px; transform: scaleY(1.56) rotate(12deg); color: #cffafe; font-size: 11px; letter-spacing: .05em; }
+.solarHere i { width: 11px; height: 11px; border-radius: 50%; background: #22d3ee; box-shadow: 0 0 13px #22d3ee; }
+.solarHere span { white-space: nowrap; font-weight: 800; }
+.solarHere small { color: #94a3b8; font-size: 8px; font-weight: 500; }
+.galaxyFacts {
+  position: absolute; right: 18px; bottom: 18px; width: 250px; padding: 13px; border-radius: 12px;
+  display: grid; gap: 6px; font-size: 10px; color: #94a3b8;
+}
+.galaxyFacts strong { color: #e2e8f0; letter-spacing: .12em; }
+.galaxyFacts small { color: #64748b; line-height: 1.4; }
+
+.issLiveCaveat {
+  color: #94a3b8; font-size: 9px; line-height: 1.35; padding: 7px 9px 0;
+}
+
+@media (max-width: 1200px) {
+  .spaceZoomButtons { right: 18px; top: 184px; }
+  .planetSystemScene, .outerSystemScene, .galaxyScene { inset: 150px 80px 130px 80px; }
+  .spaceScaleDisclosure { max-width: 78vw; white-space: normal; text-align: center; }
+}
+
+@media (max-width: 780px) {
+  .spaceScaleControls { top: 72px; max-width: calc(100vw - 16px); overflow-x: auto; left: 8px; right: 8px; transform: none; justify-content: flex-start; }
+  .spaceScaleControls button { flex: 0 0 auto; }
+  .spaceZoomButtons { right: 8px; top: 120px; }
+  .spaceZoomHint { display: none; }
+  .planetSystemScene, .outerSystemScene, .galaxyScene { inset: 112px 4px 62px 4px; }
+  .spaceBackButton { left: 8px; top: 8px; }
+  .planetSystemInfo { right: 8px; top: 8px; }
+  .moonLabel { font-size: 16px; }
+  .spaceScaleDisclosure { bottom: 2px; max-width: 94vw; font-size: 8px; }
+  .galaxyFacts { left: 10px; right: 10px; bottom: 8px; width: auto; }
+  .milkyWayVisual { width: min(92vw, 620px); }
+}
+
+/* Space Explorer vertical rhythm: keep scale controls, title and scene separate. */
+.spaceExplorer .spaceScaleControls { top: 100px; }
+.spaceExplorer .spaceTitle { top: 144px; }
+.spaceExplorer .planetSystemScene,
+.spaceExplorer .outerSystemScene,
+.spaceExplorer .galaxyScene { top: 174px; }
+@media (max-width: 780px) {
+  .spaceExplorer .spaceScaleControls { top: 70px; }
+  .spaceExplorer .spaceTitle { top: 112px; }
+  .spaceExplorer .planetSystemScene,
+  .spaceExplorer .outerSystemScene,
+  .spaceExplorer .galaxyScene { top: 142px; }
+}

@@ -4,7 +4,8 @@ import Script from "next/script";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import type { SpatialEntity } from "@/lib/spatial";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
-import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
+import { computePlanetPositions, sunEntity } from "@/lib/space";
+import SpaceExplorer from "@/components/SpaceExplorer";
 import { findGoogleStreetCoverage, loadGoogleMaps } from "@/lib/google-street";
 import { fetchRoute as fetchWorldRoute, formatDistance, formatDuration, type RoutePoint, type RouteProfile, type RouteResult } from "@/lib/directions";
 import type { CesiumCameraPose } from "@/lib/camera";
@@ -146,6 +147,25 @@ export default function WorldSelectApp() {
   const setLayerEnabled = useCallback((id: RuntimeLayerId, enabled: boolean) => {
     void runtimeRef.current?.setLayerEnabled(id, enabled);
   }, []);
+
+  const setAircraftEnabled = useCallback((enabled: boolean) => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
+    if (!enabled) {
+      void runtime.setLayerEnabled("aircraft", false);
+      return;
+    }
+    // Live aircraft is a NOW-only layer. Never leave the control disabled when
+    // the time slider is historical: enabling Aircraft explicitly returns the
+    // shared runtime clock to NOW and then starts the live feed.
+    if (timeOffsetDays !== 0) {
+      resumeAircraftRef.current = false;
+      setNowTick(Date.now());
+      setTimeOffsetDays(0);
+      runtime.setTimeOffsetDays(0);
+    }
+    void runtime.setLayerEnabled("aircraft", true);
+  }, [timeOffsetDays]);
 
   const retryLayer = useCallback((id: RuntimeLayerId) => {
     void runtimeRef.current?.retryLayer(id);
@@ -451,7 +471,8 @@ export default function WorldSelectApp() {
 
   const togglePanel = (panel: Exclude<MobilePanel, "none">) => setMobilePanel((current) => current === panel ? "none" : panel);
   const currentStreet = streetPhotos[streetIndex] ?? null;
-  const aircraftAvailable = viewMode === "earth" && timeOffsetDays === 0;
+  const aircraftAvailable = viewMode === "earth";
+  const aircraftAtNow = timeOffsetDays === 0;
   const layerStats = snapshot?.layers;
 
   return (
@@ -466,7 +487,7 @@ export default function WorldSelectApp() {
       />
 
       <div ref={containerRef} className={`globe ${viewMode === "space" || streetOpen ? "globeHidden" : ""}`} aria-label="Interactive 3D globe" />
-      {viewMode === "space" && <SolarSystemView planets={planets} sun={sun} onSelect={selectEntity} />}
+      {viewMode === "space" && <SpaceExplorer planets={planets} sun={sun} time={selectedTime} onSelect={selectEntity} />}
 
       <header className="topbar glass">
         <div className="brand"><p className="eyebrow">SPATIAL INTELLIGENCE</p><h1>World Select</h1></div>
@@ -512,14 +533,16 @@ export default function WorldSelectApp() {
           </div>}
           <LayerToggle
             checked={layerStats.aircraft.enabled}
-            onChange={(value) => setLayerEnabled("aircraft", value)}
+            onChange={setAircraftEnabled}
             onRetry={() => retryLayer("aircraft")}
             title="Aircraft"
-            subtitle={aircraftAvailable
-              ? `ADS-B · ${layerStats.aircraft.provenance?.provider ?? "provider resolving"} · ${layerStats.aircraft.provenance?.coverage ?? "coverage resolving"}`
-              : "NOW only"}
+            subtitle={!aircraftAvailable
+              ? "EARTH / NOW only"
+              : !aircraftAtNow
+                ? "Live aircraft · NOW only · enable to return to NOW"
+                : `ADS-B · ${layerStats.aircraft.provenance?.provider ?? "provider resolving"} · ${layerStats.aircraft.provenance?.coverage ?? "coverage resolving"}`}
             state={toLoadState(layerStats.aircraft.state)}
-            count={aircraftAvailable ? layerStats.aircraft.count : 0}
+            count={aircraftAtNow ? layerStats.aircraft.count : 0}
             disabled={!aircraftAvailable}
             error={layerStats.aircraft.error ?? undefined}
           />
@@ -677,7 +700,16 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, followAircraft, onTo
       ["Last seen", entity.properties.seenSeconds != null ? `${entity.properties.seenSeconds}s ago` : "—"],
       ["Motion", String(entity.properties.lodContract ?? entity.properties.renderModel ?? "—")],
     );
-  } else if (entity.kind === "celestial-body") { rows.push(["Distance", `${entity.properties.heliocentricDistanceAu ?? 0} AU`]); if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]); }
+  } else if (entity.kind === "celestial-body") {
+    if (entity.properties.category) rows.push(["Category", String(entity.properties.category)]);
+    if (entity.properties.parentBody) rows.push(["Parent", String(entity.properties.parentBody)]);
+    if (entity.properties.heliocentricDistanceAu != null) rows.push(["Distance", `${entity.properties.heliocentricDistanceAu} AU`]);
+    if (entity.properties.radiusKm != null) rows.push(["Radius", `${entity.properties.radiusKm} km`]);
+    if (entity.properties.orbitalRadiusKm != null) rows.push(["Orbit radius", `${Number(entity.properties.orbitalRadiusKm).toLocaleString()} km`]);
+    if (entity.properties.orbitalPeriodDays != null) rows.push(["Orbit period", `${entity.properties.orbitalPeriodDays} days`]);
+    if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]);
+    if (entity.properties.visualScale) rows.push(["Display", String(entity.properties.visualScale)]);
+  }
   rows.push(["Time", new Date(entity.observedAt).toLocaleString()], ["State", entity.dataState], ["Source", entity.source.label]);
   return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" && <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button>}<button className="streetButton" onClick={onStreet}>Street near entity</button><button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
 }
@@ -704,6 +736,7 @@ function IssLiveHoverCard({ entity, screen }: { entity: SpatialEntity; screen: {
           />
         : <div className="issLiveLoading">Hold on ISS to start live video…</div>}
     </div>
+    <div className="issLiveCaveat">Live camera may be dark on Earth's night side or during ISS signal loss.</div>
     <div className="issLiveMeta"><span>{entity.name}</span><a href="https://www.sen.com/live" target="_blank" rel="noreferrer">Open Sen live ↗</a></div>
   </aside>;
 }
@@ -750,11 +783,4 @@ function GoogleStreetPanorama({ apiKey, panoId }: { apiKey: string; panoId: stri
     return () => { disposed = true; };
   }, [apiKey, panoId]);
   return <div ref={panoRef} className="googleStreetPano"><div className="streetMessage">Loading Google Street View…</div></div>;
-}
-
-function SolarSystemView({ planets, sun, onSelect }: { planets: PlanetPosition[]; sun: SpatialEntity; onSelect: (entity: SpatialEntity) => void }) {
-  const size = 1000, center = size / 2, maxRadius = 420;
-  const radiusForAu = (au: number) => au <= 0 ? 0 : 42 + (Math.log10(au + 0.28) / Math.log10(30.5 + 0.28)) * (maxRadius - 42);
-  const points = planets.map((planet) => { const orbitRadius = radiusForAu(planet.radiusAu); const angle = Math.atan2(planet.yAu, planet.xAu); return { ...planet, px: center + Math.cos(angle) * orbitRadius, py: center + Math.sin(angle) * orbitRadius }; });
-  return <div className="spaceScene"><div className="spaceTitle"><span>SOLAR SYSTEM</span><small>JPL approximate heliocentric positions · visual distances logarithmically scaled</small></div><svg viewBox={`0 0 ${size} ${size}`} className="solarSvg" role="img" aria-label="Calculated solar system positions"><defs><radialGradient id="sunGlow"><stop offset="0%" stopColor="#fef08a"/><stop offset="45%" stopColor="#f59e0b"/><stop offset="100%" stopColor="#f59e0b" stopOpacity="0"/></radialGradient></defs>{[0.39,0.72,1,1.52,5.2,9.54,19.2,30.1].map((au) => <circle key={au} cx={center} cy={center} r={radiusForAu(au)} className="orbitRing" />)}<circle cx={center} cy={center} r="36" fill="url(#sunGlow)" className="spaceObject" onClick={() => onSelect(sun)} /><circle cx={center} cy={center} r="13" fill="#fde68a" pointerEvents="none"/><text x={center} y={center + 54} className="planetLabel" textAnchor="middle">Sun</text>{points.map((planet) => <g key={planet.entity.id} className="planetGroup" onClick={() => onSelect(planet.entity)}><circle cx={planet.px} cy={planet.py} r={planet.entity.name === "Earth" ? 9 : planet.entity.name === "Jupiter" ? 12 : 7} className={`planetDot planet-${planet.entity.name.toLowerCase()}`} /><text x={planet.px + 13} y={planet.py - 10} className="planetLabel">{planet.entity.name}</text></g>)}</svg></div>;
 }

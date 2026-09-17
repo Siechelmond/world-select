@@ -15,6 +15,8 @@ const routeService = read('../runtime/app/route-service.ts');
 const app = read('../components/WorldSelectApp.tsx');
 const runtimeApp = read('../runtime/app/application.ts');
 const runtimeTypes = read('../runtime/types.ts');
+const spaceExplorer = read('../components/SpaceExplorer.tsx');
+const spaceModel = read('../lib/space.ts');
 
 check('global aircraft uses direct OpenSky states/all', aircraftApi.includes('scope === "global"') && aircraftApi.includes('states/all'));
 check('configured gateway no longer shadows direct OpenSky', aircraftApi.includes('if (modeForOpenSky !== "disabled")') && aircraftApi.indexOf('tryProvider("opensky"') < aircraftApi.indexOf('fallbackProviders'));
@@ -43,6 +45,13 @@ check('startup stages live layers after first paint', app.includes('Stage live l
 check('ISS hover preview is delayed and embeds the Sen live stream', app.includes('SEN_ISS_LIVE_VIDEO_ID') && app.includes('youtube-nocookie.com/embed') && app.includes('setTimeout(() => setReady(true), 500)'));
 check('runtime publishes hover entity without React fleet rerenders', runtimeApp.includes('ScreenSpaceEventType.MOUSE_MOVE') && runtimeTypes.includes('hoveredScreen'));
 check('aircraft route field is honest when no enrichment exists', app.includes('Not available from current ADS-B source'));
+check('aircraft NOW-only control stays clickable on Earth', app.includes('const aircraftAvailable = viewMode === "earth"') && app.includes('setAircraftEnabled'));
+check('space explorer has hierarchical planet solar outer galaxy frames', spaceExplorer.includes('\"planet\" | \"solar\" | \"outer\" | \"galaxy\"') && spaceExplorer.includes('KUIPER BELT') && spaceExplorer.includes('MILKY WAY'));
+check('planet detail exposes featured moon systems', spaceModel.includes('Ganymede') && spaceModel.includes('Titan') && spaceExplorer.includes('PlanetSystemView'));
+check('moon display is explicitly simulated and scaled', spaceModel.includes('dataState: \"SIMULATED\"') && spaceModel.includes('Moon distances and sizes expanded for visibility'));
+check('outer system density is explicitly illustrative', spaceModel.includes('Kuiper Belt density is illustrative') && spaceExplorer.includes('not current ephemerides'));
+check('space explorer is isolated from Earth runtime ownership', !spaceExplorer.includes('WorldSelectRuntime') && !spaceExplorer.includes('setLayerEnabled'));
+check('ISS preview explains dark live-feed states', app.includes('night side') && app.includes('signal loss'));
 
 let failed = 0;
 for (const [label, pass] of checks) {
