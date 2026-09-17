@@ -13,10 +13,11 @@ type Env = {
   OPENSKY_CLIENT_ID?: string;
   OPENSKY_CLIENT_SECRET?: string;
   OPENSKY_AUTH_MODE?: string;
+  AIRCRAFT_GATEWAY_URL?: string;
 };
 
-type ProviderName = "adsb.lol" | "opensky";
-type ProviderPhase = "oauth-token" | "states" | "snapshot";
+type ProviderName = "gateway" | "adsb.lol" | "opensky";
+type ProviderPhase = "gateway" | "oauth-token" | "states" | "snapshot";
 type Attempt = {
   provider: ProviderName;
   ok: boolean;
@@ -29,6 +30,7 @@ type Attempt = {
 
 const OPEN_SKY_TOKEN_TIMEOUT_MS = 12_000;
 const OPEN_SKY_STATES_TIMEOUT_MS = 12_000;
+const AIRCRAFT_GATEWAY_TIMEOUT_MS = 8_000;
 const ADSB_LOL_TIMEOUT_MS = 7_000;
 const OPEN_SKY_MAX_SOURCE_AGE_SECONDS = 120;
 const FRESH_EDGE_CACHE_MS = 30_000;
@@ -190,6 +192,36 @@ async function fetchOpenSky(lat: number, lon: number, radiusNm: number, env: Env
   }
 }
 
+
+function aircraftGatewayUrl(base: string, lat: number, lon: number, radiusNm: number) {
+  const url = new URL(base.endsWith("/") ? `${base}aircraft` : `${base}/aircraft`);
+  url.searchParams.set("lat", lat.toFixed(4));
+  url.searchParams.set("lon", lon.toFixed(4));
+  url.searchParams.set("radius", String(radiusNm));
+  return url;
+}
+
+async function fetchAircraftGateway(lat: number, lon: number, radiusNm: number, env: Env): Promise<ProviderResult & { transport?: string; gatewayStatus?: string }> {
+  if (!env.AIRCRAFT_GATEWAY_URL) throw new Error("aircraft gateway not configured");
+  const response = await fetchWithTimeout(aircraftGatewayUrl(env.AIRCRAFT_GATEWAY_URL, lat, lon, radiusNm).toString(), {
+    headers: { Accept: "application/json" },
+    cf: { cacheTtl: 10, cacheEverything: true },
+  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } }, AIRCRAFT_GATEWAY_TIMEOUT_MS, "gateway", "gateway");
+  if (!response.ok) throw new ProviderHttpError(response.status, "gateway", "gateway");
+  const payload = await response.json() as any;
+  const ac = Array.isArray(payload?.ac) ? payload.ac : [];
+  return {
+    ac,
+    now: sourceEpochMs(payload?.now ?? payload?.time),
+    total: Number(payload?.total ?? payload?.count ?? ac.length),
+    provider: "opensky",
+    coverage: "regional",
+    authMode: payload?.authMode === "oauth" ? "oauth" : undefined,
+    transport: "gateway",
+    gatewayStatus: typeof payload?.status === "string" ? payload.status : undefined,
+  };
+}
+
 async function fetchAdsbLol(lat: number, lon: number, radiusNm: number): Promise<ProviderResult> {
   const response = await fetchWithTimeout(buildAdsbLolUrl(lat, lon, radiusNm), {
     headers: {
@@ -227,9 +259,11 @@ function attemptFailure(provider: ProviderName, error: unknown, elapsedMs: numbe
 async function tryProvider(provider: ProviderName, lat: number, lon: number, radius: number, env: Env, attempts: Attempt[]) {
   const startedAt = Date.now();
   try {
-    const result = provider === "opensky"
-      ? await fetchOpenSky(lat, lon, radius, env)
-      : await fetchAdsbLol(lat, lon, radius);
+    const result = provider === "gateway"
+      ? await fetchAircraftGateway(lat, lon, radius, env)
+      : provider === "opensky"
+        ? await fetchOpenSky(lat, lon, radius, env)
+        : await fetchAdsbLol(lat, lon, radius);
     attempts.push({ provider, ok: true, elapsedMs: Date.now() - startedAt, authMode: result.authMode });
     return result;
   } catch (error) {
@@ -284,9 +318,12 @@ export const onRequestGet = async (context: { request: Request; env: Env; waitUn
   const startedAt = Date.now();
   const attempts: Attempt[] = [];
   const modeForOpenSky = openSkyMode(context.env);
-  const providerOrder: ProviderName[] = modeForOpenSky === "disabled"
-    ? ["adsb.lol"]
-    : ["opensky", "adsb.lol"];
+  const gatewayConfigured = Boolean(context.env.AIRCRAFT_GATEWAY_URL);
+  const providerOrder: ProviderName[] = gatewayConfigured
+    ? ["gateway", "adsb.lol"]
+    : modeForOpenSky === "disabled"
+      ? ["adsb.lol"]
+      : ["opensky", "adsb.lol"];
 
   let firstNonEmptyStale: ProviderResult | null = null;
   let selected: ProviderResult | null = null;
@@ -336,6 +373,7 @@ export const onRequestGet = async (context: { request: Request; env: Env; waitUn
     return json({
       error: "aircraft providers unavailable",
       openSkyAuthMode: modeForOpenSky,
+      gatewayConfigured,
       providerOrder,
       attempts,
       retryAfterSeconds: 30,

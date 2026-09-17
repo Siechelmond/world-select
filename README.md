@@ -1,4 +1,4 @@
-> Current stabilization: **v5.1 Aircraft Recovery**
+> Current stabilization: **v5.2 Aircraft Recovery**
 
 # World Select
 
@@ -119,7 +119,7 @@ See `docs/UAT_V4_3_STABILIZATION.md`.
 
 
 
-## v5.1 - Aircraft Recovery
+## v5.2 - Aircraft Recovery
 
 - OpenSky OAuth and state-vector timeouts are separated and lengthened for Cloudflare cold starts.
 - OAuth-token failure can fall back to supported anonymous OpenSky before the regional adsb.lol fallback.

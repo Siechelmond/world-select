@@ -1,13 +1,14 @@
 {
   "name": "world-select",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "verify:contracts": "node scripts/verify-runtime-contracts.mjs"
+    "verify:contracts": "node scripts/verify-runtime-contracts.mjs",
+    "verify:v60": "node scripts/verify-v60-foundation.mjs"
   },
   "dependencies": {
     "next": "16.3.5",

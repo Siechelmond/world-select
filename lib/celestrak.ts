@@ -13,8 +13,10 @@ function parseTle(text: string): TleRecord[] {
   return out;
 }
 
-export async function fetchStationTles(signal?: AbortSignal): Promise<TleRecord[]> {
-  const response = await fetch("/api/satellites", { signal, cache: "no-store" });
+export type SatelliteCatalog = "core" | "dense";
+
+export async function fetchStationTles(signal?: AbortSignal, catalog: SatelliteCatalog = "core"): Promise<TleRecord[]> {
+  const response = await fetch(`/api/satellites?catalog=${catalog}`, { signal, cache: "no-store" });
   if (!response.ok) throw new Error(`Satellite proxy returned HTTP ${response.status}`);
   return parseTle(await response.text());
 }

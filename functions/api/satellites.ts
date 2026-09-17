@@ -1,10 +1,18 @@
-const GROUPS = [
-  { name: 'VISUAL', limit: 120 },
-  { name: 'STATIONS', limit: 40 },
-  { name: 'WEATHER', limit: 100 },
-  { name: 'GPS-OPS', limit: 40 },
-  { name: 'GALILEO', limit: 40 },
-  { name: 'STARLINK', limit: 220 },
+type CelesTrakGroup = { name: string; limit?: number };
+
+const CORE_GROUPS: CelesTrakGroup[] = [
+  { name: 'STATIONS' },
+  { name: 'VISUAL' },
+  { name: 'GPS-OPS' },
+  { name: 'GLO-OPS' },
+  { name: 'GALILEO' },
+  { name: 'GEO' },
+];
+
+// DENSE is intentionally opt-in because the Starlink shell is materially larger.
+const DENSE_GROUPS: CelesTrakGroup[] = [
+  ...CORE_GROUPS,
+  { name: 'STARLINK', limit: 1800 },
 ];
 
 function splitRecords(text: string) {
@@ -17,14 +25,18 @@ function splitRecords(text: string) {
   return out;
 }
 
-export const onRequestGet = async () => {
-  const responses = await Promise.allSettled(GROUPS.map(async (group) => {
+export const onRequestGet = async ({ request }: { request: Request }) => {
+  const catalog = new URL(request.url).searchParams.get('catalog') === 'dense' ? 'dense' : 'core';
+  const groups = catalog === 'dense' ? DENSE_GROUPS : CORE_GROUPS;
+
+  const responses = await Promise.allSettled(groups.map(async (group) => {
     const upstream = await fetch(`https://celestrak.org/NORAD/elements/gp.php?GROUP=${group.name}&FORMAT=TLE`, {
-      headers: { 'User-Agent': 'WorldSelect/0.4 (+https://world-select.pages.dev)' },
+      headers: { 'User-Agent': 'WorldSelect/0.6 (+https://world-select.pages.dev)' },
       cf: { cacheTtl: 7200, cacheEverything: true },
     } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
     if (!upstream.ok) throw new Error(`${group.name} HTTP ${upstream.status}`);
-    return splitRecords(await upstream.text()).slice(0, group.limit);
+    const records = splitRecords(await upstream.text());
+    return group.limit ? records.slice(0, group.limit) : records;
   }));
 
   const byNorad = new Map<string, { name: string; line1: string; line2: string }>();
@@ -43,6 +55,7 @@ export const onRequestGet = async () => {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'public, max-age=3600, s-maxage=7200',
       'X-World-Select-Satellite-Count': String(byNorad.size),
+      'X-World-Select-Satellite-Catalog': catalog,
     },
   });
 };
