@@ -7,9 +7,15 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "verify:contracts": "node scripts/verify-runtime-contracts.mjs",
-    "verify:v60": "node scripts/verify-v60-foundation.mjs",
-    "verify:v601": "node scripts/verify-v601-uat-fixes.mjs"
+    "verify:contracts": "npm run check:boundaries && npm run qa:runtime",
+    "test": "node --experimental-strip-types scripts/qa-runtime.mts",
+    "test:track": "node scripts/track-regression.mjs",
+    "check:boundaries": "node scripts/check-package-boundaries.mjs",
+    "qa:runtime": "node --experimental-strip-types scripts/qa-runtime.mts",
+    "qa:map-stack": "node scripts/qa-map-stack.mjs",
+    "verify:legacy:v60": "node scripts/verify-v60-foundation.mjs",
+    "verify:legacy:v601": "node scripts/verify-v601-uat-fixes.mjs",
+    "qa:f1": "npm test && npm run test:track && npm run check:boundaries && npm run qa:map-stack"
   },
   "dependencies": {
     "next": "16.3.5",
