@@ -922,3 +922,72 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .orbitFrame { inset: 142px 4px 58px 4px; }
   .orbitFrameLegend { left: 8px; right: 8px; max-width: none; bottom: 6px; }
 }
+
+
+/* Batch 5C — cislunar bridge: Moon + L1/L2 + JWST context between Orbit and Solar. */
+.cislunarGuide {
+  fill: none;
+  stroke: rgba(103,232,249,.16);
+  stroke-width: 1.25;
+  stroke-dasharray: 7 8;
+}
+.l1l2Guide { stroke: rgba(192,132,252,.18); }
+.cislunarGuideLabel {
+  fill: #64748b;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  paint-order: stroke;
+  stroke: #020617;
+  stroke-width: 3px;
+}
+.jwstContextMarker { pointer-events: none; }
+.jwstDot {
+  fill: #fef3c7;
+  filter: drop-shadow(0 0 8px rgba(253,230,138,.9));
+}
+.jwstRing {
+  fill: none;
+  stroke: rgba(253,230,138,.58);
+  stroke-width: 1.5;
+}
+.jwstLeader {
+  stroke: rgba(253,230,138,.46);
+  stroke-width: 1.2;
+}
+.jwstLabel {
+  fill: #fef9c3;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .09em;
+  paint-order: stroke;
+  stroke: #020617;
+  stroke-width: 3px;
+}
+.jwstSubLabel {
+  fill: #94a3b8;
+  font-size: 8px;
+  paint-order: stroke;
+  stroke: #020617;
+  stroke-width: 3px;
+}
+.cislunarBadge {
+  position: absolute;
+  z-index: 4;
+  left: 16px;
+  top: 54px;
+  display: grid;
+  gap: 2px;
+  padding: 7px 10px;
+  color: #94a3b8;
+  font-size: 8px;
+}
+.cislunarBadge strong {
+  color: #cffafe;
+  font-size: 9px;
+  letter-spacing: .12em;
+}
+@media (max-width: 780px) {
+  .cislunarBadge { left: 8px; top: 48px; }
+  .jwstSubLabel { display: none; }
+}

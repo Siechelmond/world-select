@@ -371,9 +371,14 @@ function PlanetSystemView({
   return (
     <div className="planetSystemScene">
       <button className="spaceBackButton" onClick={onBack}>← Solar System</button>
+      {planet.entity.name === "Earth" && <div className="cislunarBadge glass"><strong>CISLUNAR</strong><span>Earth → Moon → L2 → Solar System</span></div>}
       <div className="planetSystemInfo">
         <strong>{planet.entity.name}</strong>
-        <span>{moons.length ? `${moons.length} featured moon${moons.length === 1 ? "" : "s"}` : "No natural moons"}</span>
+        <span>{planet.entity.name === "Earth"
+          ? "Earth–Moon / cislunar context"
+          : moons.length
+            ? `${moons.length} featured moon${moons.length === 1 ? "" : "s"}`
+            : "No natural moons"}</span>
       </div>
       <svg viewBox={`0 0 ${size} 760`} className="planetSystemSvg" role="img" aria-label={`${planet.entity.name} and featured moons`}>
         <defs>
@@ -384,6 +389,12 @@ function PlanetSystemView({
             <stop offset="100%" stopColor={palette[2]}/>
           </radialGradient>
         </defs>
+        {planet.entity.name === "Earth" && <>
+          <ellipse cx={cx} cy={cy} rx="205" ry="92" className="cislunarGuide moonDistanceGuide" />
+          <ellipse cx={cx} cy={cy} rx="330" ry="150" className="cislunarGuide l1l2Guide" />
+          <text x={cx + 214} y={cy - 6} className="cislunarGuideLabel">MOON DISTANCE</text>
+          <text x={cx + 340} y={cy - 6} className="cislunarGuideLabel">L1 / L2 CONTEXT</text>
+        </>}
         {moonRender.map(({ moon, orbit }) => (
           <ellipse key={`orbit-${moon.name}`} cx={cx} cy={cy} rx={orbit} ry={orbit * 0.45} className="moonOrbit" />
         ))}
@@ -399,9 +410,22 @@ function PlanetSystemView({
             <text x={x + radius + 7} y={y - 7} className="moonLabel">{moon.name}</text>
           </g>
         ))}
+        {planet.entity.name === "Earth" && <>
+          <g className="jwstContextMarker">
+            <line x1={cx + 330} y1={cy} x2={cx + 382} y2={cy - 48} className="jwstLeader" />
+            <circle cx={cx + 330} cy={cy} r="7" className="jwstDot" />
+            <circle cx={cx + 330} cy={cy} r="15" className="jwstRing" />
+            <text x={cx + 390} y={cy - 54} className="jwstLabel">JWST</text>
+            <text x={cx + 390} y={cy - 36} className="jwstSubLabel">Sun–Earth L2 region · context only</text>
+          </g>
+        </>}
         {!moons.length && <text x={cx} y={cy + 135} className="moonLabel" textAnchor="middle">No natural satellites</text>}
       </svg>
-      <div className="spaceScaleDisclosure">CALCULATED planet position · SIMULATED circular moon display orbits · sizes/distances expanded for exploration</div>
+      <div className="spaceScaleDisclosure">
+        {planet.entity.name === "Earth"
+          ? "MOON: NASA fact distance + simulated circular display orbit · JWST/L1/L2: spatial context only, not live telemetry"
+          : "CALCULATED planet position · SIMULATED circular moon display orbits · sizes/distances expanded for exploration"}
+      </div>
     </div>
   );
 }
