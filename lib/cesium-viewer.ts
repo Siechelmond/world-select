@@ -7,10 +7,13 @@ const OSM_TILES = 'https://tile.openstreetmap.org/';
 const REEARTH_TERRAIN_URL = 'https://terrain.reearth.land/cesium-mesh/ellipsoid';
 
 export type GroundMapStyle = 'earth' | 'ground';
+export type WorldMapMode = 'satellite' | 'map' | 'nasa';
 
 export type ViewerLifecycle = {
   viewer: any;
   setMapStyle: (style: GroundMapStyle) => void;
+  setMapMode: (mode: WorldMapMode) => void;
+  setPhotorealistic3D: (enabled: boolean) => Promise<boolean>;
   destroy: () => void;
 };
 
@@ -28,8 +31,10 @@ export function createWorldViewer(input: {
   onViewChange: (view: { latitude: number; longitude: number; height: number }) => void;
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
+  onEmptyClick?: () => void;
+  googleMapsApiKey?: string;
 }): ViewerLifecycle {
-  const { Cesium, container, onViewChange, onEntityClick, onEntityHover } = input;
+  const { Cesium, container, onViewChange, onEntityClick, onEntityHover, onEmptyClick, googleMapsApiKey = '' } = input;
   Cesium.Ion.defaultAccessToken = undefined;
 
   const viewer = new Cesium.Viewer(container, {
@@ -57,15 +62,20 @@ export function createWorldViewer(input: {
   viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000) });
 
   let requestedStyle: GroundMapStyle = 'earth';
+  let requestedMode: WorldMapMode = 'satellite';
   let earthLayer: any = null;
   let groundLayer: any = null;
+  let nasaLayer: any = null;
   let referenceLayer: any = null;
+  let google3d: any = null;
 
   const applyStyle = () => {
-    const wantsGround = requestedStyle === 'ground';
-    if (earthLayer) earthLayer.show = !wantsGround || !groundLayer;
-    if (groundLayer) groundLayer.show = wantsGround;
-    if (referenceLayer) referenceLayer.show = !wantsGround;
+    const in3d = Boolean(google3d);
+    if (earthLayer) earthLayer.show = !in3d && requestedMode === 'satellite';
+    if (groundLayer) groundLayer.show = !in3d && requestedMode === 'map';
+    if (nasaLayer) nasaLayer.show = !in3d && requestedMode === 'nasa';
+    if (referenceLayer) referenceLayer.show = !in3d && requestedMode !== 'map';
+    viewer.scene.globe.show = !in3d;
     viewer.scene.requestRender?.();
   };
 
@@ -89,6 +99,20 @@ export function createWorldViewer(input: {
       applyStyle();
     })
     .catch(() => { groundLayer = null; });
+
+  try {
+    const nasaDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const nasaProvider = new Cesium.UrlTemplateImageryProvider({
+      url: 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/' + nasaDate + '/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg',
+      minimumLevel: 0,
+      maximumLevel: 9,
+      credit: 'NASA EOSDIS GIBS / MODIS Terra',
+    });
+    nasaLayer = viewer.imageryLayers.addImageryProvider(nasaProvider);
+    nasaLayer.show = false;
+  } catch {
+    nasaLayer = null;
+  }
 
   void Cesium.ArcGisMapServerImageryProvider.fromUrl(ESRI_BOUNDARIES_PLACES)
     .then((provider: any) => {
@@ -138,6 +162,7 @@ export function createWorldViewer(input: {
     const picked = viewer.scene.pick(movement.position);
     const id = picked?.id?.id;
     if (typeof id === 'string') onEntityClick(id);
+    else onEmptyClick?.();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
   handler.setInputAction((movement: any) => {
     if (!onEntityHover) return;
@@ -156,9 +181,38 @@ export function createWorldViewer(input: {
   return {
     viewer,
     setMapStyle: (style: GroundMapStyle) => { requestedStyle = style; applyStyle(); },
+    setMapMode: (mode: WorldMapMode) => { requestedMode = mode; applyStyle(); },
+    setPhotorealistic3D: async (enabled: boolean) => {
+      if (!enabled) {
+        if (google3d) {
+          try { viewer.scene.primitives.remove(google3d); } catch {}
+          google3d = null;
+        }
+        applyStyle();
+        return true;
+      }
+      if (!googleMapsApiKey) return false;
+      if (google3d) return true;
+      try {
+        const resource = new Cesium.Resource({
+          url: 'https://tile.googleapis.com/v1/3dtiles/root.json',
+          queryParameters: { key: googleMapsApiKey },
+        });
+        google3d = await Cesium.Cesium3DTileset.fromUrl(resource);
+        if (viewer.isDestroyed()) return false;
+        viewer.scene.primitives.add(google3d);
+        applyStyle();
+        return true;
+      } catch {
+        google3d = null;
+        applyStyle();
+        return false;
+      }
+    },
     destroy: () => {
       viewer.camera.moveEnd.removeEventListener(updateView);
       handler.destroy();
+      if (google3d) { try { viewer.scene.primitives.remove(google3d); } catch {} google3d = null; }
       if (!viewer.isDestroyed()) viewer.destroy();
     },
   };

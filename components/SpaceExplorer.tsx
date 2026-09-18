@@ -205,9 +205,15 @@ export default function SpaceExplorer({ planets, sun, time, onSelect }: Props) {
         <PlanetSystemView planet={planet} time={time} onSelect={onSelect} onBack={() => setLevel("solar")} />
       )}
       {level === "solar" && (
-        <SolarSystemView planets={planets} sun={sun} onSelect={onSelect} onOpenPlanet={openPlanet} />
+        <>
+          <SolarSystemView planets={planets} sun={sun} onSelect={onSelect} onOpenPlanet={openPlanet} />
+          <div className="spaceMissionFacts glass"><strong>SPACECRAFT</strong><span><b>JWST</b> — Sun–Earth L2 region, about 1.5 million km from Earth. Context position, not live telemetry.</span></div>
+        </>
       )}
-      {level === "outer" && <OuterSystemView time={time} onSelect={onSelect} onSolar={() => setLevel("solar")} />}
+      {level === "outer" && <>
+        <OuterSystemView time={time} onSelect={onSelect} onSolar={() => setLevel("solar")} />
+        <div className="spaceMissionFacts outerFacts glass"><strong>DEEP-SPACE PROBES</strong><span><b>New Horizons</b> — ~9.5 billion km from Earth in June 2026, beyond Pluto and the classical Kuiper Belt.</span><span><b>Voyager 1 / 2</b> — both in interstellar space; Voyager 1 is the most distant human-made object.</span></div>
+      </>}
       {level === "galaxy" && <GalaxyView onSolar={() => setLevel("solar")} />}
     </div>
   );
@@ -407,8 +413,8 @@ function GalaxyView({ onSolar }: { onSolar: () => void }) {
         <strong>MILKY WAY</strong>
         <span>~100,000 light-years across</span>
         <span>Solar System ≈ 26,000 light-years from the Galactic Center</span>
-        <span>Spiral-arm + dust-lane + stellar-cloud context model</span>
-        <small>Scientifically inspired spatial context, not a literal photograph or star-by-star reconstruction.</small>
+        <span>Diffuse disk + dust lanes + stellar-density context model</span>
+        <small>Scientific orientation view, deliberately subdued; not a literal photograph or star-by-star reconstruction.</small>
       </div>
     </div>
   );
