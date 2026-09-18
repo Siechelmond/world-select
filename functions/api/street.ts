@@ -34,38 +34,95 @@ function normalizePhotos(payload: any, lat: number, lon: number) {
   ).slice(0, 24);
 }
 
-async function fetchKartaView(lat: number, lon: number) {
-  const endpoint = new URL("https://api.openstreetcam.org/2.0/photo/");
-  endpoint.searchParams.set("lat", lat.toFixed(6));
-  endpoint.searchParams.set("lng", lon.toFixed(6));
-  endpoint.searchParams.set("zoomLevel", "16");
-  endpoint.searchParams.set("itemsPerPage", "24");
-  endpoint.searchParams.set("page", "1");
-  endpoint.searchParams.set("join", "sequence");
-  endpoint.searchParams.set("orderBy", "id");
-  endpoint.searchParams.set("orderDirection", "desc");
-
+async function requestKartaView(url: URL, timeoutMs = 5_000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const upstream = await fetch(endpoint.toString(), {
-      headers: { "User-Agent": "WorldSelect/0.6", Accept: "application/json" },
+    const upstream = await fetch(url.toString(), {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "WorldSelect/0.7 (+https://world-select.pages.dev)",
+      },
       signal: controller.signal,
       cf: { cacheTtl: 300, cacheEverything: true },
     } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
 
-    if (!upstream.ok) return { ok: false as const, status: upstream.status, photos: [] as any[] };
-    const payload: any = await upstream.json();
-    return { ok: true as const, status: 200, photos: normalizePhotos(payload, lat, lon) };
+    const payload = await upstream.json().catch(() => null) as any;
+    const apiHttpCode = Number(payload?.status?.httpCode);
+    const apiCode = Number(payload?.status?.apiCode);
+    const logicalFailure =
+      (Number.isFinite(apiHttpCode) && apiHttpCode >= 400) ||
+      (Number.isFinite(apiCode) && apiCode >= 610);
+
+    if (!upstream.ok || logicalFailure) {
+      return {
+        ok: false as const,
+        status: Number.isFinite(apiHttpCode) && apiHttpCode >= 400 ? apiHttpCode : upstream.status,
+        payload,
+      };
+    }
+
+    return { ok: true as const, status: upstream.status, payload };
   } catch (error) {
     return {
       ok: false as const,
       status: error instanceof Error && error.name === "AbortError" ? 504 : 502,
-      photos: [] as any[],
+      payload: null,
     };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchKartaView(lat: number, lon: number) {
+  const buildNearbyUrl = (zoomLevel: number) => {
+    const endpoint = new URL("https://api.openstreetcam.org/2.0/photo/");
+    endpoint.searchParams.set("lat", lat.toFixed(6));
+    endpoint.searchParams.set("lng", lon.toFixed(6));
+    endpoint.searchParams.set("zoomLevel", String(zoomLevel));
+    endpoint.searchParams.set("join", "sequence");
+    endpoint.searchParams.set("orderBy", "id");
+    endpoint.searchParams.set("orderDirection", "desc");
+    return endpoint;
+  };
+
+  // KartaView documents lat/lng/zoomLevel for nearby-photo lookup.
+  // Keep this contract clean: page/itemsPerPage belong to sequence paging.
+  const primary = await requestKartaView(buildNearbyUrl(18));
+  if (primary.ok) {
+    const photos = normalizePhotos(primary.payload, lat, lon);
+    if (photos.length) return { ok: true as const, status: 200, photos, mode: "nearby-z18" };
+  }
+
+  const wider = await requestKartaView(buildNearbyUrl(16));
+  if (wider.ok) {
+    const photos = normalizePhotos(wider.payload, lat, lon);
+    if (photos.length) return { ok: true as const, status: 200, photos, mode: "nearby-z16" };
+  }
+
+  // KartaView FAQ documents radius search as a public nearby fallback.
+  const radiusEndpoint = new URL("https://api.openstreetcam.org/2.0/photo/");
+  radiusEndpoint.searchParams.set("lat", lat.toFixed(6));
+  radiusEndpoint.searchParams.set("lng", lon.toFixed(6));
+  radiusEndpoint.searchParams.set("radius", "500");
+  const radius = await requestKartaView(radiusEndpoint);
+  if (radius.ok) {
+    return {
+      ok: true as const,
+      status: 200,
+      photos: normalizePhotos(radius.payload, lat, lon),
+      mode: "radius-500",
+    };
+  }
+
+  const failures = [primary, wider, radius].filter((item) => !item.ok);
+  const timeoutOnly = failures.length > 0 && failures.every((item) => item.status === 504);
+  return {
+    ok: false as const,
+    status: timeoutOnly ? 504 : 502,
+    photos: [] as any[],
+    mode: "unavailable",
+  };
 }
 
 export const onRequestGet = async (context: any) => {
@@ -85,7 +142,7 @@ export const onRequestGet = async (context: any) => {
     }, { status: 502 });
   }
 
-  return Response.json({ photos: result.photos }, {
+  return Response.json({ photos: result.photos, sourceMode: result.mode }, {
     headers: {
       "Cache-Control": result.photos.length
         ? "public, max-age=120, s-maxage=300"
