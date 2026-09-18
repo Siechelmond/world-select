@@ -11,17 +11,22 @@ export type AircraftRecord = {
   track?: number | null;
   squawk?: string | null;
   seen?: number;
+  seen_pos?: number;
   emergency?: string;
   category?: string | number | null;
+  military?: boolean;
 };
+
+export type AircraftCoverage = "regional" | "worldwide";
 
 export type ProviderResult = {
   ac: AircraftRecord[];
   now: number;
   total: number;
   provider: "adsb.lol" | "opensky";
-  coverage: "regional";
+  coverage: AircraftCoverage;
   authMode?: "anonymous" | "oauth" | "anonymous-fallback";
+  source?: "civilian" | "military" | "mixed";
 };
 
 export function bboxForRadius(lat: number, lon: number, radiusNm: number) {
@@ -51,11 +56,14 @@ export function sourceAgeSeconds(epochMs: number, nowMs = Date.now()) {
   return Math.max(0, Math.round((nowMs - epochMs) / 1000));
 }
 
-export function normalizeOpenSkyStates(payload: any): ProviderResult {
+export function normalizeOpenSkyStates(payload: any, coverage: AircraftCoverage = "regional"): ProviderResult {
   const states = Array.isArray(payload?.states) ? payload.states : [];
+  const snapshotEpochS = typeof payload?.time === "number" && payload.time > 0 ? payload.time : Date.now() / 1000;
   const ac = states.flatMap((state: any[]) => {
     if (!Array.isArray(state) || typeof state[5] !== "number" || typeof state[6] !== "number") return [];
     const velocityMs = typeof state[9] === "number" ? state[9] : null;
+    const lastContact = typeof state[4] === "number" ? state[4] : snapshotEpochS;
+    const positionTime = typeof state[3] === "number" ? state[3] : lastContact;
     return [{
       hex: String(state[0] ?? "").trim(),
       flight: typeof state[1] === "string" ? state[1].trim() : "",
@@ -68,8 +76,10 @@ export function normalizeOpenSkyStates(payload: any): ProviderResult {
       gs: velocityMs == null ? null : velocityMs * 1.943844,
       track: typeof state[10] === "number" ? state[10] : null,
       squawk: state[14] ?? null,
-      seen: typeof state[4] === "number" ? Math.max(0, Date.now() / 1000 - state[4]) : 0,
+      seen: Math.max(0, snapshotEpochS - lastContact),
+      seen_pos: Math.max(0, snapshotEpochS - positionTime),
       category: state[17] ?? null,
+      military: false,
     } satisfies AircraftRecord];
   });
   return {
@@ -77,18 +87,24 @@ export function normalizeOpenSkyStates(payload: any): ProviderResult {
     now: sourceEpochMs(payload?.time),
     total: ac.length,
     provider: "opensky",
-    coverage: "regional",
+    coverage,
+    source: "civilian",
   };
 }
 
-export function normalizeAdsbLol(payload: any): ProviderResult {
-  const ac = Array.isArray(payload?.ac) ? payload.ac : [];
+export function normalizeAdsbLol(payload: any, options: { military?: boolean; coverage?: AircraftCoverage } = {}): ProviderResult {
+  const military = Boolean(options.military);
+  const ac = (Array.isArray(payload?.ac) ? payload.ac : []).map((record: AircraftRecord) => ({
+    ...record,
+    military: military || Boolean(record?.military),
+  }));
   return {
     ac,
     now: sourceEpochMs(payload?.now),
     total: Number(payload?.total ?? ac.length),
     provider: "adsb.lol",
-    coverage: "regional",
+    coverage: options.coverage ?? "regional",
+    source: military ? "military" : "civilian",
   };
 }
 
