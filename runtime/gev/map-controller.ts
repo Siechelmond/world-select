@@ -91,24 +91,26 @@ export function createMapController(input: {
     .catch(() => { groundLayer = null; });
 
   try {
-    // Daily GIBS imagery can be incomplete while the current composite is still filling.
-    // Use a settled recent day and render it only as a translucent EO overlay over Esri.
-    const nasaDate = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
-    const provider = new Cesium.WebMapTileServiceImageryProvider({
-      url: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/wmts.cgi",
-      layer: "MODIS_Terra_CorrectedReflectance_TrueColor",
-      style: "default",
-      format: "image/jpeg",
-      tileMatrixSetID: "GoogleMapsCompatible_Level9",
-      maximumLevel: 9,
-      dimensions: { Time: nasaDate },
-      credit: "NASA EOSDIS GIBS / MODIS Terra",
+    // NASA mode must be globally complete and globe-safe. Daily MODIS swaths can
+    // contain no-data wedges, so the base NASA experience uses the static,
+    // seamless GIBS Blue Marble global mosaic in EPSG:4326.
+    const provider = new Cesium.WebMapServiceImageryProvider({
+      url: "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi",
+      layers: "BlueMarble_NextGeneration",
+      parameters: {
+        service: "WMS",
+        version: "1.1.1",
+        transparent: "false",
+        format: "image/jpeg",
+      },
+      tilingScheme: new Cesium.GeographicTilingScheme(),
+      credit: "NASA EOSDIS GIBS / Blue Marble Next Generation",
     });
     nasaLayer = viewer.imageryLayers.addImageryProvider(provider);
-    nasaLayer.alpha = 0.58;
-    nasaLayer.brightness = 1.02;
-    nasaLayer.contrast = 0.96;
-    nasaLayer.saturation = 0.9;
+    nasaLayer.alpha = 1;
+    nasaLayer.brightness = 1;
+    nasaLayer.contrast = 1;
+    nasaLayer.saturation = 1;
     nasaLayer.show = false;
   } catch {
     nasaLayer = null;

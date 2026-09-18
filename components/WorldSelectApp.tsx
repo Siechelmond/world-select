@@ -144,6 +144,11 @@ export default function WorldSelectApp() {
     setSelected(entity);
     setStreetTarget(null);
     setMobilePanel("inspector");
+    if (entity.kind === "satellite" && /ISS.*ZARYA|^ISS\b/i.test(entity.name)) {
+      setIssPreview({ entity, screen: null });
+    } else {
+      setIssPreview(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -171,12 +176,6 @@ export default function WorldSelectApp() {
   useEffect(() => {
     if (viewMode !== "space" && spacePlaying) setSpacePlaying(false);
   }, [viewMode, spacePlaying]);
-
-  useEffect(() => {
-    if (hovered?.kind === "satellite" && /ISS.*ZARYA|^ISS\b/i.test(hovered.name)) {
-      setIssPreview({ entity: hovered, screen: hoveredScreen });
-    }
-  }, [hovered, hoveredScreen]);
 
   useEffect(() => {
     const runtime = createCoreLiveWorld();
@@ -828,7 +827,7 @@ function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; 
         allow="autoplay; encrypted-media; picture-in-picture"
         referrerPolicy="strict-origin-when-cross-origin"
         allowFullScreen
-      /> : <div className="issLiveLoading">Hold on ISS to start live video…</div>}
+      /> : <div className="issLiveLoading">Opening ISS live video…</div>}
     </div>
     <div className="issLiveCaveat">Live camera may be dark on Earth's night side or during ISS signal loss.</div>
     <div className="issLiveMeta"><span>{entity.name}</span><a href="https://www.sen.com/live" target="_blank" rel="noreferrer">Open Sen live ↗</a></div>
