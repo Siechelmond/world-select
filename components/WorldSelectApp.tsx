@@ -7,6 +7,7 @@ import { createCoreLiveWorld } from "@/runtime/gev/core-live-world";
 import { createEarthquakeRenderer } from "@/runtime/gev/layers/earthquakes-renderer";
 import { createSatelliteRenderer } from "@/runtime/gev/layers/satellites-renderer";
 import { createAircraftRenderer } from "@/runtime/gev/layers/aircraft-renderer";
+import { createTrafficController } from "@/runtime/gev/layers/traffic-controller";
 import { propagateTles, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
 import type { AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
@@ -15,17 +16,6 @@ import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/sp
 import SpaceExplorer from "@/components/SpaceExplorer";
 import { createWorldViewer, type WorldMapMode } from "@/lib/cesium-viewer";
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
-import { fetchTrafficStatus, type TrafficStatus } from "@/lib/traffic";
-import {
-  advanceModeledVehicles,
-  buildModeledFlows,
-  fetchRoads,
-  generateModeledVehicles,
-  getCongestionColor,
-  type FlowSegment,
-  type ModeledVehicle,
-  type RoadSegment,
-} from "@/lib/traffic-vector";
 import { resolveLayerState, type LayerLoadState as LoadState } from "@/lib/layer-runtime";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; gm_authFailure?: () => void } }
@@ -53,13 +43,8 @@ export default function WorldSelectApp() {
   const aircraftRendererRef = useRef<ReturnType<typeof createAircraftRenderer> | null>(null);
   const geoLabelIdsRef = useRef(new Set<string>());
   const annotationIdsRef = useRef(new Set<string>());
-  const trafficLayerRef = useRef<any>(null);
-  const trafficIncidentLayerRef = useRef<any>(null);
   const viewerLifecycleRef = useRef<ReturnType<typeof createWorldViewer> | null>(null);
-  const trafficVehicleCollectionRef = useRef<any>(null);
-  const trafficRoadCollectionRef = useRef<any>(null);
-  const trafficVectorAbortRef = useRef<AbortController | null>(null);
-  const trafficVehicleTimerRef = useRef<number | null>(null);
+  const trafficControllerRef = useRef<ReturnType<typeof createTrafficController> | null>(null);
   const coreRuntimeRef = useRef<ReturnType<typeof createCoreLiveWorld> | null>(null);
 
   const [cesiumReady, setCesiumReady] = useState(false);
@@ -82,7 +67,6 @@ export default function WorldSelectApp() {
   const [militaryState, setMilitaryState] = useState<LoadState>("idle");
   const [militaryMeta, setMilitaryMeta] = useState<MilitaryFeedMeta | null>(null);
   const [trafficState, setTrafficState] = useState<LoadState>("idle");
-  const [trafficStatus, setTrafficStatus] = useState<TrafficStatus | null>(null);
   const [trafficVehicleCount, setTrafficVehicleCount] = useState(0);
   const [viewCenter, setViewCenter] = useState<EarthPoint>(INITIAL_CENTER);
   const [cameraHeight, setCameraHeight] = useState(9_500_000);
@@ -109,7 +93,6 @@ export default function WorldSelectApp() {
   const [mapMode, setMapMode] = useState<WorldMapMode>("satellite");
   const [photorealistic3D, setPhotorealistic3D] = useState(false);
   const [threeDError, setThreeDError] = useState<string | null>(null);
-  const [reloadNonce, setReloadNonce] = useState({ earthquakes: 0, satellites: 0, aircraft: 0, traffic: 0 });
 
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
@@ -234,33 +217,7 @@ export default function WorldSelectApp() {
     coreRuntimeRef.current?.setSatelliteCatalog(satelliteCatalog);
   }, [satelliteCatalog]);
 
-  useEffect(() => {
-    if (!trafficLayer || viewMode !== "earth") return;
-    const controller = new AbortController();
-    setTrafficState("loading");
-    setLayerError("traffic");
-    fetchTrafficStatus(controller.signal)
-      .then((status) => {
-        if (controller.signal.aborted) return;
-        setTrafficStatus(status);
-        if (status.configured && status.available) {
-          setTrafficState("ready");
-          setLayerError("traffic");
-        } else {
-          setTrafficState("degraded");
-          setLayerError("traffic", "Live TomTom flow unavailable · OSM road geometry + modeled vehicles available as city fallback");
-        }
-      })
-      .catch((reason: unknown) => {
-        if (controller.signal.aborted) return;
-        setTrafficStatus(null);
-        setTrafficState("degraded");
-        setLayerError("traffic", reason instanceof Error
-          ? `${reason.message} · OSM road geometry + modeled vehicles available as city fallback`
-          : "Live traffic status unavailable · OSM road geometry + modeled vehicles available as city fallback");
-      });
-    return () => controller.abort();
-  }, [trafficLayer, viewMode, reloadNonce.traffic, setLayerError]);
+
 
   useEffect(() => {
     if (!cesiumReady || !containerRef.current || !window.Cesium || viewerRef.current) return;
@@ -307,14 +264,25 @@ export default function WorldSelectApp() {
       Cesium: window.Cesium,
       entityRegistry: entityMapRef.current,
     });
+    trafficControllerRef.current = createTrafficController({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      onState: ({ state, error, vehicleCount }) => {
+        setTrafficState(state);
+        setTrafficVehicleCount(vehicleCount);
+        setLayerError("traffic", error);
+      },
+    });
 
     return () => {
       earthquakeRendererRef.current?.destroy();
       satelliteRendererRef.current?.destroy();
       aircraftRendererRef.current?.destroy();
+      trafficControllerRef.current?.destroy();
       earthquakeRendererRef.current = null;
       satelliteRendererRef.current = null;
       aircraftRendererRef.current = null;
+      trafficControllerRef.current = null;
       lifecycle.destroy();
       viewerLifecycleRef.current = null;
       viewerRef.current = null;
@@ -450,178 +418,18 @@ export default function WorldSelectApp() {
     }
   }, [annotations, viewMode, cesiumReady]);
 
-  useEffect(() => {
-    const viewer = viewerRef.current; const Cesium = window.Cesium;
-    if (!viewer || !Cesium) return;
-    if (trafficLayerRef.current) {
-      viewer.imageryLayers.remove(trafficLayerRef.current, true);
-      trafficLayerRef.current = null;
-    }
-    if (trafficIncidentLayerRef.current) {
-      viewer.imageryLayers.remove(trafficIncidentLayerRef.current, true);
-      trafficIncidentLayerRef.current = null;
-    }
-    // Request TomTom tiles immediately when Traffic is enabled. The status
-    // probe runs in parallel; do not serialize rendering behind it.
-    if (viewMode !== "earth" || !trafficLayer) return;
-    const provider = new Cesium.UrlTemplateImageryProvider({
-      url: "/api/traffic?z={z}&x={x}&y={y}",
-      minimumLevel: 0,
-      maximumLevel: 20,
-      tilingScheme: new Cesium.WebMercatorTilingScheme(),
-      credit: "Traffic © TomTom",
-    });
-    const onTileError = (error: any) => {
-      setTrafficState("degraded");
-      setTrafficStatus((current) => current ?? {
-        configured: true,
-        available: false,
-        provider: "TomTom Orbis Traffic Flow v2",
-        message: "Traffic tile request failed",
-      });
-      const status = Number(error?.statusCode ?? 0);
-      setLayerError("traffic", status ? `Traffic tile request failed (HTTP ${status}) · switching to city fallback` : "Traffic tile refresh delayed · switching to city fallback");
-    };
-    provider.errorEvent?.addEventListener(onTileError);
-    const layer = viewer.imageryLayers.addImageryProvider(provider);
-    layer.alpha = 1.0;
-    layer.brightness = 1.08;
-    layer.contrast = 1.12;
-    trafficLayerRef.current = layer;
 
-    const incidentProvider = new Cesium.UrlTemplateImageryProvider({
-      url: "/api/traffic?kind=incidents&z={z}&x={x}&y={y}",
-      minimumLevel: 0,
-      maximumLevel: 20,
-      tilingScheme: new Cesium.WebMercatorTilingScheme(),
-      credit: "Traffic incidents © TomTom",
-    });
-    incidentProvider.errorEvent?.addEventListener(onTileError);
-    const incidentLayer = viewer.imageryLayers.addImageryProvider(incidentProvider);
-    incidentLayer.alpha = 0.70;
-    trafficIncidentLayerRef.current = incidentLayer;
-
-    return () => {
-      provider.errorEvent?.removeEventListener(onTileError);
-      incidentProvider.errorEvent?.removeEventListener(onTileError);
-      if (trafficLayerRef.current && viewerRef.current) {
-        viewerRef.current.imageryLayers.remove(trafficLayerRef.current, true);
-        trafficLayerRef.current = null;
-      }
-      if (trafficIncidentLayerRef.current && viewerRef.current) {
-        viewerRef.current.imageryLayers.remove(trafficIncidentLayerRef.current, true);
-        trafficIncidentLayerRef.current = null;
-      }
-    };
-  }, [trafficLayer, viewMode, cesiumReady]);
 
   useEffect(() => {
-    const viewer = viewerRef.current;
-    const Cesium = window.Cesium;
+    trafficControllerRef.current?.sync({
+      enabled: trafficLayer,
+      earthVisible: viewMode === "earth",
+      latitude: viewCenter.latitude,
+      longitude: viewCenter.longitude,
+      cameraHeight,
+    });
+  }, [trafficLayer, viewMode, viewCenter.latitude, viewCenter.longitude, cameraHeight, cesiumReady]);
 
-    const clearVector = () => {
-      trafficVectorAbortRef.current?.abort();
-      trafficVectorAbortRef.current = null;
-      if (trafficVehicleTimerRef.current != null) {
-        window.clearInterval(trafficVehicleTimerRef.current);
-        trafficVehicleTimerRef.current = null;
-      }
-      if (viewerRef.current && trafficVehicleCollectionRef.current) {
-        try { viewerRef.current.scene.primitives.remove(trafficVehicleCollectionRef.current); } catch {}
-        trafficVehicleCollectionRef.current = null;
-      }
-      if (viewerRef.current && trafficRoadCollectionRef.current) {
-        try { viewerRef.current.scene.primitives.remove(trafficRoadCollectionRef.current); } catch {}
-        trafficRoadCollectionRef.current = null;
-      }
-      setTrafficVehicleCount(0);
-    };
-
-    const liveTomTomAvailable = Boolean(trafficStatus?.configured && trafficStatus?.available);
-    if (!viewer || !Cesium || !trafficLayer || viewMode !== "earth" || cameraHeight >= 180_000 || liveTomTomAvailable || trafficStatus == null) {
-      clearVector();
-      return;
-    }
-
-    clearVector();
-    const controller = new AbortController();
-    trafficVectorAbortRef.current = controller;
-    setTrafficState("loading");
-
-    let roads: RoadSegment[] = [];
-    let flows: FlowSegment[] = [];
-    let vehicles: ModeledVehicle[] = [];
-    const roadCollection = new Cesium.PolylineCollection();
-    const vehicleCollection = new Cesium.PointPrimitiveCollection();
-    viewer.scene.primitives.add(roadCollection);
-    viewer.scene.primitives.add(vehicleCollection);
-    trafficRoadCollectionRef.current = roadCollection;
-    trafficVehicleCollectionRef.current = vehicleCollection;
-
-    const renderVehicles = () => {
-      vehicleCollection.removeAll();
-      const flowMap = new Map(flows.map((item) => [item.roadId, item]));
-      for (const vehicle of vehicles) {
-        const flow = flowMap.get(vehicle.roadId);
-        vehicleCollection.add({
-          position: Cesium.Cartesian3.fromDegrees(vehicle.position.longitude, vehicle.position.latitude, 8),
-          pixelSize: cameraHeight < 30_000 ? 4 : 3,
-          color: Cesium.Color.fromCssColorString(getCongestionColor(flow?.congestion ?? "free-flow")),
-          outlineColor: Cesium.Color.fromCssColorString("#020617"),
-          outlineWidth: 1,
-          disableDepthTestDistance: 5_000,
-        });
-      }
-      setTrafficVehicleCount(vehicles.length);
-      viewer.scene.requestRender?.();
-    };
-
-    fetchRoads(viewCenter.latitude, viewCenter.longitude, cameraHeight < 35_000 ? 5 : 8, controller.signal)
-      .then((nextRoads) => {
-        if (controller.signal.aborted) return;
-        roads = nextRoads.slice(0, 500);
-        flows = buildModeledFlows(roads);
-        vehicles = generateModeledVehicles(roads, flows, 260);
-        const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
-        for (const road of roads) {
-          if (road.coordinates.length < 2) continue;
-          roadCollection.add({
-            positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, 5)),
-            width: road.highway === "motorway" || road.highway === "trunk" ? 3 : 2,
-            material: Cesium.Material.fromType("Color", {
-              color: Cesium.Color.fromCssColorString(getCongestionColor(flowMap.get(road.id)?.congestion ?? "free-flow")).withAlpha(0.82),
-            }),
-          });
-        }
-        renderVehicles();
-        setTrafficState(roads.length ? "degraded" : "error");
-        setLayerError("traffic", roads.length
-          ? "OSM road geometry + modeled vehicle fallback · live TomTom unavailable"
-          : "No OSM road geometry returned for this viewport");
-        if (vehicles.length) {
-          trafficVehicleTimerRef.current = window.setInterval(() => {
-            vehicles = advanceModeledVehicles(vehicles, roads, flows, 0.25);
-            renderVehicles();
-          }, 250);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (controller.signal.aborted) return;
-        setTrafficState("error");
-        setLayerError("traffic", reason instanceof Error ? reason.message : "OSM road geometry unavailable");
-      });
-
-    return clearVector;
-  }, [
-    trafficLayer,
-    viewMode,
-    cameraHeight,
-    viewCenter.latitude,
-    viewCenter.longitude,
-    trafficStatus?.available,
-    reloadNonce.traffic,
-    setLayerError,
-  ]);
 
   useEffect(() => {
     if (viewMode === "earth") return;
@@ -743,7 +551,7 @@ export default function WorldSelectApp() {
   const resetTime = () => { setTimeOffsetDays(0); setSpacePlaybackDays(0); setSpacePlaying(false); setNowTick(Date.now()); };
   const retryLayer = (layer: "earthquakes" | "satellites" | "aircraft" | "military" | "traffic") => {
     if (layer === "traffic") {
-      setReloadNonce((current) => ({ ...current, traffic: current.traffic + 1 }));
+      trafficControllerRef.current?.retry();
       return;
     }
     coreRuntimeRef.current?.retry(layer);
