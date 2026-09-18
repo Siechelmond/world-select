@@ -168,6 +168,7 @@ export function createAircraftRenderer(input: {
 
       viewer.scene?.requestRender?.();
     },
+    clearTracking,
     clear,
     destroy() { clear(); },
   });
