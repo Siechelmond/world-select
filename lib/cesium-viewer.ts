@@ -31,7 +31,7 @@ export function createWorldViewer(input: {
   onViewChange: (view: { latitude: number; longitude: number; height: number }) => void;
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
-  onEmptyClick?: () => void;
+  onEmptyClick?: (point: { latitude: number; longitude: number } | null) => void;
   googleMapsApiKey?: string;
 }): ViewerLifecycle {
   const { Cesium, container, onViewChange, onEntityClick, onEntityHover, onEmptyClick, googleMapsApiKey = '' } = input;
@@ -164,8 +164,25 @@ export function createWorldViewer(input: {
   handler.setInputAction((movement: any) => {
     const picked = viewer.scene.pick(movement.position);
     const id = picked?.id?.id;
-    if (typeof id === 'string') onEntityClick(id);
-    else onEmptyClick?.();
+    if (typeof id === 'string') {
+      onEntityClick(id);
+    } else {
+      const ray = viewer.camera.getPickRay(movement.position);
+      const terrainPoint = ray ? viewer.scene.globe.pick(ray, viewer.scene) : undefined;
+      const ellipsoidPoint = terrainPoint ?? viewer.camera.pickEllipsoid(movement.position, viewer.scene.globe.ellipsoid);
+      if (!ellipsoidPoint) {
+        onEmptyClick?.(null);
+        return;
+      }
+      const cartographic = Cesium.Cartographic.fromCartesian(ellipsoidPoint);
+      const latitude = Cesium.Math.toDegrees(cartographic.latitude);
+      const longitude = Cesium.Math.toDegrees(cartographic.longitude);
+      onEmptyClick?.(
+        Number.isFinite(latitude) && Number.isFinite(longitude)
+          ? { latitude, longitude }
+          : null,
+      );
+    }
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
   handler.setInputAction((movement: any) => {
     if (!onEntityHover) return;
