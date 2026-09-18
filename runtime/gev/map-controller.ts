@@ -142,11 +142,13 @@ export function createMapController(input: {
       if (!googleMapsApiKey) return false;
       if (google3d) return true;
       try {
-        const resource = new Cesium.Resource({
-          url: "https://tile.googleapis.com/v1/3dtiles/root.json",
-          queryParameters: { key: googleMapsApiKey },
+        // Match GEV's proven Google Photorealistic 3D path instead of manually
+        // constructing the root tileset URL. The Cesium helper owns the Google
+        // Tiles contract and rendering defaults.
+        const tileset = await Cesium.createGooglePhotorealistic3DTileset({
+          key: googleMapsApiKey,
+          onlyUsingWithGoogleGeocoder: true,
         });
-        const tileset = await Cesium.Cesium3DTileset.fromUrl(resource);
         if (destroyed || viewer.isDestroyed?.()) {
           try { tileset.destroy?.(); } catch { /* no-op */ }
           return false;

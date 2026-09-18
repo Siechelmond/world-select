@@ -361,20 +361,39 @@ export default function WorldSelectApp() {
 
   const switchMapMode = useCallback((mode: WorldMapMode) => {
     setMapMode(mode);
-    setPhotorealistic3D(false);
     setThreeDError(null);
+    if (photorealistic3D) {
+      void viewerLifecycleRef.current?.setPhotorealistic3D(false);
+      setPhotorealistic3D(false);
+    }
     viewerLifecycleRef.current?.setMapMode(mode);
-  }, []);
+  }, [photorealistic3D]);
 
-  const toggle3D = useCallback(() => {
+  const toggle3D = useCallback(async () => {
     if (!GOOGLE_MAPS_API_KEY) {
-      setThreeDError("Google Maps JavaScript API is not configured for this preview");
+      setThreeDError("Google Maps key is not configured for this preview");
       return;
     }
+
+    const lifecycle = viewerLifecycleRef.current;
+    if (!lifecycle) {
+      setThreeDError("3D viewer is not ready yet");
+      return;
+    }
+
     setStreetOpen(false);
     setThreeDError(null);
-    setPhotorealistic3D((current) => !current);
-  }, []);
+
+    const next = !photorealistic3D;
+    const ok = await lifecycle.setPhotorealistic3D(next);
+    if (!ok) {
+      setPhotorealistic3D(false);
+      setThreeDError("Google Photorealistic 3D Tiles could not be loaded. Check the Google Map Tiles API key, billing and referrer restrictions.");
+      return;
+    }
+
+    setPhotorealistic3D(next);
+  }, [photorealistic3D]);
 
 
 
@@ -687,7 +706,7 @@ export default function WorldSelectApp() {
           <button className={!photorealistic3D && mapMode === "nasa" ? "active" : ""} onClick={() => switchMapMode("nasa")}>NASA EO</button>
           <button className={photorealistic3D ? "active" : ""} disabled={!GOOGLE_MAPS_API_KEY} onClick={toggle3D}>3D</button>
         </div>
-        {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View + Maps JavaScript 3D are not configured on this preview. SAT / MAP / NASA remain available.</div>}
+        {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View + Photorealistic 3D are not configured on this preview. SAT / MAP / NASA remain available.</div>}
         {threeDError && <div className="mapModeNotice">{threeDError}</div>}
         <LayerToggle checked={earthquakeLayer} onChange={toggleEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
         <LayerToggle checked={satelliteLayer} onChange={toggleSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle={`CelesTrak ${satelliteCatalog.toUpperCase()} · SGP4 · real altitude · perspective-scaled`} state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
@@ -737,15 +756,6 @@ export default function WorldSelectApp() {
       </section>
 
       {!streetOpen && issPreview && <IssLiveHoverCard entity={issPreview.entity} screen={issPreview.screen} onClose={() => setIssPreview(null)} />}
-
-      {photorealistic3D && <Google3DSurface
-        apiKey={GOOGLE_MAPS_API_KEY}
-        center={viewCenter}
-        cameraHeight={cameraHeight}
-        error={threeDError}
-        onError={setThreeDError}
-        onClose={() => { setPhotorealistic3D(false); setThreeDError(null); }}
-      />}
 
       {streetOpen && <StreetViewer
         provider={streetProvider} googleApiKey={GOOGLE_MAPS_API_KEY} notice={streetNotice}
@@ -869,118 +879,6 @@ function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; 
     </div>
     <div className="issLiveCaveat">Live camera may be dark on Earth's night side or during ISS signal loss.</div>
     <div className="issLiveMeta"><span>{entity.name}</span><a href="https://www.sen.com/live" target="_blank" rel="noreferrer">Open Sen live ↗</a></div>
-  </aside>;
-}
-
-function Google3DSurface({ apiKey, center, cameraHeight, error, onError, onClose }: {
-  apiKey: string;
-  center: { latitude: number; longitude: number };
-  cameraHeight: number;
-  error: string | null;
-  onError: (message: string | null) => void;
-  onClose: () => void;
-}) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    let disposed = false;
-    let ready = false;
-    let map3d: any = null;
-    let watchdog: number | undefined;
-    const host = hostRef.current;
-    if (!host) return;
-
-    host.replaceChildren();
-    const priorAuthFailure = window.gm_authFailure;
-
-    const fail = (message: string) => {
-      if (disposed || ready) return;
-      if (watchdog != null) window.clearTimeout(watchdog);
-      onError(message);
-    };
-
-    const authFailure = () => {
-      try { priorAuthFailure?.(); } catch {}
-      fail("Google Maps authentication failed for this preview");
-    };
-    window.gm_authFailure = authFailure;
-
-    watchdog = window.setTimeout(() => {
-      if (!ready) fail("Google Maps 3D did not become ready within 12 seconds");
-    }, 12_000);
-
-    loadGoogleMaps(apiKey)
-      .then(async (google) => {
-        if (disposed || !host) return;
-        if (typeof google.maps?.importLibrary !== "function") {
-          throw new Error("Google Maps 3D requires dynamic library support");
-        }
-
-        const library = await google.maps.importLibrary("maps3d");
-        const Map3DElement = library?.Map3DElement;
-        if (typeof Map3DElement !== "function") {
-          throw new Error("Google Maps 3D library is unavailable");
-        }
-
-        map3d = new Map3DElement({
-          center: {
-            lat: center.latitude,
-            lng: center.longitude,
-            altitude: 0,
-          },
-          range: Math.max(700, Math.min(2_000_000, cameraHeight * 0.7)),
-          tilt: 65,
-          heading: 0,
-          mode: "HYBRID",
-          defaultUIHidden: false,
-        });
-
-        const markReady = () => {
-          if (disposed || ready) return;
-          ready = true;
-          if (watchdog != null) window.clearTimeout(watchdog);
-          onError(null);
-        };
-        const mapError = () => fail("Google Maps 3D failed to initialize on this preview");
-
-        map3d.addEventListener?.("gmp-error", mapError);
-        map3d.addEventListener?.("gmp-steadychange", markReady, { once: true });
-        map3d.addEventListener?.("gmp-steadystate", markReady, { once: true });
-
-        map3d.style.width = "100%";
-        map3d.style.height = "100%";
-        map3d.style.display = "block";
-        host.append(map3d);
-      })
-      .catch((reason: unknown) => {
-        fail(reason instanceof Error ? reason.message : "Google Maps 3D failed to initialize");
-      });
-
-    return () => {
-      disposed = true;
-      if (watchdog != null) window.clearTimeout(watchdog);
-      if (window.gm_authFailure === authFailure) window.gm_authFailure = priorAuthFailure;
-      try { map3d?.remove?.(); } catch {}
-      host.replaceChildren();
-    };
-  }, [apiKey, center.latitude, center.longitude, cameraHeight, onError]);
-
-  return <aside className="google3dSurface glass" role="dialog" aria-modal="false" aria-label="Google 3D map">
-    <div className="google3dSurfaceHead">
-      <div>
-        <p className="panelLabel">EARTH / 3D</p>
-        <strong>{center.latitude.toFixed(4)}, {center.longitude.toFixed(4)}</strong>
-      </div>
-      <button type="button" onClick={onClose} aria-label="Close 3D map">×</button>
-    </div>
-    <div className="google3dSurfaceFrame">
-      <div ref={hostRef} className="google3dHost" />
-      {error && <div className="google3dError"><strong>3D unavailable</strong><span>{error}</span></div>}
-    </div>
-    <div className="google3dSurfaceMeta">
-      <span>Google Maps JavaScript API · 3D · HYBRID</span>
-      <button type="button" onClick={onClose}>BACK TO WORLD</button>
-    </div>
   </aside>;
 }
 
