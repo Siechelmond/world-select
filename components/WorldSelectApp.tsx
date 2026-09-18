@@ -628,7 +628,9 @@ export default function WorldSelectApp() {
       viewer.imageryLayers.remove(trafficIncidentLayerRef.current, true);
       trafficIncidentLayerRef.current = null;
     }
-    if (viewMode !== "earth" || !trafficLayer || !trafficStatus?.configured || !trafficStatus?.available) return;
+    // Request TomTom tiles immediately when Traffic is enabled. The status
+    // probe runs in parallel; do not serialize rendering behind it.
+    if (viewMode !== "earth" || !trafficLayer) return;
     const provider = new Cesium.UrlTemplateImageryProvider({
       url: "/api/traffic?z={z}&x={x}&y={y}",
       minimumLevel: 0,
@@ -638,8 +640,14 @@ export default function WorldSelectApp() {
     });
     const onTileError = (error: any) => {
       setTrafficState("degraded");
+      setTrafficStatus((current) => current ?? {
+        configured: true,
+        available: false,
+        provider: "TomTom Orbis Traffic Flow v2",
+        message: "Traffic tile request failed",
+      });
       const status = Number(error?.statusCode ?? 0);
-      setLayerError("traffic", status ? `Traffic tile request failed (HTTP ${status}) · keeping loaded tiles` : "Traffic tile refresh delayed · keeping loaded tiles");
+      setLayerError("traffic", status ? `Traffic tile request failed (HTTP ${status}) · switching to city fallback` : "Traffic tile refresh delayed · switching to city fallback");
     };
     provider.errorEvent?.addEventListener(onTileError);
     const layer = viewer.imageryLayers.addImageryProvider(provider);
@@ -672,7 +680,7 @@ export default function WorldSelectApp() {
         trafficIncidentLayerRef.current = null;
       }
     };
-  }, [trafficLayer, trafficStatus?.configured, trafficStatus?.available, viewMode, cesiumReady]);
+  }, [trafficLayer, viewMode, cesiumReady]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
