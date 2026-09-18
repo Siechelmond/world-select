@@ -3,7 +3,6 @@ export type WorldMapMode = "satellite" | "map" | "nasa";
 
 const ESRI_WORLD_IMAGERY = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer";
 const ESRI_WORLD_STREET = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer";
-const ESRI_BOUNDARIES_PLACES = "https://services.arcgisonline.com/arcgis/rest/services/Reference/World_Boundaries_and_Places/MapServer";
 const OSM_TILES = "https://tile.openstreetmap.org/";
 const REEARTH_TERRAIN_URL = "https://terrain.reearth.land/cesium-mesh/ellipsoid";
 
@@ -34,7 +33,6 @@ export function createMapController(input: {
   let earthLayer: any = null;
   let groundLayer: any = null;
   let nasaLayer: any = null;
-  let referenceLayer: any = null;
   let google3d: any = null;
   let destroyed = false;
 
@@ -45,7 +43,6 @@ export function createMapController(input: {
     if (earthLayer) earthLayer.show = !in3d && (requestedMode === "satellite" || requestedMode === "nasa");
     if (groundLayer) groundLayer.show = !in3d && requestedMode === "map";
     if (nasaLayer) nasaLayer.show = !in3d && requestedMode === "nasa";
-    if (referenceLayer) referenceLayer.show = !in3d && requestedMode !== "map";
     if (viewer.scene?.globe) viewer.scene.globe.show = !in3d;
     viewer.scene?.requestRender?.();
   };
@@ -94,27 +91,28 @@ export function createMapController(input: {
     .catch(() => { groundLayer = null; });
 
   try {
-    const nasaDate = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    const provider = new Cesium.UrlTemplateImageryProvider({
-      url: `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${nasaDate}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`,
-      minimumLevel: 0,
+    // Daily GIBS imagery can be incomplete while the current composite is still filling.
+    // Use a settled recent day and render it only as a translucent EO overlay over Esri.
+    const nasaDate = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+    const provider = new Cesium.WebMapTileServiceImageryProvider({
+      url: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/wmts.cgi",
+      layer: "MODIS_Terra_CorrectedReflectance_TrueColor",
+      style: "default",
+      format: "image/jpeg",
+      tileMatrixSetID: "GoogleMapsCompatible_Level9",
       maximumLevel: 9,
+      dimensions: { Time: nasaDate },
       credit: "NASA EOSDIS GIBS / MODIS Terra",
     });
     nasaLayer = viewer.imageryLayers.addImageryProvider(provider);
+    nasaLayer.alpha = 0.58;
+    nasaLayer.brightness = 1.02;
+    nasaLayer.contrast = 0.96;
+    nasaLayer.saturation = 0.9;
     nasaLayer.show = false;
   } catch {
     nasaLayer = null;
   }
-
-  void addProvider(Cesium.ArcGisMapServerImageryProvider.fromUrl(ESRI_BOUNDARIES_PLACES))
-    .then((layer) => {
-      if (!layer) return;
-      referenceLayer = layer;
-      referenceLayer.alpha = 0.9;
-      apply();
-    })
-    .catch(() => { referenceLayer = null; });
 
   return Object.freeze({
     setStyle(style: GroundMapStyle) {
@@ -169,11 +167,10 @@ export function createMapController(input: {
         try { viewer.scene.primitives.remove(google3d); } catch { /* no-op */ }
         google3d = null;
       }
-      for (const layer of [referenceLayer, nasaLayer, groundLayer, earthLayer]) {
+      for (const layer of [nasaLayer, groundLayer, earthLayer]) {
         if (!layer) continue;
         try { viewer.imageryLayers.remove(layer, true); } catch { /* no-op */ }
       }
-      referenceLayer = null;
       nasaLayer = null;
       groundLayer = null;
       earthLayer = null;

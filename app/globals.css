@@ -991,3 +991,61 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .cislunarBadge { left: 8px; top: 48px; }
   .jwstSubLabel { display: none; }
 }
+
+
+/* Batch 6 — collapsible work surfaces. Collapse never changes layer/data state. */
+.panelHeadActions { display: flex; align-items: center; gap: 5px; }
+.panelCollapse {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid rgba(103,232,249,.18);
+  border-radius: 7px;
+  background: rgba(8,47,73,.72);
+  color: #cbd5e1;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.panelCollapse:hover { color: #ecfeff; border-color: rgba(103,232,249,.38); }
+
+.layers.panelCollapsed {
+  width: 92px;
+  min-height: 0;
+  padding: 11px 10px;
+}
+.layers.panelCollapsed > :not(.panelHead) { display: none !important; }
+.layers.panelCollapsed .panelHead { gap: 7px; }
+.layers.panelCollapsed .panelLabel { font-size: 8px; }
+
+.inspector.panelCollapsed {
+  width: 108px;
+  min-height: 0;
+  padding: 11px 10px;
+}
+.inspector.panelCollapsed > :not(.panelHead) { display: none !important; }
+.inspector.panelCollapsed .panelLabel { font-size: 8px; }
+
+.timebarLead { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.timebarLead > div { min-width: 0; }
+.timebarCollapse { flex: 0 0 auto; }
+.timebar.panelCollapsed {
+  left: auto;
+  right: 364px;
+  width: 104px;
+  min-height: 42px;
+  display: block;
+  padding: 8px;
+}
+.timebar.panelCollapsed > :not(.timebarLead):not(.sheetClose) { display: none !important; }
+.timebar.panelCollapsed .timebarLead > div { display: none; }
+.timebar.panelCollapsed .timebarCollapse { width: 100%; height: 28px; }
+
+@media (max-width: 1000px) and (min-width: 781px) {
+  .timebar.panelCollapsed { right: 8px; }
+}
+@media (max-width: 780px) {
+  .panelCollapse { display: none; }
+}

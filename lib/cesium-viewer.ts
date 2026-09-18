@@ -66,17 +66,17 @@ export function createWorldViewer(input: {
       label: {
         text: label.name,
         font: label.kind === 'country'
-          ? '600 13px sans-serif'
+          ? '600 12px "Segoe UI", Arial, sans-serif'
           : label.kind === 'water'
-            ? 'italic 12px sans-serif'
-            : '700 13px sans-serif',
+            ? 'italic 11px "Segoe UI", Arial, sans-serif'
+            : '600 12px "Segoe UI", Arial, sans-serif',
         fillColor: label.kind === 'water'
           ? Cesium.Color.fromCssColorString('#93c5fd')
           : label.kind === 'country'
             ? Cesium.Color.fromCssColorString('#cbd5e1')
-            : Cesium.Color.fromCssColorString('#ffffff'),
+            : Cesium.Color.fromCssColorString('#f8fafc'),
         outlineColor: Cesium.Color.fromCssColorString('#020617'),
-        outlineWidth: label.kind === 'city' ? 4 : 2,
+        outlineWidth: 2,
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         verticalOrigin: Cesium.VerticalOrigin.CENTER,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
@@ -149,7 +149,13 @@ export function createWorldViewer(input: {
   return {
     viewer,
     setMapStyle: (style: GroundMapStyle) => mapController.setStyle(style),
-    setMapMode: (mode: WorldMapMode) => mapController.setMode(mode),
+    setMapMode: (mode: WorldMapMode) => {
+      mapController.setMode(mode);
+      for (const label of GEO_LABELS_DE) {
+        const entity = viewer.entities.getById(`geo-label:${label.id}`);
+        if (entity) entity.show = mode !== 'map';
+      }
+    },
     setPhotorealistic3D: (enabled: boolean) => mapController.setPhotorealistic3D(enabled),
     destroy: () => {
       viewer.camera.moveEnd.removeEventListener(updateView);
