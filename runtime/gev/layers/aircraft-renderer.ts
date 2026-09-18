@@ -1,0 +1,174 @@
+import { projectAircraftPosition } from '@/lib/aircraft';
+import type { SpatialEntity } from '@/lib/spatial';
+
+const AIRCRAFT_ICON = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path fill="white" stroke="#111827" stroke-width="2" d="M32 3c3 0 5 4 5 9v12l20 12v6L37 36v13l8 7v5l-13-4-13 4v-5l8-7V36L7 42v-6l20-12V12c0-5 2-9 5-9Z"/></svg>`)}`;
+
+type SyncInput = {
+  items: SpatialEntity[];
+  visible: boolean;
+  selectedId: string | null;
+  followSelected: boolean;
+  nowMs: number;
+  cameraHeight: number;
+};
+
+export function createAircraftRenderer(input: {
+  viewer: any;
+  Cesium: any;
+  entityRegistry: Map<string, SpatialEntity>;
+}) {
+  const { viewer, Cesium, entityRegistry } = input;
+  const ids = new Set<string>();
+  const trails = new Map<string, Array<{ longitude: number; latitude: number; altitudeMeters: number }>>();
+  let trackedId: string | null = null;
+
+  const clearTracking = () => {
+    if (viewer.trackedEntity) viewer.trackedEntity = undefined;
+    trackedId = null;
+  };
+
+  const clear = () => {
+    clearTracking();
+    for (const id of ids) {
+      viewer.entities.removeById(id);
+      entityRegistry.delete(id);
+    }
+    ids.clear();
+    trails.clear();
+    viewer.scene?.requestRender?.();
+  };
+
+  const updateTrail = (spatial: SpatialEntity, selected: boolean) => {
+    if (!selected) {
+      trails.delete(spatial.id);
+      return [];
+    }
+    const trail = trails.get(spatial.id) ?? [];
+    const point = spatial.position;
+    const last = trail[trail.length - 1];
+    const moved = !last ||
+      Math.abs(last.longitude - point.longitude) > 0.0002 ||
+      Math.abs(last.latitude - point.latitude) > 0.0002 ||
+      Math.abs(last.altitudeMeters - point.altitudeMeters) > 30;
+    if (moved) trail.push({ ...point });
+    while (trail.length > 60) trail.shift();
+    trails.set(spatial.id, trail);
+    return trail;
+  };
+
+  return Object.freeze({
+    sync({ items, visible, selectedId, followSelected, nowMs, cameraHeight }: SyncInput) {
+      if (!visible) {
+        clear();
+        return;
+      }
+
+      const live = new Set<string>();
+      for (const spatial of items) {
+        live.add(spatial.id);
+        const isSelected = spatial.id === selectedId;
+        const canProject = spatial.dataState !== 'STALE' && followSelected && isSelected;
+        const projected = canProject ? projectAircraftPosition(spatial, nowMs) : spatial.position;
+        const displayEntity: SpatialEntity = {
+          ...spatial,
+          position: projected,
+          dataState: canProject ? 'ESTIMATED' : spatial.dataState,
+          properties: {
+            ...spatial.properties,
+            displayPosition: canProject
+              ? 'estimated between observed ADS-B samples'
+              : spatial.dataState === 'STALE'
+                ? 'last known stale ADS-B sample'
+                : 'last observed ADS-B sample',
+          },
+        };
+        entityRegistry.set(spatial.id, displayEntity);
+
+        const position = Cesium.Cartesian3.fromDegrees(
+          projected.longitude,
+          projected.latitude,
+          projected.altitudeMeters,
+        );
+        const speed = Number(spatial.properties.groundSpeedKt ?? 0);
+        const pixelSize = cameraHeight > 2_000_000 ? 4 : cameraHeight > 600_000 ? 5 : speed > 250 ? 8 : 7;
+        const headingDeg = Number(spatial.properties.trackDeg ?? 0);
+        const iconSize = Math.max(14, pixelSize * (isSelected ? 4.1 : 3.2));
+        const trail = updateTrail(spatial, isSelected);
+        const trailPositions = trail.map((p) => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitudeMeters));
+        const existing = viewer.entities.getById(spatial.id);
+
+        if (existing) {
+          existing.position = new Cesium.ConstantPositionProperty(position);
+          if (existing.billboard) {
+            existing.billboard.width = new Cesium.ConstantProperty(iconSize);
+            existing.billboard.height = new Cesium.ConstantProperty(iconSize);
+            existing.billboard.rotation = new Cesium.ConstantProperty(Cesium.Math.toRadians(-headingDeg));
+            existing.billboard.color = new Cesium.ConstantProperty(
+              isSelected ? Cesium.Color.fromCssColorString('#fde047') : Cesium.Color.fromCssColorString('#facc15'),
+            );
+          }
+          if (existing.polyline) {
+            existing.polyline.show = new Cesium.ConstantProperty(isSelected && trailPositions.length > 1);
+            existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
+          }
+          if (existing.label) {
+            existing.label.show = new Cesium.ConstantProperty(isSelected);
+            existing.label.text = new Cesium.ConstantProperty(spatial.name);
+          }
+        } else {
+          ids.add(spatial.id);
+          viewer.entities.add({
+            id: spatial.id,
+            position,
+            billboard: {
+              image: AIRCRAFT_ICON,
+              width: iconSize,
+              height: iconSize,
+              rotation: Cesium.Math.toRadians(-headingDeg),
+              color: isSelected ? Cesium.Color.fromCssColorString('#fde047') : Cesium.Color.fromCssColorString('#facc15'),
+              disableDepthTestDistance: 3_000_000,
+            },
+            polyline: {
+              show: isSelected && trailPositions.length > 1,
+              positions: trailPositions,
+              width: 2,
+              material: Cesium.Color.fromCssColorString('#facc15').withAlpha(0.65),
+              clampToGround: false,
+            },
+            label: {
+              show: isSelected,
+              text: spatial.name,
+              font: '11px sans-serif',
+              fillColor: Cesium.Color.fromCssColorString('#fef08a'),
+              pixelOffset: new Cesium.Cartesian2(13, -13),
+              showBackground: true,
+              backgroundColor: Cesium.Color.fromCssColorString('#111827').withAlpha(0.72),
+            },
+          });
+        }
+      }
+
+      for (const id of [...ids]) {
+        if (live.has(id)) continue;
+        viewer.entities.removeById(id);
+        entityRegistry.delete(id);
+        ids.delete(id);
+        trails.delete(id);
+      }
+
+      if (followSelected && selectedId) {
+        const target = viewer.entities.getById(selectedId);
+        if (target && trackedId !== selectedId) {
+          viewer.trackedEntity = target;
+          trackedId = selectedId;
+        }
+      } else {
+        clearTracking();
+      }
+
+      viewer.scene?.requestRender?.();
+    },
+    clear,
+    destroy() { clear(); },
+  });
+}
