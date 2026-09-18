@@ -732,7 +732,7 @@ export default function WorldSelectApp() {
   const clearSelection = useCallback(() => {
     setSelected(null);
     setFollowAircraft(false);
-    aircraftRendererRef.current?.clear();
+    aircraftRendererRef.current?.clearTracking();
   }, []);
   const addAnnotation = () => {
     const label = window.prompt("Annotation label", "Marker");
