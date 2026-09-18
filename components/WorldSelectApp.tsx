@@ -236,10 +236,7 @@ export default function WorldSelectApp() {
   }, [satelliteCatalog]);
 
   useEffect(() => {
-    if (!trafficLayer || viewMode !== "earth" || cameraHeight >= 180_000) {
-      if (trafficLayer && viewMode === "earth") setTrafficState("idle");
-      return;
-    }
+    if (!trafficLayer || viewMode !== "earth") return;
     const controller = new AbortController();
     setTrafficState("loading");
     setLayerError("traffic");
@@ -252,18 +249,19 @@ export default function WorldSelectApp() {
           setLayerError("traffic");
         } else {
           setTrafficState("degraded");
-          setLayerError("traffic", "Live TomTom flow unavailable · loading OSM road geometry + modeled vehicles");
+          setLayerError("traffic", "Live TomTom flow unavailable · OSM road geometry + modeled vehicles available as city fallback");
         }
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
+        setTrafficStatus(null);
         setTrafficState("degraded");
         setLayerError("traffic", reason instanceof Error
-          ? `${reason.message} · loading OSM road geometry + modeled vehicles`
-          : "Live traffic status unavailable · loading OSM road geometry + modeled vehicles");
+          ? `${reason.message} · OSM road geometry + modeled vehicles available as city fallback`
+          : "Live traffic status unavailable · OSM road geometry + modeled vehicles available as city fallback");
       });
     return () => controller.abort();
-  }, [trafficLayer, viewMode, cameraHeight, reloadNonce.traffic, setLayerError]);
+  }, [trafficLayer, viewMode, reloadNonce.traffic, setLayerError]);
 
   useEffect(() => {
     if (!cesiumReady || !containerRef.current || !window.Cesium || viewerRef.current) return;
@@ -656,7 +654,8 @@ export default function WorldSelectApp() {
       setTrafficVehicleCount(0);
     };
 
-    if (!viewer || !Cesium || !trafficLayer || viewMode !== "earth" || cameraHeight >= 180_000) {
+    const liveTomTomAvailable = Boolean(trafficStatus?.configured && trafficStatus?.available);
+    if (!viewer || !Cesium || !trafficLayer || viewMode !== "earth" || cameraHeight >= 180_000 || liveTomTomAvailable || trafficStatus == null) {
       clearVector();
       return;
     }
@@ -712,11 +711,9 @@ export default function WorldSelectApp() {
           });
         }
         renderVehicles();
-        setTrafficState(roads.length ? (trafficStatus?.available ? "ready" : "degraded") : "error");
+        setTrafficState(roads.length ? "degraded" : "error");
         setLayerError("traffic", roads.length
-          ? (trafficStatus?.available
-              ? "Live TomTom flow available · OSM road geometry + modeled vehicle context"
-              : "OSM road geometry + modeled vehicle context · live flow unavailable")
+          ? "OSM road geometry + modeled vehicle fallback · live TomTom unavailable"
           : "No OSM road geometry returned for this viewport");
         if (vehicles.length) {
           trafficVehicleTimerRef.current = window.setInterval(() => {
