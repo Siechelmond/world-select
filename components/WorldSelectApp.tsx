@@ -580,7 +580,7 @@ export default function WorldSelectApp() {
       <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Widgets/widgets.css" />
       <Script src="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Cesium.js" strategy="afterInteractive" onLoad={() => setCesiumReady(true)} onError={() => setLayerError("earthquakes", "CesiumJS could not be loaded")} />
 
-      <div ref={containerRef} className={`globe ${viewMode === "space" || streetOpen ? "globeHidden" : ""}`} aria-label="Interactive 3D globe" />
+      <div ref={containerRef} className={`globe ${viewMode === "space" ? "globeHidden" : ""}`} aria-label="Interactive 3D globe" />
       {viewMode === "space" && <SpaceExplorer planets={planets} sun={sun} time={selectedTime} onSelect={selectEntity} />}
 
       <header className="topbar glass">
@@ -763,22 +763,67 @@ function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; 
 }
 
 function StreetViewer({ provider, googleApiKey, notice, state, photo, index, total, error, point, onClose, onEarth, onGround, onSpace, onPrevious, onNext, onUseGoogle, onUseKartaView, onGoogleReady, onGoogleFallback, onGooglePositionChange }: { provider: StreetProvider; googleApiKey: string; notice: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onEarth: () => void; onGround: () => void; onSpace: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void; onGoogleReady: () => void; onGoogleFallback: (message: string) => void; onGooglePositionChange: (point: EarthPoint) => void }) {
-  return <section className="streetViewer glass" aria-label="Street-level imagery">
-    <div className="streetHead"><div><p className="panelLabel">GROUND / STREET · {provider === "google" ? "GOOGLE STREET VIEW" : "KARTAVIEW"}</p><strong>{point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}</strong></div><button className="backToGlobe" onClick={onClose}>← BACK</button></div>
-    <div className="streetExitNav"><button onClick={onEarth}>EARTH / SAT</button><button onClick={onGround}>GROUND / MAP</button><button onClick={onSpace}>SPACE</button></div>
-    <div className="streetProviderSwitch" role="group"><button className={provider === "google" ? "active" : ""} disabled={!googleApiKey} onClick={onUseGoogle}>Google Street View{!googleApiKey ? " · not configured" : ""}</button><button className={provider === "kartaview" ? "active" : ""} onClick={onUseKartaView}>KartaView</button></div>
-    {notice && <div className="streetInlineNotice">{notice}</div>}
-    <div className="streetFrame">
+  const surfaceRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    surfaceRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  return <aside
+    ref={surfaceRef}
+    className="streetSurface glass"
+    role="dialog"
+    aria-modal="false"
+    aria-label="Street-level imagery"
+    tabIndex={-1}
+    onKeyDown={(event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    }}
+  >
+    <div className="streetSurfaceHead">
+      <div><p className="panelLabel">GROUND / STREET</p><strong>{point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}</strong></div>
+      <button className="streetSurfaceClose" type="button" onClick={onClose} aria-label="Close Street View">×</button>
+    </div>
+
+    <div className="streetSurfaceTabs" role="tablist" aria-label="Street imagery provider">
+      <button type="button" role="tab" aria-selected={provider === "google"} className={provider === "google" ? "active" : ""} disabled={!googleApiKey} onClick={onUseGoogle}>
+        Google Street View{!googleApiKey ? " · not configured" : ""}
+      </button>
+      <button type="button" role="tab" aria-selected={provider === "kartaview"} className={provider === "kartaview" ? "active" : ""} onClick={onUseKartaView}>
+        KartaView
+      </button>
+    </div>
+
+    {notice && <div className="streetSurfaceNotice" role="status">{notice}</div>}
+
+    <div className="streetSurfaceFrame">
       {provider === "google"
         ? <GoogleStreetPanorama apiKey={googleApiKey} point={point} onReady={onGoogleReady} onFallback={onGoogleFallback} onPositionChange={onGooglePositionChange} />
         : <>
-            {state === "loading" && <div className="streetMessage">Searching street imagery…</div>}
-            {state !== "loading" && !photo && <div className="streetMessage"><strong>NO IMAGERY</strong><span>{error ?? notice ?? "No imagery is available near this point."}</span></div>}
+            {state === "loading" && <div className="streetMessage">Searching KartaView imagery…</div>}
+            {state !== "loading" && !photo && <div className="streetMessage"><strong>NO IMAGERY</strong><span>{error ?? notice ?? "No KartaView imagery is available near this point."}</span></div>}
             {photo && <div className="streetImage" role="img" aria-label="KartaView street-level photo" style={{ backgroundImage: `url("${photo.imageUrl.replace(/"/g, "%22")}")` }} />}
           </>}
     </div>
-    {provider === "kartaview" ? <><div className="streetControls"><button onClick={onPrevious} disabled={index <= 0}>← Previous</button><span>{total ? `${index + 1} / ${total}` : "No imagery"}</span><button onClick={onNext} disabled={!total || index >= total - 1}>Next →</button></div>{photo && <div className="streetMeta"><span>Captured: {photo.capturedAt ? new Date(photo.capturedAt).toLocaleString() : "unknown"}</span><span>Source: KartaView community imagery{photo.distanceMeters != null ? ` · ${photo.distanceMeters} m away` : ""}</span></div>}</> : <div className="streetMeta"><span>Interactive 360° panorama</span><span>Source: Google Street View</span></div>}
-  </section>;
+
+    <div className="streetSurfaceFooter">
+      <div className="streetSurfaceNav">
+        <button type="button" onClick={onEarth}>EARTH / SAT</button>
+        <button type="button" onClick={onGround}>GROUND / MAP</button>
+        <button type="button" onClick={onSpace}>SPACE</button>
+      </div>
+      {provider === "kartaview"
+        ? <div className="streetSurfacePager">
+            <button type="button" onClick={onPrevious} disabled={index <= 0}>←</button>
+            <span>{total ? `${index + 1} / ${total}` : "No imagery"}</span>
+            <button type="button" onClick={onNext} disabled={!total || index >= total - 1}>→</button>
+          </div>
+        : <span className="streetSurfaceSource">Interactive 360° · Google Street View</span>}
+    </div>
+  </aside>;
 }
 
 function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionChange }: { apiKey: string; point: EarthPoint; onReady: () => void; onFallback: (message: string) => void; onPositionChange: (point: EarthPoint) => void }) {
@@ -802,12 +847,46 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
         const service = new google.maps.StreetViewService();
         const origin = initialPointRef.current;
 
-        return service
-          .getPanorama({
-            location: { lat: origin.latitude, lng: origin.longitude },
-            radius: 120,
-          })
-          .then(({ data }: any) => {
+        const request = {
+          location: { lat: origin.latitude, lng: origin.longitude },
+          radius: 120,
+        };
+
+        const lookup = new Promise<any>((resolve, reject) => {
+          let settled = false;
+          const callback = (data: any, status: any) => {
+            if (settled) return;
+            const ok = status == null || status === "OK" || status === google.maps.StreetViewStatus?.OK;
+            settled = true;
+            if (ok && data) resolve({ data });
+            else reject(new Error(`Google Street View status: ${String(status ?? "UNKNOWN")}`));
+          };
+
+          try {
+            const maybePromise = service.getPanorama(request, callback);
+            if (maybePromise && typeof maybePromise.then === "function") {
+              maybePromise.then(
+                (value: any) => {
+                  if (settled) return;
+                  settled = true;
+                  resolve(value);
+                },
+                (reason: unknown) => {
+                  if (settled) return;
+                  settled = true;
+                  reject(reason);
+                },
+              );
+            }
+          } catch (reason) {
+            if (!settled) {
+              settled = true;
+              reject(reason);
+            }
+          }
+        });
+
+        return lookup.then(({ data }: any) => {
             if (disposed || !panoRef.current) return;
             const location = data?.location;
             if (!location?.pano) throw new Error("Google Street View returned no panorama data");

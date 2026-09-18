@@ -599,3 +599,83 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 .galaxyBulgeHalo{opacity:.48!important}
 @media(max-width:1200px){.issLivePinned{right:18px!important;top:128px!important}}
 @media(max-width:780px){.issLivePinned{left:10px!important;right:10px!important;top:94px!important;width:auto!important}.spaceMissionFacts{left:8px;right:8px;width:auto;bottom:36px}.basemapSwitch{grid-template-columns:repeat(2,1fr)}}
+
+
+/* v6 Street surface — GEV-style owned panel over the live world, not a separate page. */
+.streetSurface {
+  position: fixed;
+  z-index: 42;
+  top: 124px;
+  right: 24px;
+  bottom: 72px;
+  width: min(760px, calc(100vw - 340px));
+  min-width: 520px;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(103,232,249,.28);
+  border-radius: 14px;
+  background: rgba(2,6,23,.94);
+  box-shadow: 0 24px 70px rgba(0,0,0,.48);
+  backdrop-filter: blur(16px);
+  outline: none;
+}
+.streetSurfaceHead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.streetSurfaceHead strong { color: #cbd5e1; font-size: 11px; }
+.streetSurfaceClose {
+  width: 34px; height: 34px; border-radius: 8px;
+  border: 1px solid rgba(103,232,249,.28);
+  background: rgba(8,47,73,.9); color: #ecfeff;
+  font-size: 22px; cursor: pointer;
+}
+.streetSurfaceTabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.streetSurfaceTabs button,
+.streetSurfaceNav button,
+.streetSurfacePager button {
+  border: 1px solid rgba(103,232,249,.18);
+  background: rgba(15,23,42,.8);
+  color: #94a3b8;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+.streetSurfaceTabs button.active {
+  color: #cffafe;
+  background: rgba(8,145,178,.24);
+  border-color: rgba(103,232,249,.42);
+}
+.streetSurfaceTabs button:disabled,
+.streetSurfacePager button:disabled { opacity: .35; cursor: not-allowed; }
+.streetSurfaceNotice { min-height: 18px; color: #94a3b8; font-size: 10px; line-height: 1.4; }
+.streetSurfaceFrame {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid rgba(103,232,249,.14);
+  background: #020617;
+}
+.streetSurfaceFrame .googleStreetPano,
+.streetSurfaceFrame .streetImage { position: absolute; inset: 0; }
+.streetSurfaceFooter { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.streetSurfaceNav, .streetSurfacePager { display: flex; align-items: center; gap: 6px; }
+.streetSurfaceSource { color: #64748b; font-size: 9px; }
+@media (max-width: 900px) {
+  .streetSurface {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: 58px;
+    width: auto;
+    min-width: 0;
+    height: min(72vh, 660px);
+    border-radius: 14px 14px 8px 8px;
+  }
+  .streetSurfaceFooter { align-items: stretch; flex-direction: column; }
+  .streetSurfaceNav { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .streetSurfacePager { justify-content: space-between; }
+}
