@@ -31,6 +31,7 @@ const SATELLITE_TICK_MS = 1_000;
 const MOBILE_SATELLITE_TICK_MS = 2_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
+const SPACE_HANDOFF_HEIGHT_M = 18_000_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
 const SEN_ISS_LIVE_VIDEO_ID = process.env.NEXT_PUBLIC_SEN_ISS_LIVE_VIDEO_ID ?? "fO9e9jnhYK8";
@@ -93,6 +94,8 @@ export default function WorldSelectApp() {
   const [mapMode, setMapMode] = useState<WorldMapMode>("satellite");
   const [photorealistic3D, setPhotorealistic3D] = useState(false);
   const [threeDError, setThreeDError] = useState<string | null>(null);
+  const [earthHandoff, setEarthHandoff] = useState<{ latitude: number; longitude: number; height: number } | null>(null);
+  const [frameHandoff, setFrameHandoff] = useState<"earth-to-space" | "space-to-earth" | null>(null);
 
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
@@ -434,6 +437,63 @@ export default function WorldSelectApp() {
 
 
 
+  const enterSpaceFromEarth = useCallback(() => {
+    if (viewMode !== "earth" || streetOpen || photorealistic3D) return;
+    setEarthHandoff({
+      latitude: viewCenter.latitude,
+      longitude: viewCenter.longitude,
+      height: cameraHeight,
+    });
+    setFrameHandoff("earth-to-space");
+    setFollowAircraft(false);
+    setSelected(null);
+    setMobilePanel("none");
+    setViewMode("space");
+    window.setTimeout(() => setFrameHandoff(null), 520);
+  }, [viewMode, streetOpen, photorealistic3D, viewCenter.latitude, viewCenter.longitude, cameraHeight]);
+
+  const returnToEarthFromSpace = useCallback(() => {
+    const handoff = earthHandoff ?? {
+      latitude: viewCenter.latitude,
+      longitude: viewCenter.longitude,
+      height: 6_500_000,
+    };
+    setFrameHandoff("space-to-earth");
+    setViewMode("earth");
+    setFollowAircraft(false);
+    setSelected(null);
+    setMapMode("satellite");
+    viewerLifecycleRef.current?.setMapStyle("earth");
+    viewerLifecycleRef.current?.setMapMode("satellite");
+
+    window.setTimeout(() => {
+      const viewer = viewerRef.current;
+      const Cesium = window.Cesium;
+      if (viewer && Cesium) {
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(
+            handoff.longitude,
+            handoff.latitude,
+            Math.max(4_500_000, Math.min(handoff.height, 12_000_000)),
+          ),
+          duration: 0.9,
+        });
+      }
+      setFrameHandoff(null);
+    }, 40);
+  }, [earthHandoff, viewCenter.latitude, viewCenter.longitude]);
+
+  useEffect(() => {
+    if (
+      viewMode === "earth" &&
+      cameraHeight >= SPACE_HANDOFF_HEIGHT_M &&
+      !streetOpen &&
+      !photorealistic3D
+    ) {
+      enterSpaceFromEarth();
+    }
+  }, [viewMode, cameraHeight, streetOpen, photorealistic3D, enterSpaceFromEarth]);
+
   const flyEarth = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
     setViewMode("earth"); setFollowAircraft(false); setSelected(null); setMapMode("satellite");
@@ -576,14 +636,21 @@ export default function WorldSelectApp() {
       <Script src="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Cesium.js" strategy="afterInteractive" onLoad={() => setCesiumReady(true)} onError={() => setLayerError("earthquakes", "CesiumJS could not be loaded")} />
 
       <div ref={containerRef} className={`globe ${viewMode === "space" ? "globeHidden" : ""}`} aria-label="Interactive 3D globe" />
-      {viewMode === "space" && <SpaceExplorer planets={planets} sun={sun} time={selectedTime} onSelect={selectEntity} />}
+      {viewMode === "space" && <SpaceExplorer
+        planets={planets}
+        sun={sun}
+        time={selectedTime}
+        onSelect={selectEntity}
+        onReturnEarth={returnToEarthFromSpace}
+        earthHandoff={earthHandoff}
+      />}
 
       <header className="topbar glass">
         <div className="brand"><p className="eyebrow">SPATIAL INTELLIGENCE</p><h1>World Select</h1></div>
         <div className="modeSwitch" role="group" aria-label="View mode">
-          <button className={viewMode === "earth" && cameraHeight >= GROUND_HEIGHT_M ? "active" : ""} onClick={flyEarth}>EARTH</button>
+          <button className={viewMode === "earth" && cameraHeight >= GROUND_HEIGHT_M ? "active" : ""} onClick={viewMode === "space" ? returnToEarthFromSpace : flyEarth}>EARTH</button>
           <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
-          <button className={viewMode === "space" ? "active" : ""} onClick={() => { setViewMode("space"); setFollowAircraft(false); }}>SPACE</button>
+          <button className={viewMode === "space" ? "active" : ""} onClick={enterSpaceFromEarth}>SPACE</button>
         </div>
         <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
@@ -669,6 +736,13 @@ export default function WorldSelectApp() {
         <button className={mobilePanel === "street" ? "active" : ""} onClick={openStreet} disabled={viewMode !== "earth"}>Street</button>
         <button className={mobilePanel === "time" ? "active" : ""} onClick={() => togglePanel("time")}>Time</button>
       </nav>
+
+      {frameHandoff && <div className={`frameHandoff ${frameHandoff}`} aria-live="polite">
+        <div className="frameHandoffCore">
+          <span>{frameHandoff === "earth-to-space" ? "EARTH → ORBIT" : "ORBIT → EARTH"}</span>
+          <strong>{frameHandoff === "earth-to-space" ? "Camera handoff to space frame" : "Restoring Earth camera"}</strong>
+        </div>
+      </div>}
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>

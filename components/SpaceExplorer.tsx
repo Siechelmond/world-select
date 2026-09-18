@@ -17,6 +17,8 @@ type Props = {
   sun: SpatialEntity;
   time: Date;
   onSelect: (entity: SpatialEntity) => void;
+  onReturnEarth: () => void;
+  earthHandoff: { latitude: number; longitude: number; height: number } | null;
 };
 
 const LEVELS: SpaceLevel[] = ["planet", "solar", "outer", "galaxy"];
@@ -139,7 +141,7 @@ function deterministicGalaxyClouds() {
   return clouds;
 }
 
-export default function SpaceExplorer({ planets, sun, time, onSelect }: Props) {
+export default function SpaceExplorer({ planets, sun, time, onSelect, onReturnEarth, earthHandoff }: Props) {
   const [level, setLevel] = useState<SpaceLevel>("solar");
   const [focusedPlanet, setFocusedPlanet] = useState<string>("Earth");
   const lastWheelAt = useRef(0);
@@ -172,6 +174,13 @@ export default function SpaceExplorer({ planets, sun, time, onSelect }: Props) {
 
   return (
     <div className="spaceScene spaceExplorer" onWheel={onWheel}>
+      <div className="spaceEarthHandoff glass">
+        <button type="button" onClick={onReturnEarth}>← EARTH</button>
+        <span>ORBIT HANDOFF</span>
+        <small>{earthHandoff
+          ? `${earthHandoff.latitude.toFixed(2)}°, ${earthHandoff.longitude.toFixed(2)}° · Earth camera preserved`
+          : "Earth camera preserved for return"}</small>
+      </div>
       <div className="spaceTitle">
         <span>{LEVEL_LABELS[level]}</span>
         <small>
