@@ -137,7 +137,8 @@ export function createSatelliteRenderer(input: {
         ids.delete(id);
         trails.delete(id);
       }
-      syncIssOrbit(tleRecords, time);
+      const issVisibleAtScale = satellites.some((item) => /ISS.*ZARYA|^ISS\b/i.test(item.name));
+      syncIssOrbit(issVisibleAtScale ? tleRecords : [], time);
       viewer.scene?.requestRender?.();
     },
     clear,

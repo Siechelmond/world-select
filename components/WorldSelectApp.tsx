@@ -33,6 +33,16 @@ const MOBILE_SATELLITE_TICK_MS = 2_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
+
+function aircraftScaleCeiling(altitudeMeters: number) {
+  const altitude = Math.max(0, Math.min(22_000, altitudeMeters || 0));
+  return 350_000 + altitude * 85;
+}
+
+function satelliteScaleCeiling(altitudeMeters: number) {
+  const altitude = Math.max(0, altitudeMeters || 0);
+  return Math.min(65_000_000, 12_000_000 + altitude * 1.25);
+}
 const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
 const SEN_ISS_LIVE_VIDEO_ID = process.env.NEXT_PUBLIC_SEN_ISS_LIVE_VIDEO_ID ?? "fO9e9jnhYK8";
 export default function WorldSelectApp() {
@@ -100,6 +110,7 @@ export default function WorldSelectApp() {
   const [layersCollapsed, setLayersCollapsed] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [timeCollapsed, setTimeCollapsed] = useState(false);
+  const [planetOrbits, setPlanetOrbits] = useState(false);
 
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
@@ -113,16 +124,24 @@ export default function WorldSelectApp() {
     ...(aircraftLayer ? aircraft : []),
     ...(militaryLayer ? military : []),
   ], [aircraftLayer, aircraft, militaryLayer, military]);
+  const scaleVisibleAircraft = useMemo(
+    () => visibleAircraft.filter((item) => cameraHeight <= aircraftScaleCeiling(item.position.altitudeMeters)),
+    [visibleAircraft, cameraHeight],
+  );
+  const earthSatellites = useMemo(
+    () => satellites.filter((item) => cameraHeight <= satelliteScaleCeiling(item.position.altitudeMeters)),
+    [satellites, cameraHeight],
+  );
   const renderedAircraft = useMemo(() => {
     const budget = cameraHeight > 2_000_000 ? 180 : cameraHeight > 500_000 ? 260 : 420;
-    return [...visibleAircraft]
+    return [...scaleVisibleAircraft]
       .sort((a, b) => {
         const da = (a.position.latitude - viewCenter.latitude) ** 2 + (a.position.longitude - viewCenter.longitude) ** 2;
         const db = (b.position.latitude - viewCenter.latitude) ** 2 + (b.position.longitude - viewCenter.longitude) ** 2;
         return da - db;
       })
       .slice(0, budget);
-  }, [visibleAircraft, cameraHeight, viewCenter.latitude, viewCenter.longitude]);
+  }, [scaleVisibleAircraft, cameraHeight, viewCenter.latitude, viewCenter.longitude]);
   const aircraftQueryCenter = useMemo(() => {
     const step = cameraHeight < 300_000 ? 0.05 : cameraHeight < 2_000_000 ? 0.15 : 0.35;
     return {
@@ -385,7 +404,7 @@ export default function WorldSelectApp() {
 
   useEffect(() => {
     satelliteRendererRef.current?.sync({
-      satellites,
+      satellites: earthSatellites,
       tleRecords,
       visible: viewMode === "earth" && satelliteLayer,
       selectedId: selected?.kind === "satellite" ? selected.id : null,
@@ -393,7 +412,7 @@ export default function WorldSelectApp() {
       cameraHeight,
       time: selectedTime,
     });
-  }, [satellites, tleRecords, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime]);
+  }, [earthSatellites, tleRecords, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime]);
 
 
 
@@ -437,8 +456,9 @@ export default function WorldSelectApp() {
       visible: viewMode === "earth",
       cameraHeight,
       selectedId: selected?.kind === "celestial-body" ? selected.id : null,
+      showOrbits: planetOrbits,
     });
-  }, [planets, viewMode, cameraHeight, selected?.id, selected?.kind, cesiumReady]);
+  }, [planets, viewMode, cameraHeight, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
 
   useEffect(() => {
     trafficControllerRef.current?.sync({
@@ -679,16 +699,21 @@ export default function WorldSelectApp() {
         {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View + Maps JavaScript 3D are not configured on this preview. SAT / MAP / NASA remain available.</div>}
         {threeDError && <div className="mapModeNotice">{threeDError}</div>}
         <LayerToggle checked={earthquakeLayer} onChange={toggleEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
-        <LayerToggle checked={satelliteLayer} onChange={toggleSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle={`CelesTrak ${satelliteCatalog.toUpperCase()} · deduped NORAD catalog · SGP4`} state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
+        <LayerToggle checked={satelliteLayer} onChange={toggleSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle={`CelesTrak ${satelliteCatalog.toUpperCase()} · SGP4 · ${earthSatellites.length}/${satellites.length} visible at this scale`} state={satelliteState} count={earthSatellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
         <div className="satelliteCatalogSwitch" role="group" aria-label="Satellite catalog">
           <button className={satelliteCatalog === "core" ? "active" : ""} onClick={() => setSatelliteCatalog("core")}>CORE</button>
           <button className={satelliteCatalog === "dense" ? "active" : ""} onClick={() => setSatelliteCatalog("dense")}>DENSE</button>
         </div>
-        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · ${aircraftRadiusNm} NM · ${renderedAircraft.length}/${visibleAircraft.length} displayed` : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
+        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · altitude-aware · ${renderedAircraft.length}/${visibleAircraft.length} displayed` : "NOW only"} state={aircraftState} count={aircraftAvailable ? renderedAircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
         <LayerToggle checked={militaryLayer} onChange={toggleMilitaryLayer} onRetry={() => retryLayer("military")} title="Military" subtitle={aircraftAvailable ? `ADSB.lol · global military snapshot · ${militaryMeta?.stale ? "last-good" : "live"}` : "NOW only"} state={militaryState} count={aircraftAvailable ? military.length : 0} disabled={!aircraftAvailable} error={layerErrors.military} />
         <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="AUTO near ground · OSM roads + modeled vehicles · TomTom when available" state={trafficState} count={trafficVehicleCount} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
+        <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>
+          <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth"} onChange={(event) => setPlanetOrbits(event.target.checked)} />
+          <span><strong>Planet orbits</strong><small>Approximate JPL elements · visible by scale</small></span>
+          <b>{planetOrbits ? "ON" : ""}</b>
+        </label>
         <div className="spaceLayerSummary">
-          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "SPACE"}</em>
+          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "DEEP ZOOM"}</em>
           <span>Ground map</span><em>ESRI STREET · WORLD SELECT LABELS EN</em>
           <span>Street imagery</span><em>GOOGLE + KARTAVIEW</em>
           <span>Annotations</span><em>LOCAL SESSION</em>
@@ -762,7 +787,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>{viewMode === "earth" && cameraHeight >= 13_000_000 ? "EARTH · DEEP ZOOM · compressed solar bridge" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
+        <span>{viewMode === "earth" && cameraHeight >= 12_000_000 ? "EARTH · DEEP ZOOM · distance-aware solar context" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
       </footer>
     </main>
   );
