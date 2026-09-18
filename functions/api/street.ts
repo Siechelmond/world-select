@@ -19,58 +19,35 @@ export const onRequestGet = async (context: any) => {
     return Response.json({ error: "invalid coordinates", photos: [] }, { status: 400 });
   }
 
-  // KartaView documents public nearby-photo lookup without authentication. The
-  // FAQ also shows radius searches up to 1000 m; use that as a wider keyless
-  // fallback after Google's progressively widened 120/250/500 m search.
-  const searchRadiusM = 1000;
+  // KartaView documents radius as 1..500 m. Older World Select builds asked for 1500 m,
+  // which was outside the documented contract and could return no usable imagery.
+  const searchRadiusM = 500;
   const api = new URL("https://api.openstreetcam.org/2.0/photo/");
   api.searchParams.set("lat", lat.toFixed(6));
   api.searchParams.set("lng", lon.toFixed(6));
-  api.searchParams.set("zoomLevel", "18");
+  api.searchParams.set("zoomLevel", "16");
   api.searchParams.set("radius", String(searchRadiusM));
   api.searchParams.set("join", "sequence");
   api.searchParams.set("orderBy", "id");
   api.searchParams.set("orderDirection", "desc");
-  api.searchParams.set("itemsPerPage", "50");
 
-  const upstreamController = new AbortController();
-  const upstreamTimeout = setTimeout(() => upstreamController.abort('KartaView upstream timeout'), 4_500);
-  let upstream: Response;
-  try {
-    upstream = await fetch(api.toString(), {
-      headers: { "User-Agent": "WorldSelect/0.8 (+https://world-select.pages.dev)", Accept: "application/json" },
-      signal: upstreamController.signal,
-      cf: { cacheTtl: 300, cacheEverything: true },
-    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
-  } catch {
-    const timedOut = upstreamController.signal.aborted;
-    return Response.json({
-      error: timedOut ? "KartaView upstream timeout" : "KartaView upstream request failed",
-      photos: [],
-      searchRadiusM,
-    }, { status: 504 });
-  } finally {
-    clearTimeout(upstreamTimeout);
-  }
+  const upstream = await fetch(api.toString(), {
+    headers: { "User-Agent": "WorldSelect/0.5.1", Accept: "application/json" },
+    cf: { cacheTtl: 300, cacheEverything: true },
+  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
 
   if (!upstream.ok) {
     return Response.json({ error: `KartaView upstream HTTP ${upstream.status}`, photos: [], searchRadiusM }, { status: 502 });
   }
 
   const payload: any = await upstream.json();
-  const data = Array.isArray(payload?.result?.data)
-    ? payload.result.data
-    : Array.isArray(payload?.result)
-      ? payload.result
-      : Array.isArray(payload?.data)
-        ? payload.data
-        : [];
+  const data = Array.isArray(payload?.result?.data) ? payload.result.data : [];
   const photos = data.flatMap((item: any) => {
-    const imageUrl = item?.fileurlProc || item?.fileurlLTh || item?.fileurlTh || item?.fileUrl || item?.fileurl || item?.url || item?.name || item?.lth_name || item?.th_name || null;
+    const imageUrl = item?.fileurlProc || item?.fileurlLTh || item?.fileurlTh || item?.fileUrl || item?.fileurl || item?.url || null;
     if (typeof imageUrl !== "string" || !imageUrl.startsWith("http")) return [];
     const normalizedImageUrl = imageUrl.replace("[[sizeprefix]]", "wrapped_proc");
-    const latitude = numberOrNull(item.lat ?? item.latitude ?? item.match_lat);
-    const longitude = numberOrNull(item.lng ?? item.lon ?? item.longitude ?? item.match_lng);
+    const latitude = numberOrNull(item.lat ?? item.latitude);
+    const longitude = numberOrNull(item.lng ?? item.lon ?? item.longitude);
     return [{
       id: String(item.id ?? item.photoId ?? normalizedImageUrl),
       imageUrl: normalizedImageUrl,
@@ -78,12 +55,12 @@ export const onRequestGet = async (context: any) => {
       longitude,
       heading: numberOrNull(item.heading ?? item.gpsHeading ?? item.compassAngle),
       capturedAt: item.dateAdded ?? item.date_added ?? null,
-      sequenceId: item.sequenceId != null ? String(item.sequenceId) : item.sequence_id != null ? String(item.sequence_id) : item.sequence?.id != null ? String(item.sequence.id) : null,
+      sequenceId: item.sequenceId != null ? String(item.sequenceId) : item.sequence?.id != null ? String(item.sequence.id) : null,
       distanceMeters: latitude != null && longitude != null ? Math.round(distanceMeters(lat, lon, latitude, longitude)) : null,
     }];
-  }).sort((a: any, b: any) => (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)).slice(0, 32);
+  }).sort((a: any, b: any) => (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)).slice(0, 24);
 
-  return Response.json({ photos, searchRadiusM, provider: "KartaView" }, {
+  return Response.json({ photos, searchRadiusM }, {
     headers: { "Cache-Control": "public, max-age=120, s-maxage=300" },
   });
 };

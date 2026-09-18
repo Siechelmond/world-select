@@ -145,9 +145,11 @@ export default function WorldSelectApp() {
   }, [viewCenter.latitude, viewCenter.longitude, cameraHeight]);
   const aircraftRadiusNm = cameraHeight < 120_000 ? 70 : cameraHeight < 1_000_000 ? 130 : 220;
   const animateAircraft = cameraHeight < 900_000;
-  const streetPoint = selected && selected.kind !== "celestial-body"
-    ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
-    : streetTarget ?? viewCenter;
+  const streetPoint = streetTarget ?? (
+    selected && selected.kind !== "celestial-body"
+      ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
+      : viewCenter
+  );
 
   const setLayerError = useCallback((key: keyof LayerError, message?: string) => {
     setLayerErrors((current) => ({ ...current, [key]: message }));
@@ -863,6 +865,7 @@ export default function WorldSelectApp() {
 
   const openStreet = useCallback(() => {
     if (viewMode !== "earth") return;
+    setStreetTarget(streetPoint);
     setStreetOpen(true);
     setMobilePanel("street");
     setStreetIndex(0);
@@ -888,7 +891,21 @@ export default function WorldSelectApp() {
     loadKartaViewStreet(message);
   }, [loadKartaViewStreet]);
 
-  const closeStreet = () => { setStreetOpen(false); setStreetNotice(null); setMobilePanel("none"); };
+  const handleGoogleStreetPosition = useCallback((point: EarthPoint) => {
+    setStreetTarget(point);
+  }, []);
+
+  const closeStreet = useCallback(() => {
+    setStreetOpen(false);
+    setStreetTarget(null);
+    setStreetPhotos([]);
+    setStreetIndex(0);
+    setStreetState("idle");
+    setStreetNotice(null);
+    setStreetProvider(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
+    setLayerError("street");
+    setMobilePanel("none");
+  }, [setLayerError]);
   const clearSelection = useCallback(() => {
     setSelected(null);
     setFollowAircraft(false);
@@ -1001,6 +1018,7 @@ export default function WorldSelectApp() {
         state={streetState} photo={currentStreet} index={streetIndex} total={streetPhotos.length}
         error={layerErrors.street} point={streetPoint} onClose={closeStreet}
         onGoogleReady={handleGoogleStreetReady} onGoogleFallback={handleGoogleStreetFallback}
+        onGooglePositionChange={handleGoogleStreetPosition}
         onEarth={() => { closeStreet(); flyEarth(); }}
         onGround={() => { closeStreet(); flyGround(); }}
         onSpace={() => { closeStreet(); setSelected(null); setViewMode("space"); setFollowAircraft(false); }}
@@ -1113,7 +1131,7 @@ function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; 
   </aside>;
 }
 
-function StreetViewer({ provider, googleApiKey, notice, state, photo, index, total, error, point, onClose, onEarth, onGround, onSpace, onPrevious, onNext, onUseGoogle, onUseKartaView, onGoogleReady, onGoogleFallback }: { provider: StreetProvider; googleApiKey: string; notice: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onEarth: () => void; onGround: () => void; onSpace: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void; onGoogleReady: () => void; onGoogleFallback: (message: string) => void }) {
+function StreetViewer({ provider, googleApiKey, notice, state, photo, index, total, error, point, onClose, onEarth, onGround, onSpace, onPrevious, onNext, onUseGoogle, onUseKartaView, onGoogleReady, onGoogleFallback, onGooglePositionChange }: { provider: StreetProvider; googleApiKey: string; notice: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onEarth: () => void; onGround: () => void; onSpace: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void; onGoogleReady: () => void; onGoogleFallback: (message: string) => void; onGooglePositionChange: (point: EarthPoint) => void }) {
   return <section className="streetViewer glass" aria-label="Street-level imagery">
     <div className="streetHead"><div><p className="panelLabel">GROUND / STREET · {provider === "google" ? "GOOGLE STREET VIEW" : "KARTAVIEW"}</p><strong>{point.latitude.toFixed(5)}, {point.longitude.toFixed(5)}</strong></div><button className="backToGlobe" onClick={onClose}>← BACK</button></div>
     <div className="streetExitNav"><button onClick={onEarth}>EARTH / SAT</button><button onClick={onGround}>GROUND / MAP</button><button onClick={onSpace}>SPACE</button></div>
@@ -1121,7 +1139,7 @@ function StreetViewer({ provider, googleApiKey, notice, state, photo, index, tot
     {notice && <div className="streetInlineNotice">{notice}</div>}
     <div className="streetFrame">
       {provider === "google"
-        ? <GoogleStreetPanorama apiKey={googleApiKey} point={point} onReady={onGoogleReady} onFallback={onGoogleFallback} />
+        ? <GoogleStreetPanorama apiKey={googleApiKey} point={point} onReady={onGoogleReady} onFallback={onGoogleFallback} onPositionChange={onGooglePositionChange} />
         : <>
             {state === "loading" && <div className="streetMessage">Searching street imagery…</div>}
             {state !== "loading" && !photo && <div className="streetMessage"><strong>NO IMAGERY</strong><span>{error ?? notice ?? "No imagery is available near this point."}</span></div>}
@@ -1132,10 +1150,15 @@ function StreetViewer({ provider, googleApiKey, notice, state, photo, index, tot
   </section>;
 }
 
-function GoogleStreetPanorama({ apiKey, point, onReady, onFallback }: { apiKey: string; point: EarthPoint; onReady: () => void; onFallback: (message: string) => void }) {
+function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionChange }: { apiKey: string; point: EarthPoint; onReady: () => void; onFallback: (message: string) => void; onPositionChange: (point: EarthPoint) => void }) {
   const panoRef = useRef<HTMLDivElement | null>(null);
+  const initialPointRef = useRef<EarthPoint>(point);
+
   useEffect(() => {
     let disposed = false;
+    let panorama: any = null;
+    let positionListener: any = null;
+
     if (!apiKey) {
       onFallback("Google Street View is not configured · using KartaView fallback");
       return;
@@ -1145,11 +1168,12 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback }: { apiKey: 
       if (disposed || !panoRef.current) return;
       const service = new google.maps.StreetViewService();
       const radii = [120, 250, 500];
+      const origin = initialPointRef.current;
       let location: any = null;
 
       for (const radius of radii) {
         try {
-          const request: any = { location: { lat: point.latitude, lng: point.longitude }, radius };
+          const request: any = { location: { lat: origin.latitude, lng: origin.longitude }, radius };
           if (google.maps.StreetViewPreference?.NEAREST) request.preference = google.maps.StreetViewPreference.NEAREST;
           if (google.maps.StreetViewSource?.OUTDOOR) request.source = google.maps.StreetViewSource.OUTDOOR;
           const result = await service.getPanorama(request);
@@ -1165,7 +1189,7 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback }: { apiKey: 
       if (!location?.pano) throw new Error("No Google Street View panorama found within 500 m");
       if (disposed || !panoRef.current) return;
 
-      new google.maps.StreetViewPanorama(panoRef.current, {
+      panorama = new google.maps.StreetViewPanorama(panoRef.current, {
         pano: location.pano,
         position: location.latLng,
         pov: { heading: 0, pitch: 0 },
@@ -1177,13 +1201,29 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback }: { apiKey: 
         panControl: true,
         zoomControl: true,
       });
+
+      const publishPosition = () => {
+        const current = panorama?.getPosition?.();
+        const latitude = typeof current?.lat === "function" ? current.lat() : NaN;
+        const longitude = typeof current?.lng === "function" ? current.lng() : NaN;
+        if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+          onPositionChange({ latitude, longitude });
+        }
+      };
+
+      publishPosition();
+      positionListener = panorama.addListener?.("position_changed", publishPosition);
       onReady();
     }).catch((error: unknown) => {
       if (!disposed) onFallback(error instanceof Error ? `${error.message} · using KartaView fallback` : "Google Street View failed · using KartaView fallback");
     });
 
-    return () => { disposed = true; };
-  }, [apiKey, point.latitude, point.longitude, onReady, onFallback]);
+    return () => {
+      disposed = true;
+      if (positionListener?.remove) positionListener.remove();
+      panorama = null;
+    };
+  }, [apiKey, onReady, onFallback, onPositionChange]);
 
   return <div ref={panoRef} className="googleStreetPano"><div className="streetMessage">Loading Google Street View…</div></div>;
 }
