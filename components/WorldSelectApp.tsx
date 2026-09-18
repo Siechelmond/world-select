@@ -962,17 +962,26 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
 
   useEffect(() => {
     let disposed = false;
-    let completed = false;
+    let failed = false;
+    let ready = false;
     let panorama: any = null;
     let positionListener: any = null;
+    let statusListener: any = null;
     let watchdog: number | undefined;
     const priorAuthFailure = window.gm_authFailure;
 
     const fail = (message: string) => {
-      if (disposed || completed) return;
-      completed = true;
+      if (disposed || failed) return;
+      failed = true;
       if (watchdog != null) window.clearTimeout(watchdog);
       onFallback(message);
+    };
+
+    const markReady = () => {
+      if (disposed || failed || ready) return;
+      ready = true;
+      if (watchdog != null) window.clearTimeout(watchdog);
+      onReady();
     };
 
     const authFailure = () => {
@@ -995,22 +1004,23 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
 
     loadGoogleMaps(apiKey)
       .then((google) => {
-        if (disposed || completed || !panoRef.current) return;
+        if (disposed || failed || !panoRef.current) return;
 
         const service = new google.maps.StreetViewService();
         const origin = initialPointRef.current;
         const request = {
           location: { lat: origin.latitude, lng: origin.longitude },
           radius: 120,
+          source: google.maps.StreetViewSource?.OUTDOOR,
         };
 
-        const lookup = new Promise<any>((resolve, reject) => {
+        return new Promise<any>((resolve, reject) => {
           let settled = false;
           const callback = (data: any, status: any) => {
             if (settled) return;
-            const ok = status == null || status === "OK" || status === google.maps.StreetViewStatus?.OK;
             settled = true;
-            if (ok && data) resolve({ data });
+            const ok = status === google.maps.StreetViewStatus?.OK || status === "OK";
+            if (ok && data?.location?.pano) resolve({ google, data });
             else reject(new Error(`Google Street View status: ${String(status ?? "UNKNOWN")}`));
           };
 
@@ -1021,7 +1031,9 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
                 (value: any) => {
                   if (settled) return;
                   settled = true;
-                  resolve(value);
+                  const data = value?.data ?? value;
+                  if (data?.location?.pano) resolve({ google, data });
+                  else reject(new Error("Google Street View returned no panorama"));
                 },
                 (reason: unknown) => {
                   if (settled) return;
@@ -1037,40 +1049,54 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
             }
           }
         });
+      })
+      .then((result: any) => {
+        if (!result || disposed || failed || !panoRef.current) return;
+        const { google, data } = result;
+        const location = data.location;
 
-        return lookup.then(({ data }: any) => {
-          if (disposed || completed || !panoRef.current) return;
-          const location = data?.location;
-          if (!location?.pano) throw new Error("Google Street View returned no panorama data");
-
-          panorama = new google.maps.StreetViewPanorama(panoRef.current, {
-            pano: location.pano,
-            position: location.latLng,
-            pov: { heading: 0, pitch: 0 },
-            zoom: 1,
-            addressControl: true,
-            fullscreenControl: !window.matchMedia("(max-width: 780px)").matches,
-            motionTracking: false,
-            linksControl: true,
-            panControl: true,
-            zoomControl: true,
-          });
-
-          const publishPosition = () => {
-            const current = panorama?.getPosition?.();
-            const latitude = typeof current?.lat === "function" ? current.lat() : NaN;
-            const longitude = typeof current?.lng === "function" ? current.lng() : NaN;
-            if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-              onPositionChange({ latitude, longitude });
-            }
-          };
-
-          publishPosition();
-          positionListener = panorama.addListener?.("position_changed", publishPosition);
-          completed = true;
-          if (watchdog != null) window.clearTimeout(watchdog);
-          onReady();
+        panorama = new google.maps.StreetViewPanorama(panoRef.current, {
+          pano: location.pano,
+          position: location.latLng,
+          pov: { heading: 0, pitch: 0 },
+          zoom: 1,
+          addressControl: true,
+          fullscreenControl: !window.matchMedia("(max-width: 780px)").matches,
+          motionTracking: false,
+          linksControl: true,
+          panControl: true,
+          zoomControl: true,
+          visible: true,
         });
+
+        const publishPosition = () => {
+          const current = panorama?.getPosition?.();
+          const latitude = typeof current?.lat === "function" ? current.lat() : NaN;
+          const longitude = typeof current?.lng === "function" ? current.lng() : NaN;
+          if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+            onPositionChange({ latitude, longitude });
+          }
+        };
+
+        positionListener = panorama.addListener?.("position_changed", publishPosition);
+        statusListener = panorama.addListener?.("status_changed", () => {
+          const status = panorama?.getStatus?.();
+          if (status === google.maps.StreetViewStatus?.OK || status === "OK") {
+            publishPosition();
+            markReady();
+          } else if (status != null) {
+            fail(`Google Street View render status: ${String(status)} · using KartaView fallback`);
+          }
+        });
+
+        publishPosition();
+
+        // Some Maps JS versions do not emit status_changed after construction
+        // when a validated pano id is supplied. In that case construction itself
+        // is the readiness signal, while gm_authFailure remains active afterwards.
+        window.setTimeout(() => {
+          if (!disposed && !failed) markReady();
+        }, 250);
       })
       .catch((error: unknown) => {
         const raw =
@@ -1088,6 +1114,7 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       disposed = true;
       if (watchdog != null) window.clearTimeout(watchdog);
       if (positionListener?.remove) positionListener.remove();
+      if (statusListener?.remove) statusListener.remove();
       if (window.gm_authFailure === authFailure) window.gm_authFailure = priorAuthFailure;
       panorama = null;
     };
@@ -1117,7 +1144,7 @@ function loadGoogleMaps(apiKey: string): Promise<any> {
     }
 
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&libraries=streetView`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async`;
     script.async = true;
     script.defer = true;
     script.dataset.worldSelectGoogleMaps = "1";
