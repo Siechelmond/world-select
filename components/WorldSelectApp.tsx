@@ -451,6 +451,14 @@ export default function WorldSelectApp() {
 
 
   useEffect(() => {
+    const viewer = viewerRef.current;
+    const Cesium = window.Cesium;
+    if (!viewer || !Cesium || viewMode !== "earth") return;
+    viewer.clock.currentTime = Cesium.JulianDate.fromDate(selectedTime);
+    viewer.scene?.requestRender?.();
+  }, [selectedTime, viewMode, cesiumReady]);
+
+  useEffect(() => {
     celestialBridgeRendererRef.current?.sync({
       planets,
       visible: viewMode === "earth",
