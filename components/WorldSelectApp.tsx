@@ -34,15 +34,6 @@ const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 
-function aircraftScaleCeiling(altitudeMeters: number) {
-  const altitude = Math.max(0, Math.min(22_000, altitudeMeters || 0));
-  return 350_000 + altitude * 85;
-}
-
-function satelliteScaleCeiling(altitudeMeters: number) {
-  const altitude = Math.max(0, altitudeMeters || 0);
-  return Math.min(65_000_000, 12_000_000 + altitude * 1.25);
-}
 const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
 const SEN_ISS_LIVE_VIDEO_ID = process.env.NEXT_PUBLIC_SEN_ISS_LIVE_VIDEO_ID ?? "fO9e9jnhYK8";
 export default function WorldSelectApp() {
@@ -124,24 +115,16 @@ export default function WorldSelectApp() {
     ...(aircraftLayer ? aircraft : []),
     ...(militaryLayer ? military : []),
   ], [aircraftLayer, aircraft, militaryLayer, military]);
-  const scaleVisibleAircraft = useMemo(
-    () => visibleAircraft.filter((item) => cameraHeight <= aircraftScaleCeiling(item.position.altitudeMeters)),
-    [visibleAircraft, cameraHeight],
-  );
-  const earthSatellites = useMemo(
-    () => satellites.filter((item) => cameraHeight <= satelliteScaleCeiling(item.position.altitudeMeters)),
-    [satellites, cameraHeight],
-  );
   const renderedAircraft = useMemo(() => {
     const budget = cameraHeight > 2_000_000 ? 180 : cameraHeight > 500_000 ? 260 : 420;
-    return [...scaleVisibleAircraft]
+    return [...visibleAircraft]
       .sort((a, b) => {
         const da = (a.position.latitude - viewCenter.latitude) ** 2 + (a.position.longitude - viewCenter.longitude) ** 2;
         const db = (b.position.latitude - viewCenter.latitude) ** 2 + (b.position.longitude - viewCenter.longitude) ** 2;
         return da - db;
       })
       .slice(0, budget);
-  }, [scaleVisibleAircraft, cameraHeight, viewCenter.latitude, viewCenter.longitude]);
+  }, [visibleAircraft, cameraHeight, viewCenter.latitude, viewCenter.longitude]);
   const aircraftQueryCenter = useMemo(() => {
     const step = cameraHeight < 300_000 ? 0.05 : cameraHeight < 2_000_000 ? 0.15 : 0.35;
     return {
@@ -404,7 +387,7 @@ export default function WorldSelectApp() {
 
   useEffect(() => {
     satelliteRendererRef.current?.sync({
-      satellites: earthSatellites,
+      satellites,
       tleRecords,
       visible: viewMode === "earth" && satelliteLayer,
       selectedId: selected?.kind === "satellite" ? selected.id : null,
@@ -412,7 +395,7 @@ export default function WorldSelectApp() {
       cameraHeight,
       time: selectedTime,
     });
-  }, [earthSatellites, tleRecords, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime]);
+  }, [satellites, tleRecords, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime]);
 
 
 
@@ -707,12 +690,12 @@ export default function WorldSelectApp() {
         {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View + Maps JavaScript 3D are not configured on this preview. SAT / MAP / NASA remain available.</div>}
         {threeDError && <div className="mapModeNotice">{threeDError}</div>}
         <LayerToggle checked={earthquakeLayer} onChange={toggleEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
-        <LayerToggle checked={satelliteLayer} onChange={toggleSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle={`CelesTrak ${satelliteCatalog.toUpperCase()} · SGP4 · ${earthSatellites.length}/${satellites.length} visible at this scale`} state={satelliteState} count={earthSatellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
+        <LayerToggle checked={satelliteLayer} onChange={toggleSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle={`CelesTrak ${satelliteCatalog.toUpperCase()} · SGP4 · real altitude · perspective-scaled`} state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
         <div className="satelliteCatalogSwitch" role="group" aria-label="Satellite catalog">
           <button className={satelliteCatalog === "core" ? "active" : ""} onClick={() => setSatelliteCatalog("core")}>CORE</button>
           <button className={satelliteCatalog === "dense" ? "active" : ""} onClick={() => setSatelliteCatalog("dense")}>DENSE</button>
         </div>
-        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · altitude-aware · ${renderedAircraft.length}/${visibleAircraft.length} displayed` : "NOW only"} state={aircraftState} count={aircraftAvailable ? renderedAircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
+        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · real altitude · ${renderedAircraft.length}/${visibleAircraft.length} rendered` : "NOW only"} state={aircraftState} count={aircraftAvailable ? renderedAircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
         <LayerToggle checked={militaryLayer} onChange={toggleMilitaryLayer} onRetry={() => retryLayer("military")} title="Military" subtitle={aircraftAvailable ? `ADSB.lol · global military snapshot · ${militaryMeta?.stale ? "last-good" : "live"}` : "NOW only"} state={militaryState} count={aircraftAvailable ? military.length : 0} disabled={!aircraftAvailable} error={layerErrors.military} />
         <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="AUTO near ground · OSM roads + modeled vehicles · TomTom when available" state={trafficState} count={trafficVehicleCount} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
         <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>

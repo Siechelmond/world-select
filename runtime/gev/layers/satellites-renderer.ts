@@ -87,13 +87,22 @@ export function createSatelliteRenderer(input: {
           trails.delete(spatial.id);
         }
 
-        const pixelSize = cameraHeight > 5_000_000 ? 4 : cameraHeight > 1_500_000 ? 6 : 8;
+        const altitudeMeters = Math.max(0, spatial.position.altitudeMeters || 0);
+        const pixelSize = isIss ? 8 : altitudeMeters > 20_000_000 ? 6 : altitudeMeters > 2_000_000 ? 5.5 : 5;
         const trailPositions = isSelected && !isIss ? [...trail] : [];
         const showLabel = isSelected || isIss || spatial.name.includes('TIANHE');
 
         if (existing) {
           existing.position = new Cesium.ConstantPositionProperty(position);
-          if (existing.point) existing.point.pixelSize = new Cesium.ConstantProperty(pixelSize);
+          if (existing.point) {
+            existing.point.pixelSize = new Cesium.ConstantProperty(pixelSize);
+            existing.point.scaleByDistance = new Cesium.ConstantProperty(
+              new Cesium.NearFarScalar(50_000, 1.35, 250_000_000, 0.18),
+            );
+            existing.point.translucencyByDistance = new Cesium.ConstantProperty(
+              new Cesium.NearFarScalar(2_000_000, 1, 500_000_000, 0.12),
+            );
+          }
           if (existing.polyline) {
             existing.polyline.show = new Cesium.ConstantProperty(isSelected && trailPositions.length > 1);
             existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
@@ -112,6 +121,8 @@ export function createSatelliteRenderer(input: {
               color: Cesium.Color.fromCssColorString('#67e8f9'),
               outlineColor: Cesium.Color.WHITE,
               outlineWidth: isSelected ? 2 : 0.5,
+              scaleByDistance: new Cesium.NearFarScalar(50_000, 1.35, 250_000_000, 0.18),
+              translucencyByDistance: new Cesium.NearFarScalar(2_000_000, 1, 500_000_000, 0.12),
             },
             polyline: {
               show: isSelected && trailPositions.length > 1,
@@ -137,8 +148,8 @@ export function createSatelliteRenderer(input: {
         ids.delete(id);
         trails.delete(id);
       }
-      const issVisibleAtScale = satellites.some((item) => /ISS.*ZARYA|^ISS\b/i.test(item.name));
-      syncIssOrbit(issVisibleAtScale ? tleRecords : [], time);
+      const issInActiveCatalog = satellites.some((item) => /ISS.*ZARYA|^ISS\b/i.test(item.name));
+      syncIssOrbit(issInActiveCatalog ? tleRecords : [], time);
       viewer.scene?.requestRender?.();
     },
     clear,

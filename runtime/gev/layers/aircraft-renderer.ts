@@ -90,9 +90,11 @@ export function createAircraftRenderer(input: {
           projected.altitudeMeters,
         );
         const speed = Number(spatial.properties.groundSpeedKt ?? 0);
-        const pixelSize = cameraHeight > 2_000_000 ? 4 : cameraHeight > 600_000 ? 5 : speed > 250 ? 8 : 7;
+        const pixelSize = speed > 250 ? 7 : 6;
         const headingDeg = Number(spatial.properties.trackDeg ?? 0);
         const iconSize = Math.max(14, pixelSize * (isSelected ? 4.1 : 3.2));
+        const distanceScale = new Cesium.NearFarScalar(5_000, 1.15, 20_000_000, 0.08);
+        const distanceAlpha = new Cesium.NearFarScalar(500_000, 1, 35_000_000, 0.06);
         const trail = updateTrail(spatial, isSelected);
         const trailPositions = trail.map((p) => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitudeMeters));
         const existing = viewer.entities.getById(spatial.id);
@@ -103,6 +105,8 @@ export function createAircraftRenderer(input: {
             existing.billboard.width = new Cesium.ConstantProperty(iconSize);
             existing.billboard.height = new Cesium.ConstantProperty(iconSize);
             existing.billboard.rotation = new Cesium.ConstantProperty(Cesium.Math.toRadians(-headingDeg));
+            existing.billboard.scaleByDistance = new Cesium.ConstantProperty(distanceScale);
+            existing.billboard.translucencyByDistance = new Cesium.ConstantProperty(distanceAlpha);
             existing.billboard.color = new Cesium.ConstantProperty(
               isSelected ? Cesium.Color.fromCssColorString('#fde047') : Cesium.Color.fromCssColorString('#facc15'),
             );
@@ -126,6 +130,8 @@ export function createAircraftRenderer(input: {
               height: iconSize,
               rotation: Cesium.Math.toRadians(-headingDeg),
               color: isSelected ? Cesium.Color.fromCssColorString('#fde047') : Cesium.Color.fromCssColorString('#facc15'),
+              scaleByDistance: distanceScale,
+              translucencyByDistance: distanceAlpha,
               disableDepthTestDistance: 3_000_000,
             },
             polyline: {
