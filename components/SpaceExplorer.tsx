@@ -10,10 +10,11 @@ import {
   type PlanetPosition,
 } from "@/lib/space";
 
-type SpaceLevel = "planet" | "solar" | "outer" | "galaxy";
+type SpaceLevel = "orbit" | "planet" | "solar" | "outer" | "galaxy";
 
 type Props = {
   planets: PlanetPosition[];
+  satellites: SpatialEntity[];
   sun: SpatialEntity;
   time: Date;
   onSelect: (entity: SpatialEntity) => void;
@@ -21,8 +22,9 @@ type Props = {
   earthHandoff: { latitude: number; longitude: number; height: number } | null;
 };
 
-const LEVELS: SpaceLevel[] = ["planet", "solar", "outer", "galaxy"];
+const LEVELS: SpaceLevel[] = ["orbit", "planet", "solar", "outer", "galaxy"];
 const LEVEL_LABELS: Record<SpaceLevel, string> = {
+  orbit: "EARTH ORBIT",
   planet: "PLANET SYSTEM",
   solar: "SOLAR SYSTEM",
   outer: "KUIPER BELT",
@@ -141,8 +143,8 @@ function deterministicGalaxyClouds() {
   return clouds;
 }
 
-export default function SpaceExplorer({ planets, sun, time, onSelect, onReturnEarth, earthHandoff }: Props) {
-  const [level, setLevel] = useState<SpaceLevel>("solar");
+export default function SpaceExplorer({ planets, satellites, sun, time, onSelect, onReturnEarth, earthHandoff }: Props) {
+  const [level, setLevel] = useState<SpaceLevel>("orbit");
   const [focusedPlanet, setFocusedPlanet] = useState<string>("Earth");
   const lastWheelAt = useRef(0);
   const planet = planets.find((item) => item.entity.name === focusedPlanet) ?? planets[2] ?? planets[0];
@@ -153,6 +155,10 @@ export default function SpaceExplorer({ planets, sun, time, onSelect, onReturnEa
   };
 
   const zoomBy = (direction: -1 | 1) => {
+    if (level === "orbit" && direction < 0) {
+      onReturnEarth();
+      return;
+    }
     const index = LEVELS.indexOf(level);
     const nextIndex = Math.max(0, Math.min(LEVELS.length - 1, index + direction));
     setLevel(LEVELS[nextIndex]);
@@ -184,6 +190,7 @@ export default function SpaceExplorer({ planets, sun, time, onSelect, onReturnEa
       <div className="spaceTitle">
         <span>{LEVEL_LABELS[level]}</span>
         <small>
+          {level === "orbit" && `Earth orbital frame · ${satellites.length} propagated CelesTrak objects available`}
           {level === "planet" && `${focusedPlanet} system · moon sizes and distances expanded for visibility`}
           {level === "solar" && "JPL approximate heliocentric positions · logarithmic display scale"}
           {level === "outer" && "Named dwarf-planet orbit scales · Kuiper density illustrative"}
@@ -206,10 +213,13 @@ export default function SpaceExplorer({ planets, sun, time, onSelect, onReturnEa
 
       <div className="spaceZoomHint">scroll to travel scale · + / − changes spatial frame</div>
       <div className="spaceZoomButtons glass" aria-label="Space zoom">
-        <button onClick={() => zoomBy(-1)} disabled={level === "planet"}>+</button>
+        <button onClick={() => zoomBy(-1)}>+</button>
         <button onClick={() => zoomBy(1)} disabled={level === "galaxy"}>−</button>
       </div>
 
+      {level === "orbit" && (
+        <OrbitView satellites={satellites} onSelect={onSelect} onReturnEarth={onReturnEarth} />
+      )}
       {level === "planet" && planet && (
         <PlanetSystemView planet={planet} time={time} onSelect={onSelect} onBack={() => setLevel("solar")} />
       )}
@@ -224,6 +234,68 @@ export default function SpaceExplorer({ planets, sun, time, onSelect, onReturnEa
         <div className="spaceMissionFacts outerFacts glass"><strong>DEEP-SPACE PROBES</strong><span><b>New Horizons</b> — ~9.5 billion km from Earth in June 2026, beyond Pluto and the classical Kuiper Belt.</span><span><b>Voyager 1 / 2</b> — both in interstellar space; Voyager 1 is the most distant human-made object.</span></div>
       </>}
       {level === "galaxy" && <GalaxyView onSolar={() => setLevel("solar")} />}
+    </div>
+  );
+}
+
+function OrbitView({ satellites, onSelect, onReturnEarth }: {
+  satellites: SpatialEntity[];
+  onSelect: (entity: SpatialEntity) => void;
+  onReturnEarth: () => void;
+}) {
+  const size = 1000;
+  const cx = 500;
+  const cy = 430;
+  const visible = satellites
+    .filter((item) => item.kind === "satellite")
+    .slice()
+    .sort((a, b) => a.position.altitudeMeters - b.position.altitudeMeters)
+    .slice(0, 160);
+
+  const maxAltitude = Math.max(42_164_000, ...visible.map((item) => item.position.altitudeMeters));
+  const radiusForAltitude = (altitudeMeters: number) => {
+    const clamped = Math.max(160_000, altitudeMeters);
+    const normalized = Math.log10(clamped / 160_000 + 1) / Math.log10(maxAltitude / 160_000 + 1);
+    return 92 + normalized * 315;
+  };
+
+  return (
+    <div className="orbitFrame">
+      <button className="spaceBackButton orbitReturn" onClick={onReturnEarth}>← Earth</button>
+      <svg viewBox={`0 0 ${size} 760`} className="orbitSvg" role="img" aria-label="Earth orbit with propagated satellite positions">
+        <defs>
+          <radialGradient id="orbit-earth-gradient" cx="35%" cy="30%">
+            <stop offset="0%" stopColor="#ecfeff"/>
+            <stop offset="34%" stopColor="#38bdf8"/>
+            <stop offset="78%" stopColor="#0369a1"/>
+            <stop offset="100%" stopColor="#082f49"/>
+          </radialGradient>
+        </defs>
+        <circle cx={cx} cy={cy} r="72" fill="url(#orbit-earth-gradient)" className="orbitEarth" onClick={onReturnEarth} />
+        <circle cx={cx} cy={cy} r={radiusForAltitude(420_000)} className="orbitGuide leoGuide" />
+        <circle cx={cx} cy={cy} r={radiusForAltitude(20_200_000)} className="orbitGuide meoGuide" />
+        <circle cx={cx} cy={cy} r={radiusForAltitude(35_786_000)} className="orbitGuide geoGuide" />
+        <text x={cx} y={cy + 98} className="planetDetailLabel" textAnchor="middle">Earth</text>
+        <text x={cx + radiusForAltitude(420_000) + 8} y={cy - 4} className="orbitGuideLabel">LEO</text>
+        <text x={cx + radiusForAltitude(20_200_000) + 8} y={cy - 4} className="orbitGuideLabel">MEO</text>
+        <text x={cx + radiusForAltitude(35_786_000) + 8} y={cy - 4} className="orbitGuideLabel">GEO</text>
+        {visible.map((item, index) => {
+          const angle = ((item.position.longitude + 180) / 360) * Math.PI * 2 + (index % 7) * 0.004;
+          const radius = radiusForAltitude(item.position.altitudeMeters);
+          const x = cx + Math.cos(angle) * radius;
+          const y = cy + Math.sin(angle) * radius * 0.62;
+          const isIss = /ISS/i.test(item.name);
+          return <g key={item.id} className="orbitObject" onClick={() => onSelect(item)}>
+            <circle cx={x} cy={y} r={isIss ? 5.5 : 2.4} className={isIss ? "orbitSatellite iss" : "orbitSatellite"} />
+            {isIss && <text x={x + 9} y={y - 8} className="orbitIssLabel">ISS</text>}
+          </g>;
+        })}
+      </svg>
+      <div className="orbitFrameLegend glass">
+        <strong>LIVE ORBIT FRAME</strong>
+        <span>{visible.length} of {satellites.length} propagated objects rendered</span>
+        <small>CelesTrak TLE + SGP4 · display projection compressed for readability</small>
+      </div>
     </div>
   );
 }

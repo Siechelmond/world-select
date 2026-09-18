@@ -859,3 +859,66 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 @media (max-width: 780px) {
   .spaceEarthHandoff { left: 8px; top: 112px; right: 8px; }
 }
+
+
+/* Batch 5B — real Orbit frame between Earth and Solar System. */
+.orbitFrame {
+  position: absolute;
+  inset: 174px 80px 110px 80px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.orbitSvg { width: min(100%, 980px); height: min(100%, 760px); overflow: visible; }
+.orbitEarth { cursor: pointer; filter: drop-shadow(0 0 26px rgba(56,189,248,.42)); }
+.orbitGuide {
+  fill: none;
+  stroke: rgba(148,163,184,.2);
+  stroke-width: 1.2;
+  stroke-dasharray: 5 8;
+}
+.orbitGuideLabel {
+  fill: #64748b;
+  font-size: 9px;
+  font-weight: 800;
+  paint-order: stroke;
+  stroke: #020617;
+  stroke-width: 3px;
+}
+.orbitObject { cursor: pointer; }
+.orbitSatellite {
+  fill: #67e8f9;
+  opacity: .72;
+  filter: drop-shadow(0 0 4px rgba(103,232,249,.5));
+}
+.orbitSatellite.iss {
+  fill: #fef08a;
+  opacity: 1;
+  filter: drop-shadow(0 0 8px rgba(254,240,138,.9));
+}
+.orbitIssLabel {
+  fill: #fef9c3;
+  font-size: 10px;
+  font-weight: 900;
+  paint-order: stroke;
+  stroke: #020617;
+  stroke-width: 3px;
+}
+.orbitFrameLegend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: grid;
+  gap: 4px;
+  max-width: 330px;
+  padding: 10px 12px;
+  color: #94a3b8;
+  font-size: 9px;
+}
+.orbitFrameLegend strong { color: #cffafe; letter-spacing: .12em; }
+.orbitFrameLegend small { color: #64748b; }
+.spaceBackButton.orbitReturn { left: 12px; top: 12px; }
+@media (max-width: 780px) {
+  .orbitFrame { inset: 142px 4px 58px 4px; }
+  .orbitFrameLegend { left: 8px; right: 8px; max-width: none; bottom: 6px; }
+}

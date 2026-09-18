@@ -638,6 +638,7 @@ export default function WorldSelectApp() {
       <div ref={containerRef} className={`globe ${viewMode === "space" ? "globeHidden" : ""}`} aria-label="Interactive 3D globe" />
       {viewMode === "space" && <SpaceExplorer
         planets={planets}
+        satellites={satellites}
         sun={sun}
         time={selectedTime}
         onSelect={selectEntity}
