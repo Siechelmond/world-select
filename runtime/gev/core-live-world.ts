@@ -28,7 +28,7 @@ const INTERVALS: Record<CoreLayerKey, number> = {
   earthquakes: 60_000,
   satellites: 300_000,
   aircraft: 15_000,
-  military: 30_000,
+  military: 60_000,
 };
 
 function cell<T, M = never>(data: T): LayerCell<T, M> {

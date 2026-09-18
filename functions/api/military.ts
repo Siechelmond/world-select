@@ -1,8 +1,9 @@
-const FRESH_MS = 15_000;
-const STALE_MAX_MS = 15 * 60_000;
+const FRESH_MS = 20_000;
+const STALE_MAX_MS = 6 * 60 * 60_000;
+const STORED_LAST_GOOD_TTL_SECONDS = 6 * 60 * 60;
 const FETCH_TIMEOUT_MS = 10_000;
-const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000;
-const DEFAULT_SERVER_COOLDOWN_MS = 30_000;
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 30_000;
+const DEFAULT_SERVER_COOLDOWN_MS = 15_000;
 const DEFAULT_NETWORK_COOLDOWN_MS = 15_000;
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
@@ -145,15 +146,26 @@ export const onRequestGet = async (context: {
       total: typeof payload.total === "number" ? payload.total : payload.ac.length,
     };
 
+    const cachedAt = Date.now();
     const response = Response.json(body, {
       headers: {
-        "Cache-Control": "public, max-age=10, s-maxage=15, stale-while-revalidate=180",
-        "X-World-Select-Cached-At": String(Date.now()),
+        "Cache-Control": "public, max-age=10, s-maxage=20, stale-while-revalidate=180",
+        "X-World-Select-Cached-At": String(cachedAt),
         "X-World-Select-Military-Cache": "MISS",
       },
     });
 
-    context.waitUntil(cache.put(key, response.clone()));
+    // Keep a dedicated last-good copy much longer than the browser-facing
+    // freshness window. This mirrors GEV's persistent in-process snapshot:
+    // 429/5xx/network failures can still render real previously observed data.
+    const storedLastGood = Response.json(body, {
+      headers: {
+        "Cache-Control": `public, max-age=${STORED_LAST_GOOD_TTL_SECONDS}`,
+        "X-World-Select-Cached-At": String(cachedAt),
+        "X-World-Select-Military-Cache": "STORED-LAST-GOOD",
+      },
+    });
+    context.waitUntil(cache.put(key, storedLastGood));
     return response;
   } catch (error) {
     const cooldownMs = DEFAULT_NETWORK_COOLDOWN_MS;
