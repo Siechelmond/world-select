@@ -71,7 +71,10 @@ export function createWorldViewer(input: {
 
   const applyStyle = () => {
     const in3d = Boolean(google3d);
-    if (earthLayer) earthLayer.show = !in3d && requestedMode === 'satellite';
+    // NASA GIBS is an Earth-observation overlay, not a complete basemap.
+    // Keep Esri World Imagery visible underneath so GIBS swath/no-data gaps
+    // never cut holes through the globe.
+    if (earthLayer) earthLayer.show = !in3d && (requestedMode === 'satellite' || requestedMode === 'nasa');
     if (groundLayer) groundLayer.show = !in3d && requestedMode === 'map';
     if (nasaLayer) nasaLayer.show = !in3d && requestedMode === 'nasa';
     if (referenceLayer) referenceLayer.show = !in3d && requestedMode !== 'map';
