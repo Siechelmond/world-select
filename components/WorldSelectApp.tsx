@@ -795,32 +795,51 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       return;
     }
 
-    loadGoogleMapsMain(apiKey).then(async (google) => {
+    loadGoogleMapsBase(apiKey).then(async (google) => {
       if (disposed || !panoRef.current) return;
-      const service = new google.maps.StreetViewService();
-      const radii = [120, 250, 500];
+
+      const streetView = await google.maps.importLibrary("streetView");
+      const StreetViewService = streetView?.StreetViewService ?? google.maps.StreetViewService;
+      const StreetViewPanorama = streetView?.StreetViewPanorama ?? google.maps.StreetViewPanorama;
+      const StreetViewPreference = streetView?.StreetViewPreference ?? google.maps.StreetViewPreference;
+      const StreetViewSource = streetView?.StreetViewSource ?? google.maps.StreetViewSource;
+
+      if (typeof StreetViewService !== "function" || typeof StreetViewPanorama !== "function") {
+        throw new Error("Google Street View library did not initialize");
+      }
+
+      const service = new StreetViewService();
       const origin = initialPointRef.current;
+      const attempts = [
+        { radius: 120, source: StreetViewSource?.OUTDOOR ?? "outdoor" },
+        { radius: 250, source: StreetViewSource?.OUTDOOR ?? "outdoor" },
+        { radius: 500, source: StreetViewSource?.OUTDOOR ?? "outdoor" },
+        { radius: 500, source: undefined },
+      ];
       let location: any = null;
 
-      for (const radius of radii) {
+      for (const attempt of attempts) {
         try {
-          const request: any = { location: { lat: origin.latitude, lng: origin.longitude }, radius };
-          if (google.maps.StreetViewPreference?.NEAREST) request.preference = google.maps.StreetViewPreference.NEAREST;
-          if (google.maps.StreetViewSource?.OUTDOOR) request.source = google.maps.StreetViewSource.OUTDOOR;
+          const request: any = {
+            location: { lat: origin.latitude, lng: origin.longitude },
+            radius: attempt.radius,
+            preference: StreetViewPreference?.NEAREST ?? "nearest",
+          };
+          if (attempt.source) request.source = attempt.source;
           const result = await service.getPanorama(request);
           if (result?.data?.location?.pano) {
             location = result.data.location;
             break;
           }
         } catch {
-          // Widen the search radius. KartaView remains the final fallback.
+          // Continue through bounded search attempts; KartaView remains final fallback.
         }
       }
 
       if (!location?.pano) throw new Error("No Google Street View panorama found within 500 m");
       if (disposed || !panoRef.current) return;
 
-      panorama = new google.maps.StreetViewPanorama(panoRef.current, {
+      panorama = new StreetViewPanorama(panoRef.current, {
         pano: location.pano,
         position: location.latLng,
         pov: { heading: 0, pitch: 0 },
@@ -846,7 +865,11 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       positionListener = panorama.addListener?.("position_changed", publishPosition);
       onReady();
     }).catch((error: unknown) => {
-      if (!disposed) onFallback(error instanceof Error ? `${error.message} · using KartaView fallback` : "Google Street View failed · using KartaView fallback");
+      if (!disposed) {
+        onFallback(error instanceof Error
+          ? `${error.message} · using KartaView fallback`
+          : "Google Street View failed · using KartaView fallback");
+      }
     });
 
     return () => {
@@ -859,34 +882,53 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
   return <div ref={panoRef} className="googleStreetPano"><div className="streetMessage">Loading Google Street View…</div></div>;
 }
 
-function loadGoogleMapsMain(apiKey: string): Promise<any> {
-  if (window.google?.maps && typeof window.google.maps.StreetViewService === "function") return Promise.resolve(window.google);
+function loadGoogleMapsBase(apiKey: string): Promise<any> {
+  if (window.google?.maps && typeof window.google.maps.importLibrary === "function") {
+    return Promise.resolve(window.google);
+  }
   if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
 
   window.__worldSelectGoogleMapsPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    const priorAuthFailure = window.gm_authFailure;
+    const finishError = (message: string) => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(message));
+    };
     const resolveIfReady = () => {
-      if (window.google?.maps && typeof window.google.maps.StreetViewService === "function") resolve(window.google);
-      else reject(new Error("Google Maps loaded without Street View"));
+      if (settled) return;
+      if (window.google?.maps && typeof window.google.maps.importLibrary === "function") {
+        settled = true;
+        resolve(window.google);
+      } else {
+        finishError("Google Maps loaded without dynamic library support");
+      }
+    };
+
+    window.gm_authFailure = () => {
+      try { priorAuthFailure?.(); } catch {}
+      finishError("Google Maps authentication failed for this preview");
     };
 
     const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
     if (existing) {
-      if (window.google?.maps && typeof window.google.maps.StreetViewService === "function") {
-        resolve(window.google);
+      if (window.google?.maps && typeof window.google.maps.importLibrary === "function") {
+        resolveIfReady();
         return;
       }
       existing.addEventListener("load", resolveIfReady, { once: true });
-      existing.addEventListener("error", () => reject(new Error("Google Maps JavaScript API could not be loaded")), { once: true });
+      existing.addEventListener("error", () => finishError("Google Maps JavaScript API could not be loaded"), { once: true });
       return;
     }
 
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&libraries=streetView`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async`;
     script.async = true;
     script.defer = true;
     script.dataset.worldSelectGoogleMaps = "1";
     script.onload = resolveIfReady;
-    script.onerror = () => reject(new Error("Google Maps JavaScript API could not be loaded"));
+    script.onerror = () => finishError("Google Maps JavaScript API could not be loaded");
     document.head.appendChild(script);
   }).catch((reason) => {
     window.__worldSelectGoogleMapsPromise = undefined;
