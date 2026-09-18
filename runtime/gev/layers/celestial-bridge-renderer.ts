@@ -1,10 +1,20 @@
 import type { SpatialEntity } from "@/lib/spatial";
 import { computePlanetPositions, type PlanetPosition } from "@/lib/space";
 
-const MIN_SOLAR_CONTEXT_HEIGHT_M = 11_000_000;
-const ORBIT_SAMPLES = 72;
-const EARTH_RADIUS_M = 6_371_000;
+const AU_METERS = 149_597_870_700;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
+const ORBIT_SAMPLES = 96;
+
+const PLANET_RADIUS_KM: Record<string, number> = {
+  Mercury: 2439.7,
+  Venus: 6051.8,
+  Earth: 6371.0,
+  Mars: 3389.5,
+  Jupiter: 69911,
+  Saturn: 58232,
+  Uranus: 25362,
+  Neptune: 24622,
+};
 
 const ORBIT_PERIOD_DAYS: Record<string, number> = {
   Mercury: 87.969,
@@ -16,14 +26,6 @@ const ORBIT_PERIOD_DAYS: Record<string, number> = {
   Uranus: 30688.5,
   Neptune: 60182,
 };
-
-function normalizedDistance(distanceAu: number) {
-  return Math.max(0, Math.min(1, Math.log10(1 + Math.max(0.02, distanceAu)) / Math.log10(32)));
-}
-
-function revealHeight(distanceAu: number) {
-  return MIN_SOLAR_CONTEXT_HEIGHT_M + normalizedDistance(distanceAu) * 24_000_000;
-}
 
 function earthRelative(body: PlanetPosition, earth: PlanetPosition) {
   return {
@@ -53,50 +55,29 @@ function inertialToFixed(Cesium: any, vector: any, date: Date) {
   return Cesium.Matrix3.multiplyByVector(matrix, vector, new Cesium.Cartesian3());
 }
 
-function displayRadius(distanceAu: number, cameraHeight: number) {
-  const cameraRange = Math.max(cameraHeight + EARTH_RADIUS_M, 18_000_000);
-  const fraction = 0.20 + normalizedDistance(distanceAu) * 0.62;
-  return cameraRange * Math.min(0.82, fraction);
-}
-
-function scenePosition(
+function physicalScenePosition(
   Cesium: any,
-  vector: { x: number; y: number; z: number },
-  distanceAu: number,
+  vectorAu: { x: number; y: number; z: number },
   date: Date,
-  cameraHeight: number,
 ) {
-  const magnitude = Math.hypot(vector.x, vector.y, vector.z);
-  if (magnitude < 1e-8) return Cesium.Cartesian3.ZERO;
-
-  const equatorial = eclipticJ2000ToEquatorial(vector);
-  const inertialDirection = new Cesium.Cartesian3(
-    equatorial.x / magnitude,
-    equatorial.y / magnitude,
-    equatorial.z / magnitude,
+  const equatorial = eclipticJ2000ToEquatorial(vectorAu);
+  const inertialMeters = new Cesium.Cartesian3(
+    equatorial.x * AU_METERS,
+    equatorial.y * AU_METERS,
+    equatorial.z * AU_METERS,
   );
-  const fixedDirection = inertialToFixed(Cesium, inertialDirection, date);
-  return Cesium.Cartesian3.multiplyByScalar(
-    Cesium.Cartesian3.normalize(fixedDirection, new Cesium.Cartesian3()),
-    displayRadius(distanceAu, cameraHeight),
-    new Cesium.Cartesian3(),
-  );
-}
-
-function basePixelSize(name: string) {
-  if (name === "Jupiter") return 9;
-  if (name === "Saturn") return 8;
-  return 6;
+  return inertialToFixed(Cesium, inertialMeters, date);
 }
 
 function bodyColor(name: string) {
-  return name === "Mars" ? "#fb923c"
-    : name === "Venus" ? "#facc15"
-      : name === "Jupiter" ? "#d6b38a"
-        : name === "Saturn" ? "#fde68a"
-          : name === "Uranus" ? "#67e8f9"
-            : name === "Neptune" ? "#818cf8"
-              : "#cbd5e1";
+  return name === "Mercury" ? "#a8a29e"
+    : name === "Venus" ? "#eab308"
+      : name === "Mars" ? "#f97316"
+        : name === "Jupiter" ? "#d6b38a"
+          : name === "Saturn" ? "#fde68a"
+            : name === "Uranus" ? "#67e8f9"
+              : name === "Neptune" ? "#818cf8"
+                : "#cbd5e1";
 }
 
 export function createCelestialBridgeRenderer(input: {
@@ -133,26 +114,27 @@ export function createCelestialBridgeRenderer(input: {
     name: string,
     periodDays: number,
     earth: PlanetPosition,
-    cameraHeight: number,
   ) => {
     const epoch = new Date(earth.entity.observedAt);
-    const heightBucket = Math.round(cameraHeight / 2_000_000);
     const dayKey = Math.floor(epoch.getTime() / 86_400_000);
-    const key = `${dayKey}:${heightBucket}:${name}`;
+    const key = `${dayKey}:${name}`;
     const cached = orbitCache.get(key);
     if (cached) return cached;
 
     const positions: any[] = [];
     for (let index = 0; index <= ORBIT_SAMPLES; index += 1) {
-      const sampleDate = new Date(epoch.getTime() + periodDays * (index / ORBIT_SAMPLES) * 86_400_000);
-      const sample = computePlanetPositions(sampleDate).find((item) => item.entity.name === name);
+      const sampleDate = new Date(
+        epoch.getTime() + periodDays * (index / ORBIT_SAMPLES) * 86_400_000,
+      );
+      const sample = computePlanetPositions(sampleDate).find(
+        (item) => item.entity.name === name,
+      );
       if (!sample) continue;
 
-      // The orbit is sampled through time, but rendered in the current selected-time
-      // celestial frame so the whole curve stays coherent around the native Cesium Sun.
+      // Keep the selected-time Earth as origin. This yields the planet's
+      // heliocentric orbit translated into the current Earth-relative frame.
       const vector = earthRelative(sample, earth);
-      const distanceAu = Math.hypot(vector.x, vector.y, vector.z);
-      positions.push(scenePosition(Cesium, vector, distanceAu, epoch, cameraHeight));
+      positions.push(physicalScenePosition(Cesium, vector, epoch));
     }
 
     orbitCache.set(key, positions);
@@ -167,8 +149,7 @@ export function createCelestialBridgeRenderer(input: {
     showOrbits?: boolean;
   }) => {
     if (destroyed || viewer.isDestroyed?.()) return;
-
-    if (!args.visible || args.cameraHeight < MIN_SOLAR_CONTEXT_HEIGHT_M) {
+    if (!args.visible) {
       clear();
       return;
     }
@@ -180,125 +161,114 @@ export function createCelestialBridgeRenderer(input: {
     }
 
     const epoch = new Date(earth.entity.observedAt);
-    const candidates: Array<{
-      id: string;
-      entity: SpatialEntity;
-      position: any;
-      distanceAu: number;
-      name: string;
-    }> = [];
+    const nextBodyIds = new Set<string>();
 
-    // Do not create a second Sun. Cesium already renders the scene Sun.
     for (const planet of args.planets) {
       if (planet.entity.name === "Earth") continue;
 
       const vector = earthRelative(planet, earth);
       const distanceAu = Math.hypot(vector.x, vector.y, vector.z);
+      const radiusKm = PLANET_RADIUS_KM[planet.entity.name];
+      if (!radiusKm) continue;
+
       const id = `bridge:${planet.entity.id}`;
+      const position = physicalScenePosition(Cesium, vector, epoch);
+      const radiusMeters = radiusKm * 1000;
+      const selected = id === args.selectedId;
 
-      candidates.push({
+      const entity: SpatialEntity = {
+        ...planet.entity,
         id,
-        name: planet.entity.name,
-        distanceAu,
-        position: scenePosition(Cesium, vector, distanceAu, epoch, args.cameraHeight),
-        entity: {
-          ...planet.entity,
-          id,
-          properties: {
-            ...planet.entity.properties,
-            earthRelativeDistanceAu: Number(distanceAu.toFixed(4)),
-            displayFrame: "Earth-relative J2000 celestial context",
-            visualScale: "Distance-aware compressed display scale",
-            sunRepresentation: "Native Cesium scene Sun",
-          },
+        position: {
+          ...planet.entity.position,
+          altitudeMeters: distanceAu * AU_METERS,
         },
-      });
-    }
+        properties: {
+          ...planet.entity.properties,
+          physicalRadiusKm: radiusKm,
+          physicalDiameterKm: radiusKm * 2,
+          earthRelativeDistanceAu: Number(distanceAu.toFixed(6)),
+          earthRelativeDistanceKm: Math.round(distanceAu * AU_METERS / 1000),
+          displayFrame: "Earth-relative J2000 celestial context",
+          bodyScale: "Physical radius in meters",
+          locatorMarker: "UI locator only; not body size",
+          sunRepresentation: "Native Cesium scene Sun",
+        },
+      };
 
-    const visibleBodies = candidates.filter(
-      (target) => args.cameraHeight >= revealHeight(target.distanceAu),
-    );
-    const nextBodyIds = new Set(visibleBodies.map((target) => target.id));
+      entityRegistry.set(id, entity);
+      bodyIds.add(id);
+      nextBodyIds.add(id);
+
+      let item = viewer.entities.getById(id);
+      if (!item) {
+        item = viewer.entities.add({
+          id,
+          position,
+          ellipsoid: {
+            radii: new Cesium.Cartesian3(radiusMeters, radiusMeters, radiusMeters),
+            material: Cesium.Color.fromCssColorString(bodyColor(planet.entity.name)).withAlpha(0.96),
+            outline: selected,
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: selected ? 2 : 1,
+          },
+          point: {
+            pixelSize: selected ? 7 : 4,
+            color: Cesium.Color.fromCssColorString(bodyColor(planet.entity.name)).withAlpha(0.62),
+            outlineColor: Cesium.Color.WHITE.withAlpha(0.78),
+            outlineWidth: selected ? 2 : 1,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: `${planet.entity.name.toUpperCase()} · LOCATOR`,
+            font: '700 10px "Segoe UI", Arial, sans-serif',
+            fillColor: Cesium.Color.fromCssColorString("#e2e8f0"),
+            outlineColor: Cesium.Color.fromCssColorString("#020617"),
+            outlineWidth: 3,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            pixelOffset: new Cesium.Cartesian2(9, -9),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        });
+      } else {
+        item.position = new Cesium.ConstantPositionProperty(position);
+        if (item.ellipsoid) {
+          item.ellipsoid.radii = new Cesium.ConstantProperty(
+            new Cesium.Cartesian3(radiusMeters, radiusMeters, radiusMeters),
+          );
+          item.ellipsoid.outline = new Cesium.ConstantProperty(selected);
+          item.ellipsoid.outlineWidth = new Cesium.ConstantProperty(selected ? 2 : 1);
+        }
+        if (item.point) {
+          item.point.pixelSize = new Cesium.ConstantProperty(selected ? 7 : 4);
+        }
+      }
+    }
 
     for (const id of Array.from(bodyIds)) {
       if (!nextBodyIds.has(id)) removeBody(id);
     }
 
-    for (const target of visibleBodies) {
-      entityRegistry.set(target.id, target.entity);
-      bodyIds.add(target.id);
-
-      const threshold = revealHeight(target.distanceAu);
-      const revealProgress = Math.max(
-        0,
-        Math.min(1, (args.cameraHeight - threshold) / Math.max(6_000_000, threshold * 0.55)),
-      );
-      const base = basePixelSize(target.name);
-      const pixelSize = base * (0.62 + revealProgress * 0.55);
-      const selected = target.id === args.selectedId;
-
-      let item = viewer.entities.getById(target.id);
-      if (!item) {
-        item = viewer.entities.add({
-          id: target.id,
-          position: target.position,
-          point: {
-            pixelSize: selected ? pixelSize + 4 : pixelSize,
-            color: Cesium.Color.fromCssColorString(bodyColor(target.name)),
-            outlineColor: Cesium.Color.fromCssColorString("#020617"),
-            outlineWidth: selected ? 3 : 1.5,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          },
-          label: {
-            text: target.name.toUpperCase(),
-            font: '700 11px "Segoe UI", Arial, sans-serif',
-            fillColor: Cesium.Color.fromCssColorString("#e2e8f0"),
-            outlineColor: Cesium.Color.fromCssColorString("#020617"),
-            outlineWidth: 3,
-            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-            pixelOffset: new Cesium.Cartesian2(10, -10),
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          },
-        });
-      } else {
-        item.position = new Cesium.ConstantPositionProperty(target.position);
-        if (item.point) {
-          item.point.pixelSize = new Cesium.ConstantProperty(selected ? pixelSize + 4 : pixelSize);
-          item.point.outlineWidth = new Cesium.ConstantProperty(selected ? 3 : 1.5);
-        }
-      }
-    }
-
     const wantedOrbitIds = new Set<string>();
     if (args.showOrbits) {
       for (const planet of args.planets) {
-        const vector = earthRelative(planet, earth);
-        const distanceAu = Math.hypot(vector.x, vector.y, vector.z);
-        if (args.cameraHeight < revealHeight(distanceAu)) continue;
-
         const periodDays = ORBIT_PERIOD_DAYS[planet.entity.name];
         if (!periodDays) continue;
 
         const orbitId = `bridge-orbit:${planet.entity.name.toLowerCase()}`;
         wantedOrbitIds.add(orbitId);
-
-        const positions = orbitPositions(
-          planet.entity.name,
-          periodDays,
-          earth,
-          args.cameraHeight,
-        );
-
+        const positions = orbitPositions(planet.entity.name, periodDays, earth);
         const existing = viewer.entities.getById(orbitId);
+
         if (!existing) {
           viewer.entities.add({
             id: orbitId,
             polyline: {
               positions,
-              width: planet.entity.name === "Earth" ? 1.8 : 1,
+              width: planet.entity.name === "Earth" ? 1.7 : 1,
               material: Cesium.Color.fromCssColorString(
                 planet.entity.name === "Earth" ? "#38bdf8" : "#94a3b8",
-              ).withAlpha(planet.entity.name === "Earth" ? 0.48 : 0.24),
+              ).withAlpha(planet.entity.name === "Earth" ? 0.48 : 0.25),
               arcType: Cesium.ArcType.NONE,
             },
           });

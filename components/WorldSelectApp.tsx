@@ -700,7 +700,7 @@ export default function WorldSelectApp() {
         <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="AUTO near ground · OSM roads + modeled vehicles · TomTom when available" state={trafficState} count={trafficVehicleCount} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
         <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>
           <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth"} onChange={(event) => setPlanetOrbits(event.target.checked)} />
-          <span><strong>Planet orbits</strong><small>Approximate JPL elements · visible by scale</small></span>
+          <span><strong>Planet orbits</strong><small>Approximate JPL elements · physical AU/m scale</small></span>
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">
@@ -778,7 +778,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>{viewMode === "earth" && cameraHeight >= 12_000_000 ? "EARTH · DEEP ZOOM · distance-aware solar context" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
+        <span>{viewMode === "earth" && cameraHeight >= 12_000_000 ? "EARTH · DEEP ZOOM · physical planet distance + size" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
       </footer>
     </main>
   );
