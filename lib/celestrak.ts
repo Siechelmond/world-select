@@ -77,3 +77,26 @@ export function propagateTleOrbit(record: TleRecord, at: Date, samples = 160): A
     return [];
   }
 }
+
+export function propagateTleOrbitEcf(record: TleRecord, at: Date, samples = 180): Array<{ x: number; y: number; z: number }> {
+  try {
+    const satrec = satellite.twoline2satrec(record.line1, record.line2);
+    const meanMotion = Number(record.line2.slice(52, 63).trim());
+    const periodMinutes = Number.isFinite(meanMotion) && meanMotion > 0 ? Math.max(60, Math.min(1600, 1440 / meanMotion)) : 96;
+    const periodMs = periodMinutes * 60_000;
+    const gmstAtBake = satellite.gstime(at);
+    const points: Array<{ x: number; y: number; z: number }> = [];
+    for (let index = 0; index <= samples; index += 1) {
+      const time = new Date(at.getTime() + (index / samples - 0.5) * periodMs);
+      const propagated = satellite.propagate(satrec, time);
+      if (!propagated?.position || typeof propagated.position === "boolean") continue;
+      const ecf = satellite.eciToEcf(propagated.position, gmstAtBake);
+      if ([ecf.x, ecf.y, ecf.z].every(Number.isFinite)) {
+        points.push({ x: ecf.x * 1000, y: ecf.y * 1000, z: ecf.z * 1000 });
+      }
+    }
+    return points;
+  } catch {
+    return [];
+  }
+}

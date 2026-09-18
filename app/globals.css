@@ -550,3 +550,32 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   color: #ecfeff;
 }
 .google3dToggle:hover { background: rgba(34,211,238,.18); }
+
+
+/* ws-pv Batch 2: clearer live-world interaction and density. */
+.clearSelectionButton {
+  margin-left: auto;
+  border: 1px solid rgba(148,163,184,.25);
+  background: rgba(15,23,42,.72);
+  color: #cbd5e1;
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 8px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.issLiveHover {
+  width: min(430px, calc(100vw - 24px));
+  pointer-events: auto;
+}
+.issLiveFrame iframe { pointer-events: auto; }
+.issLiveHeadActions { display: flex; align-items: center; gap: 6px; }
+.issLiveHeadActions button {
+  border: 1px solid rgba(148,163,184,.28);
+  background: rgba(15,23,42,.84);
+  color: #e2e8f0;
+  border-radius: 7px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+}

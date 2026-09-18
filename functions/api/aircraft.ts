@@ -27,9 +27,9 @@ type Attempt = {
   authMode?: "anonymous" | "oauth" | "anonymous-fallback";
 };
 
-const OPEN_SKY_TOKEN_TIMEOUT_MS = 12_000;
-const OPEN_SKY_STATES_TIMEOUT_MS = 12_000;
-const ADSB_LOL_TIMEOUT_MS = 7_000;
+const OPEN_SKY_TOKEN_TIMEOUT_MS = 5_000;
+const OPEN_SKY_STATES_TIMEOUT_MS = 5_000;
+const ADSB_LOL_TIMEOUT_MS = 4_500;
 const OPEN_SKY_MAX_SOURCE_AGE_SECONDS = 120;
 const FRESH_EDGE_CACHE_MS = 30_000;
 const OPEN_SKY_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
@@ -286,7 +286,7 @@ export const onRequestGet = async (context: { request: Request; env: Env; waitUn
   const modeForOpenSky = openSkyMode(context.env);
   const providerOrder: ProviderName[] = modeForOpenSky === "disabled"
     ? ["adsb.lol"]
-    : ["opensky", "adsb.lol"];
+    : ["adsb.lol", "opensky"];
 
   let firstNonEmptyStale: ProviderResult | null = null;
   let selected: ProviderResult | null = null;

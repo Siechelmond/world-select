@@ -4,7 +4,7 @@ import Script from "next/script";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SpatialEntity } from "@/lib/spatial";
 import { createCoreLiveWorld } from "@/runtime/gev/core-live-world";
-import { propagateTles, propagateTleOrbit, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
+import { propagateTles, propagateTleOrbitEcf, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
 import { projectAircraftPosition, type AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
@@ -13,6 +13,16 @@ import SpaceExplorer from "@/components/SpaceExplorer";
 import { createWorldViewer } from "@/lib/cesium-viewer";
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
 import { fetchTrafficStatus, type TrafficStatus } from "@/lib/traffic";
+import {
+  advanceModeledVehicles,
+  buildModeledFlows,
+  fetchRoads,
+  generateModeledVehicles,
+  getCongestionColor,
+  type FlowSegment,
+  type ModeledVehicle,
+  type RoadSegment,
+} from "@/lib/traffic-vector";
 import { resolveLayerState, type LayerLoadState as LoadState } from "@/lib/layer-runtime";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any> } }
@@ -49,6 +59,10 @@ export default function WorldSelectApp() {
   const aircraftCoverageRef = useRef<any>(null);
   const satelliteOrbitRef = useRef<any>(null);
   const viewerLifecycleRef = useRef<ReturnType<typeof createWorldViewer> | null>(null);
+  const trafficVehicleCollectionRef = useRef<any>(null);
+  const trafficRoadCollectionRef = useRef<any>(null);
+  const trafficVectorAbortRef = useRef<AbortController | null>(null);
+  const trafficVehicleTimerRef = useRef<number | null>(null);
   const coreRuntimeRef = useRef<ReturnType<typeof createCoreLiveWorld> | null>(null);
 
   const [cesiumReady, setCesiumReady] = useState(false);
@@ -62,7 +76,7 @@ export default function WorldSelectApp() {
   const [satelliteCatalog, setSatelliteCatalog] = useState<SatelliteCatalog>("core");
   const [aircraftLayer, setAircraftLayer] = useState(true);
   const [militaryLayer, setMilitaryLayer] = useState(true);
-  const [trafficLayer, setTrafficLayer] = useState(false);
+  const [trafficLayer, setTrafficLayer] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>("earth");
   const [earthquakeState, setEarthquakeState] = useState<LoadState>("idle");
   const [satelliteState, setSatelliteState] = useState<LoadState>("idle");
@@ -72,13 +86,18 @@ export default function WorldSelectApp() {
   const [militaryMeta, setMilitaryMeta] = useState<MilitaryFeedMeta | null>(null);
   const [trafficState, setTrafficState] = useState<LoadState>("idle");
   const [trafficStatus, setTrafficStatus] = useState<TrafficStatus | null>(null);
+  const [trafficVehicleCount, setTrafficVehicleCount] = useState(0);
   const [viewCenter, setViewCenter] = useState<EarthPoint>(INITIAL_CENTER);
   const [cameraHeight, setCameraHeight] = useState(9_500_000);
   const [followAircraft, setFollowAircraft] = useState(false);
   const [selected, setSelected] = useState<SpatialEntity | null>(null);
   const [hovered, setHovered] = useState<SpatialEntity | null>(null);
   const [hoveredScreen, setHoveredScreen] = useState<{ x: number; y: number } | null>(null);
+  const [issPreview, setIssPreview] = useState<{ entity: SpatialEntity; screen: { x: number; y: number } | null } | null>(null);
   const [timeOffsetDays, setTimeOffsetDays] = useState(0);
+  const [spacePlaybackDays, setSpacePlaybackDays] = useState(0);
+  const [spacePlaybackRate, setSpacePlaybackRate] = useState(7);
+  const [spacePlaying, setSpacePlaying] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("none");
   const [layerErrors, setLayerErrors] = useState<LayerError>({});
@@ -91,8 +110,8 @@ export default function WorldSelectApp() {
   const [reloadNonce, setReloadNonce] = useState({ earthquakes: 0, satellites: 0, aircraft: 0, traffic: 0 });
 
   const selectedTime = useMemo(
-    () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + timeOffsetDays * DAY_MS),
-    [timeOffsetDays, nowTick],
+    () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
+    [timeOffsetDays, spacePlaybackDays, nowTick],
   );
   const satellites = useMemo(() => propagateTles(tleRecords, selectedTime), [tleRecords, selectedTime]);
   const planets = useMemo(() => computePlanetPositions(selectedTime), [selectedTime]);
@@ -102,6 +121,16 @@ export default function WorldSelectApp() {
     ...(aircraftLayer ? aircraft : []),
     ...(militaryLayer ? military : []),
   ], [aircraftLayer, aircraft, militaryLayer, military]);
+  const renderedAircraft = useMemo(() => {
+    const budget = cameraHeight > 2_000_000 ? 180 : cameraHeight > 500_000 ? 260 : 420;
+    return [...visibleAircraft]
+      .sort((a, b) => {
+        const da = (a.position.latitude - viewCenter.latitude) ** 2 + (a.position.longitude - viewCenter.longitude) ** 2;
+        const db = (b.position.latitude - viewCenter.latitude) ** 2 + (b.position.longitude - viewCenter.longitude) ** 2;
+        return da - db;
+      })
+      .slice(0, budget);
+  }, [visibleAircraft, cameraHeight, viewCenter.latitude, viewCenter.longitude]);
   const aircraftQueryCenter = useMemo(() => {
     const step = cameraHeight < 300_000 ? 0.05 : cameraHeight < 2_000_000 ? 0.15 : 0.35;
     return {
@@ -136,6 +165,25 @@ export default function WorldSelectApp() {
     const timer = window.setInterval(() => setNowTick(Date.now()), isMobile ? MOBILE_SATELLITE_TICK_MS : SATELLITE_TICK_MS);
     return () => window.clearInterval(timer);
   }, [satelliteLayer, aircraftLayer, militaryLayer, animateAircraft, timeOffsetDays, isMobile]);
+
+  useEffect(() => {
+    if (viewMode !== "space" || !spacePlaying) return;
+    const tickMs = 250;
+    const timer = window.setInterval(() => {
+      setSpacePlaybackDays((days) => days + spacePlaybackRate * (tickMs / 1000));
+    }, tickMs);
+    return () => window.clearInterval(timer);
+  }, [viewMode, spacePlaying, spacePlaybackRate]);
+
+  useEffect(() => {
+    if (viewMode !== "space" && spacePlaying) setSpacePlaying(false);
+  }, [viewMode, spacePlaying]);
+
+  useEffect(() => {
+    if (hovered?.kind === "satellite" && /ISS.*ZARYA|^ISS\b/i.test(hovered.name)) {
+      setIssPreview({ entity: hovered, screen: hoveredScreen });
+    }
+  }, [hovered, hoveredScreen]);
 
   useEffect(() => {
     const runtime = createCoreLiveWorld();
@@ -182,24 +230,34 @@ export default function WorldSelectApp() {
   }, [satelliteCatalog]);
 
   useEffect(() => {
-    if (!trafficLayer || viewMode !== "earth") return;
+    if (!trafficLayer || viewMode !== "earth" || cameraHeight >= 180_000) {
+      if (trafficLayer && viewMode === "earth") setTrafficState("idle");
+      return;
+    }
     const controller = new AbortController();
     setTrafficState("loading");
     setLayerError("traffic");
     fetchTrafficStatus(controller.signal)
       .then((status) => {
+        if (controller.signal.aborted) return;
         setTrafficStatus(status);
-        const usable = status.configured && status.available;
-        setTrafficState(usable ? "ready" : "error");
-        setLayerError("traffic", usable ? undefined : (status.message || "Traffic source unavailable"));
+        if (status.configured && status.available) {
+          setTrafficState("ready");
+          setLayerError("traffic");
+        } else {
+          setTrafficState("degraded");
+          setLayerError("traffic", "Live TomTom flow unavailable · loading OSM road geometry + modeled vehicles");
+        }
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
-        setTrafficState("error");
-        setLayerError("traffic", reason instanceof Error ? reason.message : "Traffic status error");
+        setTrafficState("degraded");
+        setLayerError("traffic", reason instanceof Error
+          ? `${reason.message} · loading OSM road geometry + modeled vehicles`
+          : "Live traffic status unavailable · loading OSM road geometry + modeled vehicles");
       });
     return () => controller.abort();
-  }, [trafficLayer, viewMode, reloadNonce.traffic, setLayerError]);
+  }, [trafficLayer, viewMode, cameraHeight, reloadNonce.traffic, setLayerError]);
 
   useEffect(() => {
     if (!cesiumReady || !containerRef.current || !window.Cesium || viewerRef.current) return;
@@ -232,7 +290,7 @@ export default function WorldSelectApp() {
 
   useEffect(() => {
     if (viewMode !== "earth") return;
-    viewerLifecycleRef.current?.setMapStyle(cameraHeight < GROUND_HEIGHT_M ? "ground" : "earth");
+    viewerLifecycleRef.current?.setMapStyle(cameraHeight < 350_000 ? "ground" : "earth");
   }, [cameraHeight, viewMode]);
 
   const clearIds = useCallback((ids: Set<string>) => {
@@ -328,15 +386,14 @@ export default function WorldSelectApp() {
     if (viewMode !== "earth" || !satelliteLayer) return;
     const issRecord = tleRecords.find((record) => /ISS.*ZARYA|^ISS\b/i.test(record.name));
     if (!issRecord) return;
-    const orbit = propagateTleOrbit(issRecord, new Date(), 160);
+    const orbit = propagateTleOrbitEcf(issRecord, new Date(), 180);
     if (orbit.length < 2) return;
     satelliteOrbitRef.current = viewer.entities.add({
       id: "iss-live-orbit",
       polyline: {
-        positions: orbit.map((point) => Cesium.Cartesian3.fromDegrees(point.longitude, point.latitude, point.altitudeMeters)),
+        positions: orbit.map((point) => new Cesium.Cartesian3(point.x, point.y, point.z)),
         width: 2.4,
         material: Cesium.Color.fromCssColorString("#67e8f9").withAlpha(0.58),
-        arcType: Cesium.ArcType.NONE,
       },
     });
     return () => {
@@ -361,27 +418,14 @@ export default function WorldSelectApp() {
       return;
     }
 
-    // Make the real CIVIL query footprint explicit. Military is a separate global source.
-    if (aircraftLayer) aircraftCoverageRef.current = viewer.entities.add({
-      id: "aircraft-query-coverage",
-      position: Cesium.Cartesian3.fromDegrees(aircraftQueryCenter.longitude, aircraftQueryCenter.latitude, 0),
-      ellipse: {
-        semiMajorAxis: aircraftRadiusNm * 1852,
-        semiMinorAxis: aircraftRadiusNm * 1852,
-        material: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.035),
-        outline: true,
-        outlineColor: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.35),
-        height: 0,
-      },
-    });
-
+    // Query coverage remains in source metadata; do not paint an ambiguous yellow footprint on the globe.
     const liveIds = new Set<string>();
     const selectedAircraftId = selected?.kind === "aircraft" ? selected.id : null;
 
-    for (const spatial of visibleAircraft) {
+    for (const spatial of renderedAircraft) {
       liveIds.add(spatial.id);
       const isSelected = spatial.id === selectedAircraftId;
-      const canProject = spatial.dataState !== "STALE" && (animateAircraft || isSelected);
+      const canProject = spatial.dataState !== "STALE" && followAircraft && isSelected;
       const projected = canProject ? projectAircraftPosition(spatial, nowTick) : spatial.position;
       const displayEntity: SpatialEntity = {
         ...spatial,
@@ -467,7 +511,7 @@ export default function WorldSelectApp() {
         aircraftCoverageRef.current = null;
       }
     };
-  }, [visibleAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, clearIds, cesiumReady, nowTick, animateAircraft, cameraHeight, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, selected]);
+  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, clearIds, cesiumReady, nowTick, animateAircraft, cameraHeight, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, selected, followAircraft]);
 
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
@@ -548,6 +592,115 @@ export default function WorldSelectApp() {
   }, [trafficLayer, trafficStatus?.configured, trafficStatus?.available, viewMode, cesiumReady]);
 
   useEffect(() => {
+    const viewer = viewerRef.current;
+    const Cesium = window.Cesium;
+
+    const clearVector = () => {
+      trafficVectorAbortRef.current?.abort();
+      trafficVectorAbortRef.current = null;
+      if (trafficVehicleTimerRef.current != null) {
+        window.clearInterval(trafficVehicleTimerRef.current);
+        trafficVehicleTimerRef.current = null;
+      }
+      if (viewerRef.current && trafficVehicleCollectionRef.current) {
+        try { viewerRef.current.scene.primitives.remove(trafficVehicleCollectionRef.current); } catch {}
+        trafficVehicleCollectionRef.current = null;
+      }
+      if (viewerRef.current && trafficRoadCollectionRef.current) {
+        try { viewerRef.current.scene.primitives.remove(trafficRoadCollectionRef.current); } catch {}
+        trafficRoadCollectionRef.current = null;
+      }
+      setTrafficVehicleCount(0);
+    };
+
+    if (!viewer || !Cesium || !trafficLayer || viewMode !== "earth" || cameraHeight >= 180_000) {
+      clearVector();
+      return;
+    }
+
+    clearVector();
+    const controller = new AbortController();
+    trafficVectorAbortRef.current = controller;
+    setTrafficState("loading");
+
+    let roads: RoadSegment[] = [];
+    let flows: FlowSegment[] = [];
+    let vehicles: ModeledVehicle[] = [];
+    const roadCollection = new Cesium.PolylineCollection();
+    const vehicleCollection = new Cesium.PointPrimitiveCollection();
+    viewer.scene.primitives.add(roadCollection);
+    viewer.scene.primitives.add(vehicleCollection);
+    trafficRoadCollectionRef.current = roadCollection;
+    trafficVehicleCollectionRef.current = vehicleCollection;
+
+    const renderVehicles = () => {
+      vehicleCollection.removeAll();
+      const flowMap = new Map(flows.map((item) => [item.roadId, item]));
+      for (const vehicle of vehicles) {
+        const flow = flowMap.get(vehicle.roadId);
+        vehicleCollection.add({
+          position: Cesium.Cartesian3.fromDegrees(vehicle.position.longitude, vehicle.position.latitude, 8),
+          pixelSize: cameraHeight < 30_000 ? 4 : 3,
+          color: Cesium.Color.fromCssColorString(getCongestionColor(flow?.congestion ?? "free-flow")),
+          outlineColor: Cesium.Color.fromCssColorString("#020617"),
+          outlineWidth: 1,
+          disableDepthTestDistance: 5_000,
+        });
+      }
+      setTrafficVehicleCount(vehicles.length);
+      viewer.scene.requestRender?.();
+    };
+
+    fetchRoads(viewCenter.latitude, viewCenter.longitude, cameraHeight < 35_000 ? 5 : 8, controller.signal)
+      .then((nextRoads) => {
+        if (controller.signal.aborted) return;
+        roads = nextRoads.slice(0, 500);
+        flows = buildModeledFlows(roads);
+        vehicles = generateModeledVehicles(roads, flows, 260);
+        const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
+        for (const road of roads) {
+          if (road.coordinates.length < 2) continue;
+          roadCollection.add({
+            positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, 5)),
+            width: road.highway === "motorway" || road.highway === "trunk" ? 3 : 2,
+            material: Cesium.Material.fromType("Color", {
+              color: Cesium.Color.fromCssColorString(getCongestionColor(flowMap.get(road.id)?.congestion ?? "free-flow")).withAlpha(0.82),
+            }),
+          });
+        }
+        renderVehicles();
+        setTrafficState(roads.length ? (trafficStatus?.available ? "ready" : "degraded") : "error");
+        setLayerError("traffic", roads.length
+          ? (trafficStatus?.available
+              ? "Live TomTom flow available · OSM road geometry + modeled vehicle context"
+              : "OSM road geometry + modeled vehicle context · live flow unavailable")
+          : "No OSM road geometry returned for this viewport");
+        if (vehicles.length) {
+          trafficVehicleTimerRef.current = window.setInterval(() => {
+            vehicles = advanceModeledVehicles(vehicles, roads, flows, 0.25);
+            renderVehicles();
+          }, 250);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) return;
+        setTrafficState("error");
+        setLayerError("traffic", reason instanceof Error ? reason.message : "OSM road geometry unavailable");
+      });
+
+    return clearVector;
+  }, [
+    trafficLayer,
+    viewMode,
+    cameraHeight,
+    viewCenter.latitude,
+    viewCenter.longitude,
+    trafficStatus?.available,
+    reloadNonce.traffic,
+    setLayerError,
+  ]);
+
+  useEffect(() => {
     if (viewMode === "earth") return;
     clearIds(quakeIdsRef.current); clearIds(satIdsRef.current); clearIds(aircraftIdsRef.current);
   }, [viewMode, clearIds]);
@@ -567,12 +720,14 @@ export default function WorldSelectApp() {
   const flyEarth = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
     setViewMode("earth"); setFollowAircraft(false);
+    viewerLifecycleRef.current?.setMapStyle("earth");
     viewerRef.current.camera.flyTo({ destination: window.Cesium.Cartesian3.fromDegrees(viewCenter.longitude, viewCenter.latitude, 6_500_000), duration: 1.0 });
   }, [viewCenter.latitude, viewCenter.longitude]);
 
   const flyGround = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
     setViewMode("earth"); setFollowAircraft(false);
+    viewerLifecycleRef.current?.setMapStyle("ground");
     viewerRef.current.camera.flyTo({
       destination: window.Cesium.Cartesian3.fromDegrees(viewCenter.longitude, viewCenter.latitude, 18_000),
       orientation: { heading: 0, pitch: window.Cesium.Math.toRadians(-48), roll: 0 }, duration: 1.2,
@@ -630,13 +785,18 @@ export default function WorldSelectApp() {
   }, [viewMode, loadKartaViewStreet, setLayerError]);
 
   const closeStreet = () => { setStreetOpen(false); setMobilePanel("none"); };
+  const clearSelection = useCallback(() => {
+    setSelected(null);
+    setFollowAircraft(false);
+    if (viewerRef.current?.trackedEntity) viewerRef.current.trackedEntity = undefined;
+  }, []);
   const addAnnotation = () => {
     const label = window.prompt("Annotation label", "Marker");
     if (!label?.trim()) return;
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     setAnnotations((current) => [...current, { id, latitude: streetPoint.latitude, longitude: streetPoint.longitude, label: label.trim().slice(0, 48) }]);
   };
-  const resetTime = () => { setTimeOffsetDays(0); setNowTick(Date.now()); };
+  const resetTime = () => { setTimeOffsetDays(0); setSpacePlaybackDays(0); setSpacePlaying(false); setNowTick(Date.now()); };
   const retryLayer = (layer: "earthquakes" | "satellites" | "aircraft" | "military" | "traffic") => {
     if (layer === "traffic") {
       setReloadNonce((current) => ({ ...current, traffic: current.traffic + 1 }));
@@ -689,9 +849,9 @@ export default function WorldSelectApp() {
           <button className={satelliteCatalog === "core" ? "active" : ""} onClick={() => setSatelliteCatalog("core")}>CORE</button>
           <button className={satelliteCatalog === "dense" ? "active" : ""} onClick={() => setSatelliteCatalog("dense")}>DENSE</button>
         </div>
-        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "OpenSky / adsb.lol"} · ${aircraftRadiusNm} NM · ${animateAircraft ? "bounded motion" : "zoom in for motion"}` : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
+        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · ${aircraftRadiusNm} NM · ${renderedAircraft.length}/${visibleAircraft.length} displayed` : "NOW only"} state={aircraftState} count={aircraftAvailable ? aircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
         <LayerToggle checked={militaryLayer} onChange={toggleMilitaryLayer} onRetry={() => retryLayer("military")} title="Military" subtitle={aircraftAvailable ? `ADSB.lol · global military snapshot · ${militaryMeta?.stale ? "last-good" : "live"}` : "NOW only"} state={militaryState} count={aircraftAvailable ? military.length : 0} disabled={!aircraftAvailable} error={layerErrors.military} />
-        <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="Ground traffic flow · loads on demand" state={trafficState} count={0} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
+        <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="AUTO near ground · OSM roads + modeled vehicles · TomTom when available" state={trafficState} count={trafficVehicleCount} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
         <div className="spaceLayerSummary">
           <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "SPACE"}</em>
           <span>Ground map</span><em>ESRI STREET + DE LABELS · AUTO ON ZOOM</em>
@@ -704,18 +864,25 @@ export default function WorldSelectApp() {
       <section className={`inspector glass ${mobilePanel === "inspector" ? "mobileOpen" : ""}`}>
         <div className="panelHead"><p className="panelLabel">INSPECTOR</p><button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button></div>
         {selected
-          ? <Inspector entity={selected} onFocus={focusSelected} onStreet={openStreet} onAnnotate={addAnnotation} followAircraft={followAircraft} onToggleFollow={() => setFollowAircraft((v) => !v)} />
+          ? <Inspector entity={selected} onFocus={focusSelected} onStreet={openStreet} onAnnotate={addAnnotation} onClear={clearSelection} followAircraft={followAircraft} onToggleFollow={() => setFollowAircraft((v) => !v)} />
           : <div className="emptyState"><div className="reticle">+</div><p>Select an earthquake, satellite, aircraft or planet.</p><div className="emptyActions"><button className="streetButton" onClick={openStreet} disabled={viewMode !== "earth"}>Open street level here</button><button className="annotationButton" onClick={addAnnotation} disabled={viewMode !== "earth"}>Mark this location</button></div></div>}
       </section>
 
-      <section className={`timebar glass ${mobilePanel === "time" ? "mobileOpen" : ""}`}>
+      <section className={`timebar glass ${viewMode === "space" ? "spaceTimebar" : ""} ${mobilePanel === "time" ? "mobileOpen" : ""}`}>
         <button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button>
         <div><p className="panelLabel">TIME</p><strong>{selectedTime.toLocaleString()}</strong></div>
-        <input aria-label="Time offset in days" type="range" min={-365} max={365} step={1} value={timeOffsetDays} onChange={(e) => setTimeOffsetDays(Number(e.target.value))} />
-        <div className="timeActions"><span>{timeOffsetDays > 0 ? `+${timeOffsetDays}` : timeOffsetDays} days</span><button onClick={resetTime}>NOW</button></div>
+        <input aria-label="Time offset in days" type="range" min={-365} max={365} step={1} value={timeOffsetDays} onChange={(e) => { setTimeOffsetDays(Number(e.target.value)); setSpacePlaybackDays(0); }} />
+        <div className="timeActions">
+          <span>{(timeOffsetDays + spacePlaybackDays) > 0 ? `+${(timeOffsetDays + spacePlaybackDays).toFixed(spacePlaybackDays ? 1 : 0)}` : (timeOffsetDays + spacePlaybackDays).toFixed(spacePlaybackDays ? 1 : 0)} days</span>
+          {viewMode === "space" && <div className="spaceTimePlayback" role="group" aria-label="Space time playback">
+            <button className={spacePlaying ? "active" : ""} onClick={() => setSpacePlaying((playing) => !playing)}>{spacePlaying ? "PAUSE" : "PLAY"}</button>
+            {[1, 7, 30].map((rate) => <button key={rate} className={spacePlaybackRate === rate ? "active" : ""} onClick={() => setSpacePlaybackRate(rate)}>{rate}D/S</button>)}
+          </div>}
+          <button onClick={resetTime}>NOW</button>
+        </div>
       </section>
 
-      {!streetOpen && hovered?.kind === "satellite" && /ISS.*ZARYA|^ISS\b/i.test(hovered.name) && <IssLiveHoverCard entity={hovered} screen={hoveredScreen} />}
+      {!streetOpen && issPreview && <IssLiveHoverCard entity={issPreview.entity} screen={issPreview.screen} onClose={() => setIssPreview(null)} />}
 
       {streetOpen && <StreetViewer
         provider={streetProvider} googleApiKey={GOOGLE_MAPS_API_KEY}
@@ -770,17 +937,45 @@ function LayerToggle({ checked, onChange, onRetry, title, subtitle, state, count
   </div>;
 }
 
-function Inspector({ entity, onFocus, onStreet, onAnnotate, followAircraft, onToggleFollow }: { entity: SpatialEntity; onFocus: () => void; onStreet: () => void; onAnnotate: () => void; followAircraft: boolean; onToggleFollow: () => void }) {
+function Inspector({ entity, onFocus, onStreet, onAnnotate, onClear, followAircraft, onToggleFollow }: { entity: SpatialEntity; onFocus: () => void; onStreet: () => void; onAnnotate: () => void; onClear: () => void; followAircraft: boolean; onToggleFollow: () => void }) {
   const rows: Array<[string, string]> = [];
   if (entity.kind === "earthquake") rows.push(["Magnitude", String(entity.properties.magnitude ?? "—")], ["Depth", `${entity.properties.depthKm ?? "—"} km`]);
   else if (entity.kind === "satellite") rows.push(["NORAD", String(entity.properties.noradCatalogNumber ?? "—")], ["Altitude", `${entity.properties.altitudeKm ?? "—"} km`], ["Propagation", String(entity.properties.propagation ?? "—")]);
-  else if (entity.kind === "aircraft") rows.push(["Provider", String(entity.properties.provider ?? "—")], ["Registration", String(entity.properties.registration ?? "—")], ["Type", String(entity.properties.aircraftType ?? "—")], ["Altitude", `${entity.properties.altitudeFt ?? "—"} ft`], ["Speed", `${entity.properties.groundSpeedKt ?? "—"} kt`], ["Track", `${entity.properties.trackDeg ?? "—"}°`], ["Squawk", String(entity.properties.squawk ?? "—")], ["Motion", String(entity.properties.displayPosition ?? entity.properties.renderModel ?? "—")]);
-  else if (entity.kind === "celestial-body") { rows.push(["Distance", `${entity.properties.heliocentricDistanceAu ?? 0} AU`]); if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]); }
+  else if (entity.kind === "aircraft") {
+    const origin = entity.properties.originAirport ?? entity.properties.origin;
+    const destination = entity.properties.destinationAirport ?? entity.properties.destination;
+    rows.push(
+      ["Callsign", entity.name],
+      ["ICAO24", String(entity.properties.hex ?? "—").toUpperCase()],
+      ["Provider", String(entity.properties.provider ?? "—")],
+      ["Coverage", String(entity.properties.coverage ?? "—")],
+      ["Class", String(entity.properties.aircraftClass ?? "—")],
+      ["Military", entity.properties.military ? "YES" : "NO"],
+      ["Registration", String(entity.properties.registration ?? "—")],
+      ["Type", String(entity.properties.aircraftType ?? "—")],
+      ["Route", origin && destination ? `${origin} → ${destination}` : "Not available from current ADS-B source"],
+      ["Altitude", `${entity.properties.altitudeFt ?? "—"} ft`],
+      ["Speed", `${entity.properties.groundSpeedKt ?? "—"} kt`],
+      ["Track", `${entity.properties.trackDeg ?? "—"}°`],
+      ["Squawk", String(entity.properties.squawk ?? "—")],
+      ["Emergency", String(entity.properties.emergency ?? "none")],
+      ["Last seen", entity.properties.seenSeconds != null ? `${entity.properties.seenSeconds}s ago` : "—"],
+      ["Position", String(entity.properties.displayPosition ?? "last observed ADS-B sample")],
+    );
+  } else if (entity.kind === "celestial-body") {
+    if (entity.properties.category) rows.push(["Category", String(entity.properties.category)]);
+    if (entity.properties.parentBody) rows.push(["Parent", String(entity.properties.parentBody)]);
+    if (entity.properties.heliocentricDistanceAu != null) rows.push(["Distance", `${entity.properties.heliocentricDistanceAu} AU`]);
+    if (entity.properties.radiusKm != null) rows.push(["Radius", `${entity.properties.radiusKm} km`]);
+    if (entity.properties.orbitalRadiusKm != null) rows.push(["Orbit radius", `${Number(entity.properties.orbitalRadiusKm).toLocaleString()} km`]);
+    if (entity.properties.orbitalPeriodDays != null) rows.push(["Orbit period", `${entity.properties.orbitalPeriodDays} days`]);
+    if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]);
+  }
   rows.push(["Time", new Date(entity.observedAt).toLocaleString()], ["State", entity.dataState], ["Source", entity.source.label]);
-  return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" ? <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button> : <button className="streetButton" onClick={onStreet}>Street imagery</button>}<button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
+  return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2><button className="clearSelectionButton" onClick={onClear}>CLEAR</button></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" && <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button>}<button className="streetButton" onClick={onStreet}>Street near entity</button><button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
 }
 
-function IssLiveHoverCard({ entity, screen }: { entity: SpatialEntity; screen: { x: number; y: number } | null }) {
+function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; screen: { x: number; y: number } | null; onClose: () => void }) {
   const [ready, setReady] = useState(false);
   useEffect(() => {
     setReady(false);
@@ -790,7 +985,7 @@ function IssLiveHoverCard({ entity, screen }: { entity: SpatialEntity; screen: {
   const left = screen ? `min(${Math.max(12, screen.x + 18)}px, calc(100vw - 340px))` : "calc(50vw - 160px)";
   const top = screen ? `min(${Math.max(90, screen.y + 18)}px, calc(100vh - 245px))` : "120px";
   return <aside className="issLiveHover glass" style={{ left, top }} aria-label="ISS live video preview">
-    <div className="issLiveHead"><span><b>ISS · LIVE 4K</b><small>Sen SpaceTV-1 · muted preview</small></span><em>LIVE</em></div>
+    <div className="issLiveHead"><span><b>ISS · LIVE 4K</b><small>Sen SpaceTV-1 · interactive preview</small></span><div className="issLiveHeadActions"><em>LIVE</em><button type="button" onClick={onClose}>×</button></div></div>
     <div className="issLiveFrame">
       {ready ? <iframe
         src={`https://www.youtube-nocookie.com/embed/${SEN_ISS_LIVE_VIDEO_ID}?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1`}
