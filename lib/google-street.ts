@@ -31,39 +31,70 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
+async function ensureStreetViewLibrary(google: any): Promise<any> {
+  if (!google?.maps) throw new Error('Google Maps loaded without maps library');
+
+  if (typeof google.maps.StreetViewService === 'function' && typeof google.maps.StreetViewPanorama === 'function') {
+    return google;
+  }
+
+  if (typeof google.maps.importLibrary === 'function') {
+    const streetView = await google.maps.importLibrary('streetView');
+    if (typeof google.maps.StreetViewService !== 'function' && typeof streetView?.StreetViewService === 'function') {
+      google.maps.StreetViewService = streetView.StreetViewService;
+    }
+    if (typeof google.maps.StreetViewPanorama !== 'function' && typeof streetView?.StreetViewPanorama === 'function') {
+      google.maps.StreetViewPanorama = streetView.StreetViewPanorama;
+    }
+    if (!google.maps.StreetViewStatus && streetView?.StreetViewStatus) google.maps.StreetViewStatus = streetView.StreetViewStatus;
+    if (!google.maps.StreetViewSource && streetView?.StreetViewSource) google.maps.StreetViewSource = streetView.StreetViewSource;
+    if (!google.maps.StreetViewPreference && streetView?.StreetViewPreference) google.maps.StreetViewPreference = streetView.StreetViewPreference;
+  }
+
+  if (typeof google.maps.StreetViewService !== 'function' || typeof google.maps.StreetViewPanorama !== 'function') {
+    throw new Error('Google Street View library is unavailable');
+  }
+
+  return google;
+}
+
 export function loadGoogleMaps(apiKey: string): Promise<any> {
-  if (window.google?.maps) return Promise.resolve(window.google);
   if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
 
-  const loadPromise = new Promise<any>((resolve, reject) => {
-    const previousAuthFailure = window.gm_authFailure;
-    window.gm_authFailure = () => {
-      previousAuthFailure?.();
-      reject(new Error('Google Maps authentication/referrer check failed'));
-    };
+  const loadPromise = window.google?.maps
+    ? Promise.resolve(window.google)
+    : new Promise<any>((resolve, reject) => {
+        const previousAuthFailure = window.gm_authFailure;
+        window.gm_authFailure = () => {
+          previousAuthFailure?.();
+          reject(new Error('Google Maps authentication/referrer check failed'));
+        };
 
-    const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
-    if (existing) {
-      existing.addEventListener('load', () => window.google?.maps ? resolve(window.google) : reject(new Error('Google Maps loaded without maps library')), { once: true });
-      existing.addEventListener('error', () => reject(new Error('Google Maps JavaScript API could not be loaded')), { once: true });
-      return;
-    }
+        const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
+        if (existing) {
+          existing.addEventListener('load', () => window.google?.maps ? resolve(window.google) : reject(new Error('Google Maps loaded without maps library')), { once: true });
+          existing.addEventListener('error', () => reject(new Error('Google Maps JavaScript API could not be loaded')), { once: true });
+          return;
+        }
 
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async`;
-    script.async = true;
-    script.defer = true;
-    script.dataset.worldSelectGoogleMaps = '1';
-    script.onload = () => window.google?.maps ? resolve(window.google) : reject(new Error('Google Maps loaded without maps library'));
-    script.onerror = () => reject(new Error('Google Maps JavaScript API could not be loaded'));
-    document.head.appendChild(script);
+        const script = document.createElement('script');
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&libraries=streetView`;
+        script.async = true;
+        script.defer = true;
+        script.dataset.worldSelectGoogleMaps = '1';
+        script.onload = () => window.google?.maps ? resolve(window.google) : reject(new Error('Google Maps loaded without maps library'));
+        script.onerror = () => reject(new Error('Google Maps JavaScript API could not be loaded'));
+        document.head.appendChild(script);
+      });
+
+  window.__worldSelectGoogleMapsPromise = withTimeout(
+    loadPromise.then((google) => ensureStreetViewLibrary(google)),
+    GOOGLE_MAPS_LOAD_TIMEOUT_MS,
+    'Google Maps + Street View load',
+  ).catch((reason) => {
+    window.__worldSelectGoogleMapsPromise = undefined;
+    throw reason;
   });
-
-  window.__worldSelectGoogleMapsPromise = withTimeout(loadPromise, GOOGLE_MAPS_LOAD_TIMEOUT_MS, 'Google Maps load')
-    .catch((reason) => {
-      window.__worldSelectGoogleMapsPromise = undefined;
-      throw reason;
-    });
 
   return window.__worldSelectGoogleMapsPromise;
 }
