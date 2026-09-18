@@ -8,6 +8,7 @@ import { createEarthquakeRenderer } from "@/runtime/gev/layers/earthquakes-rende
 import { createSatelliteRenderer } from "@/runtime/gev/layers/satellites-renderer";
 import { createAircraftRenderer } from "@/runtime/gev/layers/aircraft-renderer";
 import { createTrafficController } from "@/runtime/gev/layers/traffic-controller";
+import { createCelestialBridgeRenderer } from "@/runtime/gev/layers/celestial-bridge-renderer";
 import { propagateTles, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
 import type { AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
@@ -45,6 +46,7 @@ export default function WorldSelectApp() {
   const annotationIdsRef = useRef(new Set<string>());
   const viewerLifecycleRef = useRef<ReturnType<typeof createWorldViewer> | null>(null);
   const trafficControllerRef = useRef<ReturnType<typeof createTrafficController> | null>(null);
+  const celestialBridgeRendererRef = useRef<ReturnType<typeof createCelestialBridgeRenderer> | null>(null);
   const coreRuntimeRef = useRef<ReturnType<typeof createCoreLiveWorld> | null>(null);
 
   const [cesiumReady, setCesiumReady] = useState(false);
@@ -277,16 +279,23 @@ export default function WorldSelectApp() {
         setLayerError("traffic", error);
       },
     });
+    celestialBridgeRendererRef.current = createCelestialBridgeRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+    });
 
     return () => {
       earthquakeRendererRef.current?.destroy();
       satelliteRendererRef.current?.destroy();
       aircraftRendererRef.current?.destroy();
       trafficControllerRef.current?.destroy();
+      celestialBridgeRendererRef.current?.destroy();
       earthquakeRendererRef.current = null;
       satelliteRendererRef.current = null;
       aircraftRendererRef.current = null;
       trafficControllerRef.current = null;
+      celestialBridgeRendererRef.current = null;
       lifecycle.destroy();
       viewerLifecycleRef.current = null;
       viewerRef.current = null;
@@ -338,11 +347,15 @@ export default function WorldSelectApp() {
   }, [streetTarget?.latitude, streetTarget?.longitude, viewMode, cesiumReady]);
 
   useEffect(() => {
-    if (viewMode === "earth" && selected?.kind === "celestial-body") {
+    if (
+      viewMode === "earth" &&
+      selected?.kind === "celestial-body" &&
+      !selected.id.startsWith("bridge:")
+    ) {
       setSelected(null);
       setFollowAircraft(false);
     }
-  }, [viewMode, selected?.kind]);
+  }, [viewMode, selected?.kind, selected?.id]);
 
   const switchMapMode = useCallback((mode: WorldMapMode) => {
     setMapMode(mode);
@@ -417,6 +430,15 @@ export default function WorldSelectApp() {
   }, [annotations, viewMode, cesiumReady]);
 
 
+
+  useEffect(() => {
+    celestialBridgeRendererRef.current?.sync({
+      planets,
+      visible: viewMode === "earth",
+      cameraHeight,
+      selectedId: selected?.kind === "celestial-body" ? selected.id : null,
+    });
+  }, [planets, viewMode, cameraHeight, selected?.id, selected?.kind, cesiumReady]);
 
   useEffect(() => {
     trafficControllerRef.current?.sync({
@@ -740,7 +762,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>Earth · Ground · Orbit · Solar System</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
+        <span>{viewMode === "earth" && cameraHeight >= 13_000_000 ? "EARTH · DEEP ZOOM · compressed solar bridge" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
       </footer>
     </main>
   );
