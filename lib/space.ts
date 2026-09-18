@@ -118,3 +118,107 @@ export function sunEntity(date: Date): SpatialEntity {
     properties: { frame: "heliocentric origin", heliocentricDistanceAu: 0 },
   };
 }
+
+export type MoonSpec = {
+  name: string;
+  radiusKm: number;
+  orbitalRadiusKm: number;
+  orbitalPeriodDays: number;
+  color: string;
+};
+
+const PLANET_MOONS: Record<string, MoonSpec[]> = {
+  Earth: [
+    { name: "Moon", radiusKm: 1737.4, orbitalRadiusKm: 384400, orbitalPeriodDays: 27.3217, color: "#d6d3d1" },
+  ],
+  Mars: [
+    { name: "Phobos", radiusKm: 11.3, orbitalRadiusKm: 9376, orbitalPeriodDays: 0.3189, color: "#a8a29e" },
+    { name: "Deimos", radiusKm: 6.2, orbitalRadiusKm: 23463, orbitalPeriodDays: 1.2624, color: "#78716c" },
+  ],
+  Jupiter: [
+    { name: "Io", radiusKm: 1821.6, orbitalRadiusKm: 421700, orbitalPeriodDays: 1.769, color: "#facc15" },
+    { name: "Europa", radiusKm: 1560.8, orbitalRadiusKm: 671100, orbitalPeriodDays: 3.551, color: "#e7e5e4" },
+    { name: "Ganymede", radiusKm: 2634.1, orbitalRadiusKm: 1070400, orbitalPeriodDays: 7.155, color: "#a8a29e" },
+    { name: "Callisto", radiusKm: 2410.3, orbitalRadiusKm: 1882700, orbitalPeriodDays: 16.689, color: "#78716c" },
+  ],
+  Saturn: [
+    { name: "Mimas", radiusKm: 198.2, orbitalRadiusKm: 185539, orbitalPeriodDays: 0.942, color: "#d6d3d1" },
+    { name: "Enceladus", radiusKm: 252.1, orbitalRadiusKm: 238042, orbitalPeriodDays: 1.37, color: "#f8fafc" },
+    { name: "Tethys", radiusKm: 531.1, orbitalRadiusKm: 294672, orbitalPeriodDays: 1.888, color: "#d6d3d1" },
+    { name: "Dione", radiusKm: 561.4, orbitalRadiusKm: 377415, orbitalPeriodDays: 2.737, color: "#cbd5e1" },
+    { name: "Rhea", radiusKm: 763.8, orbitalRadiusKm: 527068, orbitalPeriodDays: 4.518, color: "#d6d3d1" },
+    { name: "Titan", radiusKm: 2574.7, orbitalRadiusKm: 1221870, orbitalPeriodDays: 15.945, color: "#f59e0b" },
+    { name: "Iapetus", radiusKm: 734.5, orbitalRadiusKm: 3560820, orbitalPeriodDays: 79.3215, color: "#a8a29e" },
+  ],
+  Uranus: [
+    { name: "Miranda", radiusKm: 235.8, orbitalRadiusKm: 129390, orbitalPeriodDays: 1.413, color: "#e2e8f0" },
+    { name: "Ariel", radiusKm: 578.9, orbitalRadiusKm: 191020, orbitalPeriodDays: 2.52, color: "#cbd5e1" },
+    { name: "Umbriel", radiusKm: 584.7, orbitalRadiusKm: 266300, orbitalPeriodDays: 4.144, color: "#64748b" },
+    { name: "Titania", radiusKm: 788.9, orbitalRadiusKm: 435910, orbitalPeriodDays: 8.706, color: "#d6d3d1" },
+    { name: "Oberon", radiusKm: 761.4, orbitalRadiusKm: 583520, orbitalPeriodDays: 13.463, color: "#94a3b8" },
+  ],
+  Neptune: [
+    { name: "Triton", radiusKm: 1353.4, orbitalRadiusKm: 354759, orbitalPeriodDays: 5.877, color: "#cbd5e1" },
+    { name: "Nereid", radiusKm: 170, orbitalRadiusKm: 5513818, orbitalPeriodDays: 360.14, color: "#94a3b8" },
+  ],
+};
+
+export function getPlanetMoons(planetName: string): MoonSpec[] {
+  return PLANET_MOONS[planetName] ?? [];
+}
+
+export function moonEntity(parentName: string, moon: MoonSpec, date: Date): SpatialEntity {
+  return {
+    id: `moon:${parentName.toLowerCase()}:${moon.name.toLowerCase()}`,
+    kind: "celestial-body",
+    name: moon.name,
+    position: { longitude: 0, latitude: 0, altitudeMeters: moon.orbitalRadiusKm * 1000 },
+    observedAt: date.toISOString(),
+    dataState: "SIMULATED",
+    source: {
+      id: "world-select-moon-model",
+      label: "NASA fact data + World Select circular orbit visualization",
+    },
+    properties: {
+      category: "moon",
+      parentBody: parentName,
+      radiusKm: moon.radiusKm,
+      orbitalRadiusKm: moon.orbitalRadiusKm,
+      orbitalPeriodDays: moon.orbitalPeriodDays,
+      model: "Circular display orbit for spatial exploration; not a precision ephemeris",
+      visualScale: "Moon distances and sizes expanded for visibility",
+    },
+  };
+}
+
+export type OuterBodySpec = {
+  name: string;
+  distanceAu: number;
+  category: string;
+  color: string;
+};
+
+export const OUTER_BODIES: OuterBodySpec[] = [
+  { name: "Pluto", distanceAu: 39.48, category: "dwarf planet / Kuiper Belt", color: "#d6d3d1" },
+  { name: "Haumea", distanceAu: 43.13, category: "dwarf planet / Kuiper Belt", color: "#e2e8f0" },
+  { name: "Makemake", distanceAu: 45.79, category: "dwarf planet / Kuiper Belt", color: "#f59e0b" },
+  { name: "Eris", distanceAu: 67.67, category: "dwarf planet / scattered disc", color: "#cbd5e1" },
+];
+
+export function outerBodyEntity(spec: OuterBodySpec, date: Date): SpatialEntity {
+  return {
+    id: `outer:${spec.name.toLowerCase()}`,
+    kind: "celestial-body",
+    name: spec.name,
+    position: { longitude: 0, latitude: 0, altitudeMeters: spec.distanceAu * 149_597_870_700 },
+    observedAt: date.toISOString(),
+    dataState: "ESTIMATED",
+    source: { id: "outer-system-reference", label: "NASA/JPL reference orbit scale" },
+    properties: {
+      category: spec.category,
+      heliocentricDistanceAu: spec.distanceAu,
+      model: "Representative orbital scale; current true anomaly is not shown in this view",
+      visualScale: "Kuiper Belt density is illustrative",
+    },
+  };
+}

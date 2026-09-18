@@ -1,5 +1,5 @@
 import { fetchEarthquakes } from "@/lib/usgs";
-import { fetchStationTles, type TleRecord } from "@/lib/celestrak";
+import { fetchStationTles, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
 import { fetchAircraftSnapshot, type AircraftFeedMeta, type AircraftQuery } from "@/lib/aircraft";
 import { fetchMilitarySnapshot, type MilitaryFeedMeta } from "@/lib/military";
 import type { SpatialEntity } from "@/lib/spatial";
@@ -48,6 +48,7 @@ export function createCoreLiveWorld() {
   };
   let started = false;
   let aircraftContext: AircraftQuery | null = null;
+  let satelliteCatalog: SatelliteCatalog = "core";
   const listeners = new Set<(value: CoreLiveWorldSnapshot) => void>();
   const controllers = new Map<CoreLayerKey, AbortController>();
   const timers = new Map<CoreLayerKey, ReturnType<typeof setInterval>>();
@@ -96,7 +97,7 @@ export function createCoreLiveWorld() {
         if (controller.signal.aborted) return false;
         patch("earthquakes", { data, status: "ready", error: undefined, updatedAt: Date.now() });
       } else if (key === "satellites") {
-        const data = await fetchStationTles(controller.signal);
+        const data = await fetchStationTles(controller.signal, satelliteCatalog);
         if (controller.signal.aborted) return false;
         patch("satellites", {
           data,
@@ -177,6 +178,12 @@ export function createCoreLiveWorld() {
       }
       patch(key as never, { enabled: true, status: current.data.length ? "ready" : "loading", error: undefined } as never);
       if (started) void refresh(key);
+    },
+
+    setSatelliteCatalog(catalog: SatelliteCatalog) {
+      if (satelliteCatalog === catalog) return;
+      satelliteCatalog = catalog;
+      if (started && snapshot.satellites.enabled) void refresh("satellites");
     },
 
     setAircraftContext(query: AircraftQuery) {

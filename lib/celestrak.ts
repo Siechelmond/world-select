@@ -13,8 +13,10 @@ function parseTle(text: string): TleRecord[] {
   return out;
 }
 
-export async function fetchStationTles(signal?: AbortSignal): Promise<TleRecord[]> {
-  const response = await fetch("/api/satellites", { signal, cache: "no-store" });
+export type SatelliteCatalog = "core" | "dense";
+
+export async function fetchStationTles(signal?: AbortSignal, catalog: SatelliteCatalog = "core"): Promise<TleRecord[]> {
+  const response = await fetch(`/api/satellites?catalog=${catalog}`, { signal, cache: "no-store" });
   if (!response.ok) throw new Error(`Satellite proxy returned HTTP ${response.status}`);
   return parseTle(await response.text());
 }
@@ -50,4 +52,28 @@ export function propagateTles(records: TleRecord[], at: Date): SpatialEntity[] {
       return [];
     }
   });
+}
+
+
+export function propagateTleOrbit(record: TleRecord, at: Date, samples = 160): Array<{ longitude: number; latitude: number; altitudeMeters: number }> {
+  try {
+    const satrec = satellite.twoline2satrec(record.line1, record.line2);
+    const meanMotion = Number(record.line2.slice(52, 63).trim());
+    const periodMinutes = Number.isFinite(meanMotion) && meanMotion > 0 ? Math.max(60, Math.min(1600, 1440 / meanMotion)) : 96;
+    const periodMs = periodMinutes * 60_000;
+    const points: Array<{ longitude: number; latitude: number; altitudeMeters: number }> = [];
+    for (let index = 0; index <= samples; index += 1) {
+      const time = new Date(at.getTime() + (index / samples - 0.5) * periodMs);
+      const propagated = satellite.propagate(satrec, time);
+      if (!propagated?.position || typeof propagated.position === "boolean") continue;
+      const gd = satellite.eciToGeodetic(propagated.position, satellite.gstime(time));
+      const longitude = satellite.degreesLong(gd.longitude);
+      const latitude = satellite.degreesLat(gd.latitude);
+      const altitudeMeters = gd.height * 1000;
+      if ([longitude, latitude, altitudeMeters].every(Number.isFinite)) points.push({ longitude, latitude, altitudeMeters });
+    }
+    return points;
+  } catch {
+    return [];
+  }
 }
