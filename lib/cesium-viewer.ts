@@ -53,6 +53,14 @@ export function createWorldViewer(input: {
   viewer.scene.globe.enableLighting = true;
   viewer.scene.globe.depthTestAgainstTerrain = true;
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#020617');
+
+  // Keep one Earth viewer usable from ground scale out to the outer planets.
+  // Positions stay in real meters; logarithmic depth preserves precision across
+  // the extreme near/far range without changing physical object coordinates.
+  viewer.scene.logarithmicDepthBuffer = true;
+  viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
+  viewer.scene.screenSpaceCameraController.maximumZoomDistance = 6_000_000_000_000;
+
   viewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000),
   });
@@ -90,12 +98,19 @@ export function createWorldViewer(input: {
   const updateView = () => {
     const canvas = viewer.scene.canvas;
     const center = new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2);
-    const cartesian = viewer.camera.pickEllipsoid(center, viewer.scene.globe.ellipsoid);
-    if (!cartesian) return;
-    const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
-    const latitude = Cesium.Math.toDegrees(cartographic.latitude);
-    const longitude = Cesium.Math.toDegrees(cartographic.longitude);
-    const height = viewer.camera.positionCartographic?.height;
+    const centerHit = viewer.camera.pickEllipsoid(center, viewer.scene.globe.ellipsoid);
+    const cameraCartographic = viewer.camera.positionCartographic;
+
+    // At interplanetary scale the screen center can legitimately miss Earth.
+    // Continue reporting camera height instead of freezing the deep-zoom state.
+    const referenceCartographic = centerHit
+      ? Cesium.Cartographic.fromCartesian(centerHit)
+      : cameraCartographic;
+
+    const latitude = Cesium.Math.toDegrees(referenceCartographic?.latitude ?? 0);
+    const longitude = Cesium.Math.toDegrees(referenceCartographic?.longitude ?? 0);
+    const height = cameraCartographic?.height;
+
     if ([latitude, longitude, height].every(Number.isFinite)) {
       onViewChange({ latitude, longitude, height });
     }

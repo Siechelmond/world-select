@@ -704,7 +704,7 @@ export default function WorldSelectApp() {
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">
-          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "DEEP ZOOM"}</em>
+          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "PHYSICAL SCALE"}</em>
           <span>Ground map</span><em>ESRI STREET · WORLD SELECT LABELS EN</em>
           <span>Street imagery</span><em>GOOGLE + KARTAVIEW</em>
           <span>Annotations</span><em>LOCAL SESSION</em>
