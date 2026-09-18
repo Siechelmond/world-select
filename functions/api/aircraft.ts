@@ -286,7 +286,7 @@ export const onRequestGet = async (context: { request: Request; env: Env; waitUn
   const modeForOpenSky = openSkyMode(context.env);
   const providerOrder: ProviderName[] = modeForOpenSky === "disabled"
     ? ["adsb.lol"]
-    : ["adsb.lol", "opensky"];
+    : ["opensky", "adsb.lol"];
 
   let firstNonEmptyStale: ProviderResult | null = null;
   let selected: ProviderResult | null = null;

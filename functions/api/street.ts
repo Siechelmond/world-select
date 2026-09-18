@@ -14,11 +14,22 @@ function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number) 
 function normalizePhotos(payload: any, lat: number, lon: number) {
   const data = Array.isArray(payload?.result?.data) ? payload.result.data : [];
   return data.flatMap((item: any) => {
-    const imageUrl = item?.imageProcUrl || item?.imageLThUrl || item?.fileurlProc || item?.fileurlLTh || item?.fileurlTh || item?.fileUrl || item?.fileurl || item?.url || null;
+    const imageUrl =
+      item?.imageProcUrl ??
+      item?.imageLThUrl ??
+      item?.fileurlProc ??
+      item?.fileurlLTh ??
+      item?.fileurlTh ??
+      item?.fileUrl ??
+      item?.fileurl ??
+      item?.url ??
+      null;
+
     if (typeof imageUrl !== "string" || !imageUrl.startsWith("http")) return [];
     const normalizedImageUrl = imageUrl.replace("[[sizeprefix]]", "wrapped_proc");
     const latitude = numberOrNull(item.lat ?? item.latitude);
     const longitude = numberOrNull(item.lng ?? item.lon ?? item.longitude);
+
     return [{
       id: String(item.id ?? item.photoId ?? normalizedImageUrl),
       imageUrl: normalizedImageUrl,
@@ -26,103 +37,22 @@ function normalizePhotos(payload: any, lat: number, lon: number) {
       longitude,
       heading: numberOrNull(item.heading ?? item.gpsHeading ?? item.compassAngle),
       capturedAt: item.dateAdded ?? item.date_added ?? null,
-      sequenceId: item.sequenceId != null ? String(item.sequenceId) : item.sequence?.id != null ? String(item.sequence.id) : null,
-      distanceMeters: latitude != null && longitude != null ? Math.round(distanceMeters(lat, lon, latitude, longitude)) : null,
+      sequenceId: item.sequenceId != null
+        ? String(item.sequenceId)
+        : item.sequence?.id != null
+          ? String(item.sequence.id)
+          : null,
+      distanceMeters:
+        latitude != null && longitude != null
+          ? Math.round(distanceMeters(lat, lon, latitude, longitude))
+          : null,
     }];
-  }).sort((a: any, b: any) =>
-    (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)
-  ).slice(0, 24);
-}
-
-async function requestKartaView(url: URL, timeoutMs = 5_000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const upstream = await fetch(url.toString(), {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "WorldSelect/0.7 (+https://world-select.pages.dev)",
-      },
-      signal: controller.signal,
-      cf: { cacheTtl: 300, cacheEverything: true },
-    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
-
-    const payload = await upstream.json().catch(() => null) as any;
-    const apiHttpCode = Number(payload?.status?.httpCode);
-    const apiCode = Number(payload?.status?.apiCode);
-    const logicalFailure =
-      (Number.isFinite(apiHttpCode) && apiHttpCode >= 400) ||
-      (Number.isFinite(apiCode) && apiCode >= 610);
-
-    if (!upstream.ok || logicalFailure) {
-      return {
-        ok: false as const,
-        status: Number.isFinite(apiHttpCode) && apiHttpCode >= 400 ? apiHttpCode : upstream.status,
-        payload,
-      };
-    }
-
-    return { ok: true as const, status: upstream.status, payload };
-  } catch (error) {
-    return {
-      ok: false as const,
-      status: error instanceof Error && error.name === "AbortError" ? 504 : 502,
-      payload: null,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function fetchKartaView(lat: number, lon: number) {
-  const buildNearbyUrl = (zoomLevel: number) => {
-    const endpoint = new URL("https://api.openstreetcam.org/2.0/photo/");
-    endpoint.searchParams.set("lat", lat.toFixed(6));
-    endpoint.searchParams.set("lng", lon.toFixed(6));
-    endpoint.searchParams.set("zoomLevel", String(zoomLevel));
-    endpoint.searchParams.set("join", "sequence");
-    endpoint.searchParams.set("orderBy", "id");
-    endpoint.searchParams.set("orderDirection", "desc");
-    return endpoint;
-  };
-
-  // KartaView documents lat/lng/zoomLevel for nearby-photo lookup.
-  // Keep this contract clean: page/itemsPerPage belong to sequence paging.
-  const primary = await requestKartaView(buildNearbyUrl(18));
-  if (primary.ok) {
-    const photos = normalizePhotos(primary.payload, lat, lon);
-    if (photos.length) return { ok: true as const, status: 200, photos, mode: "nearby-z18" };
-  }
-
-  const wider = await requestKartaView(buildNearbyUrl(16));
-  if (wider.ok) {
-    const photos = normalizePhotos(wider.payload, lat, lon);
-    if (photos.length) return { ok: true as const, status: 200, photos, mode: "nearby-z16" };
-  }
-
-  // KartaView FAQ documents radius search as a public nearby fallback.
-  const radiusEndpoint = new URL("https://api.openstreetcam.org/2.0/photo/");
-  radiusEndpoint.searchParams.set("lat", lat.toFixed(6));
-  radiusEndpoint.searchParams.set("lng", lon.toFixed(6));
-  radiusEndpoint.searchParams.set("radius", "500");
-  const radius = await requestKartaView(radiusEndpoint);
-  if (radius.ok) {
-    return {
-      ok: true as const,
-      status: 200,
-      photos: normalizePhotos(radius.payload, lat, lon),
-      mode: "radius-500",
-    };
-  }
-
-  const failures = [primary, wider, radius].filter((item) => !item.ok);
-  const timeoutOnly = failures.length > 0 && failures.every((item) => item.status === 504);
-  return {
-    ok: false as const,
-    status: timeoutOnly ? 504 : 502,
-    photos: [] as any[],
-    mode: "unavailable",
-  };
+  })
+    .sort((a: any, b: any) =>
+      (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) -
+      (b.distanceMeters ?? Number.MAX_SAFE_INTEGER)
+    )
+    .slice(0, 24);
 }
 
 export const onRequestGet = async (context: any) => {
@@ -134,19 +64,64 @@ export const onRequestGet = async (context: any) => {
     return Response.json({ error: "invalid coordinates", photos: [] }, { status: 400 });
   }
 
-  const result = await fetchKartaView(lat, lon);
-  if (!result.ok) {
-    return Response.json({
-      error: result.status === 504 ? "KartaView upstream timed out" : `KartaView upstream HTTP ${result.status}`,
-      photos: [],
-    }, { status: 502 });
-  }
+  const searchRadiusM = 500;
+  const api = new URL("https://api.openstreetcam.org/2.0/photo/");
+  api.searchParams.set("lat", lat.toFixed(6));
+  api.searchParams.set("lng", lon.toFixed(6));
+  api.searchParams.set("zoomLevel", "16");
+  api.searchParams.set("radius", String(searchRadiusM));
+  api.searchParams.set("join", "sequence");
+  api.searchParams.set("orderBy", "id");
+  api.searchParams.set("orderDirection", "desc");
 
-  return Response.json({ photos: result.photos, sourceMode: result.mode }, {
-    headers: {
-      "Cache-Control": result.photos.length
-        ? "public, max-age=120, s-maxage=300"
-        : "public, max-age=60, s-maxage=120",
-    },
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+
+  try {
+    const upstream = await fetch(api.toString(), {
+      headers: {
+        "User-Agent": "WorldSelect/0.8 (+https://world-select.pages.dev)",
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+      cf: { cacheTtl: 300, cacheEverything: true },
+    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+
+    const payload: any = await upstream.json().catch(() => null);
+    const apiHttpCode = Number(payload?.status?.httpCode);
+    const apiCode = Number(payload?.status?.apiCode);
+    const logicalFailure =
+      (Number.isFinite(apiHttpCode) && apiHttpCode >= 400) ||
+      (Number.isFinite(apiCode) && apiCode >= 610);
+
+    if (!upstream.ok || logicalFailure) {
+      return Response.json({
+        error: `KartaView upstream HTTP ${Number.isFinite(apiHttpCode) && apiHttpCode >= 400 ? apiHttpCode : upstream.status}`,
+        photos: [],
+        searchRadiusM,
+      }, { status: 502 });
+    }
+
+    const photos = normalizePhotos(payload, lat, lon);
+    return Response.json({
+      photos,
+      searchRadiusM,
+      sourceMode: "radius-500-z16",
+    }, {
+      headers: {
+        "Cache-Control": photos.length
+          ? "public, max-age=120, s-maxage=300"
+          : "public, max-age=60, s-maxage=120",
+      },
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === "AbortError";
+    return Response.json({
+      error: timedOut ? "KartaView upstream timed out" : "KartaView upstream unavailable",
+      photos: [],
+      searchRadiusM,
+    }, { status: 502 });
+  } finally {
+    clearTimeout(timer);
+  }
 };
