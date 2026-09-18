@@ -342,26 +342,20 @@ export default function WorldSelectApp() {
 
   const switchMapMode = useCallback((mode: WorldMapMode) => {
     setMapMode(mode);
-    if (photorealistic3D) {
-      void viewerLifecycleRef.current?.setPhotorealistic3D(false);
-      setPhotorealistic3D(false);
-    }
+    setPhotorealistic3D(false);
+    setThreeDError(null);
     viewerLifecycleRef.current?.setMapMode(mode);
-  }, [photorealistic3D]);
+  }, []);
 
-  const toggle3D = useCallback(async () => {
-    const lifecycle = viewerLifecycleRef.current;
-    if (!lifecycle) return;
-    if (photorealistic3D) {
-      await lifecycle.setPhotorealistic3D(false);
-      setPhotorealistic3D(false);
-      setThreeDError(null);
+  const toggle3D = useCallback(() => {
+    if (!GOOGLE_MAPS_API_KEY) {
+      setThreeDError("Google Maps JavaScript API is not configured for this preview");
       return;
     }
-    const ok = await lifecycle.setPhotorealistic3D(true);
-    setPhotorealistic3D(ok);
-    setThreeDError(ok ? null : "Google Photorealistic 3D is not configured for this preview");
-  }, [photorealistic3D]);
+    setStreetOpen(false);
+    setThreeDError(null);
+    setPhotorealistic3D((current) => !current);
+  }, []);
 
 
 
@@ -496,6 +490,7 @@ export default function WorldSelectApp() {
 
   const openStreet = useCallback(() => {
     if (viewMode !== "earth") return;
+    setPhotorealistic3D(false);
     setStreetTarget(streetPoint);
     setStreetOpen(true);
     setMobilePanel("street");
@@ -599,9 +594,9 @@ export default function WorldSelectApp() {
           <button className={!photorealistic3D && mapMode === "satellite" ? "active" : ""} onClick={() => switchMapMode("satellite")}>SAT</button>
           <button className={!photorealistic3D && mapMode === "map" ? "active" : ""} onClick={() => switchMapMode("map")}>MAP</button>
           <button className={!photorealistic3D && mapMode === "nasa" ? "active" : ""} onClick={() => switchMapMode("nasa")}>NASA</button>
-          <button className={photorealistic3D ? "active" : ""} disabled={!GOOGLE_MAPS_API_KEY} onClick={() => void toggle3D()}>3D</button>
+          <button className={photorealistic3D ? "active" : ""} disabled={!GOOGLE_MAPS_API_KEY} onClick={toggle3D}>3D</button>
         </div>
-        {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View + Photorealistic 3D are not configured on this preview. SAT / MAP / NASA remain available.</div>}
+        {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View + Maps JavaScript 3D are not configured on this preview. SAT / MAP / NASA remain available.</div>}
         {threeDError && <div className="mapModeNotice">{threeDError}</div>}
         <LayerToggle checked={earthquakeLayer} onChange={toggleEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
         <LayerToggle checked={satelliteLayer} onChange={toggleSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle={`CelesTrak ${satelliteCatalog.toUpperCase()} · deduped NORAD catalog · SGP4`} state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
@@ -643,6 +638,15 @@ export default function WorldSelectApp() {
       </section>
 
       {!streetOpen && issPreview && <IssLiveHoverCard entity={issPreview.entity} screen={issPreview.screen} onClose={() => setIssPreview(null)} />}
+
+      {photorealistic3D && <Google3DSurface
+        apiKey={GOOGLE_MAPS_API_KEY}
+        center={viewCenter}
+        cameraHeight={cameraHeight}
+        error={threeDError}
+        onError={setThreeDError}
+        onClose={() => { setPhotorealistic3D(false); setThreeDError(null); }}
+      />}
 
       {streetOpen && <StreetViewer
         provider={streetProvider} googleApiKey={GOOGLE_MAPS_API_KEY} notice={streetNotice}
@@ -762,6 +766,86 @@ function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; 
   </aside>;
 }
 
+function Google3DSurface({ apiKey, center, cameraHeight, error, onError, onClose }: {
+  apiKey: string;
+  center: { latitude: number; longitude: number };
+  cameraHeight: number;
+  error: string | null;
+  onError: (message: string | null) => void;
+  onClose: () => void;
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    let map3d: any = null;
+    const host = hostRef.current;
+    if (!host) return;
+
+    host.replaceChildren();
+
+    loadGoogleMaps(apiKey)
+      .then(async (google) => {
+        if (disposed || !host) return;
+        if (typeof google.maps?.importLibrary !== "function") {
+          throw new Error("Google Maps 3D requires dynamic library support");
+        }
+
+        const library = await google.maps.importLibrary("maps3d");
+        const Map3DElement = library?.Map3DElement;
+        if (typeof Map3DElement !== "function") {
+          throw new Error("Google Maps 3D library is unavailable");
+        }
+
+        map3d = new Map3DElement({
+          center: {
+            lat: center.latitude,
+            lng: center.longitude,
+            altitude: 0,
+          },
+          range: Math.max(700, Math.min(2_000_000, cameraHeight * 0.7)),
+          tilt: 65,
+          heading: 0,
+          mode: "HYBRID",
+          defaultUIHidden: false,
+        });
+        map3d.style.width = "100%";
+        map3d.style.height = "100%";
+        map3d.style.display = "block";
+        host.append(map3d);
+        onError(null);
+      })
+      .catch((reason: unknown) => {
+        if (disposed) return;
+        onError(reason instanceof Error ? reason.message : "Google Maps 3D failed to initialize");
+      });
+
+    return () => {
+      disposed = true;
+      try { map3d?.remove?.(); } catch {}
+      host.replaceChildren();
+    };
+  }, [apiKey, center.latitude, center.longitude, cameraHeight, onError]);
+
+  return <aside className="google3dSurface glass" role="dialog" aria-modal="false" aria-label="Google 3D map">
+    <div className="google3dSurfaceHead">
+      <div>
+        <p className="panelLabel">EARTH / 3D</p>
+        <strong>{center.latitude.toFixed(4)}, {center.longitude.toFixed(4)}</strong>
+      </div>
+      <button type="button" onClick={onClose} aria-label="Close 3D map">×</button>
+    </div>
+    <div className="google3dSurfaceFrame">
+      <div ref={hostRef} className="google3dHost" />
+      {error && <div className="google3dError"><strong>3D unavailable</strong><span>{error}</span></div>}
+    </div>
+    <div className="google3dSurfaceMeta">
+      <span>Google Maps JavaScript API · 3D · HYBRID</span>
+      <button type="button" onClick={onClose}>BACK TO WORLD</button>
+    </div>
+  </aside>;
+}
+
 function StreetViewer({ provider, googleApiKey, notice, state, photo, index, total, error, point, onClose, onEarth, onGround, onSpace, onPrevious, onNext, onUseGoogle, onUseKartaView, onGoogleReady, onGoogleFallback, onGooglePositionChange }: { provider: StreetProvider; googleApiKey: string; notice: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onEarth: () => void; onGround: () => void; onSpace: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void; onGoogleReady: () => void; onGoogleFallback: (message: string) => void; onGooglePositionChange: (point: EarthPoint) => void }) {
   const surfaceRef = useRef<HTMLElement | null>(null);
 
@@ -821,7 +905,17 @@ function StreetViewer({ provider, googleApiKey, notice, state, photo, index, tot
             <span>{total ? `${index + 1} / ${total}` : "No imagery"}</span>
             <button type="button" onClick={onNext} disabled={!total || index >= total - 1}>→</button>
           </div>
-        : <span className="streetSurfaceSource">Interactive 360° · Google Street View</span>}
+        : <div className="streetSurfaceSourceRow">
+            <span className="streetSurfaceSource">Interactive 360° · Google Street View</span>
+            <a
+              className="streetSurfaceExternal"
+              href={`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${point.latitude.toFixed(6)},${point.longitude.toFixed(6)}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open Google Maps ↗
+            </a>
+          </div>}
     </div>
   </aside>;
 }

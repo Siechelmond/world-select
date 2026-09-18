@@ -66,15 +66,17 @@ export function createWorldViewer(input: {
       label: {
         text: label.name,
         font: label.kind === 'country'
-          ? '600 15px sans-serif'
+          ? '600 13px sans-serif'
           : label.kind === 'water'
-            ? 'italic 13px sans-serif'
-            : '600 12px sans-serif',
+            ? 'italic 12px sans-serif'
+            : '700 13px sans-serif',
         fillColor: label.kind === 'water'
           ? Cesium.Color.fromCssColorString('#93c5fd')
-          : Cesium.Color.fromCssColorString('#f8fafc'),
+          : label.kind === 'country'
+            ? Cesium.Color.fromCssColorString('#cbd5e1')
+            : Cesium.Color.fromCssColorString('#ffffff'),
         outlineColor: Cesium.Color.fromCssColorString('#020617'),
-        outlineWidth: 3,
+        outlineWidth: label.kind === 'city' ? 4 : 2,
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         verticalOrigin: Cesium.VerticalOrigin.CENTER,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,

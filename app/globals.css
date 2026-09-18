@@ -679,3 +679,101 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .streetSurfaceNav { display: grid; grid-template-columns: repeat(3, 1fr); }
   .streetSurfacePager { justify-content: space-between; }
 }
+
+
+/* GEV-style Google Maps JS 3D surface. Keeps World Select HUD/state mounted underneath. */
+.google3dSurface {
+  position: fixed;
+  z-index: 41;
+  top: 124px;
+  right: 24px;
+  bottom: 72px;
+  width: min(860px, calc(100vw - 340px));
+  min-width: 560px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(103,232,249,.28);
+  border-radius: 14px;
+  background: rgba(2,6,23,.94);
+  box-shadow: 0 24px 70px rgba(0,0,0,.48);
+  backdrop-filter: blur(16px);
+}
+.google3dSurfaceHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.google3dSurfaceHead strong { color: #cbd5e1; font-size: 11px; }
+.google3dSurfaceHead button,
+.google3dSurfaceMeta button {
+  border: 1px solid rgba(103,232,249,.28);
+  background: rgba(8,47,73,.9);
+  color: #ecfeff;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 800;
+}
+.google3dSurfaceHead button {
+  width: 34px;
+  height: 34px;
+  font-size: 22px;
+}
+.google3dSurfaceFrame {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid rgba(103,232,249,.14);
+  background: #020617;
+}
+.google3dHost { position: absolute; inset: 0; }
+.google3dError {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  background: rgba(2,6,23,.9);
+  color: #94a3b8;
+  pointer-events: none;
+}
+.google3dError strong { color: #f8fafc; }
+.google3dSurfaceMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #64748b;
+  font-size: 9px;
+}
+.google3dSurfaceMeta button { padding: 7px 10px; font-size: 9px; }
+.streetSurfaceSourceRow { display: flex; align-items: center; gap: 10px; }
+.streetSurfaceExternal {
+  color: #a5f3fc;
+  font-size: 9px;
+  font-weight: 800;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(165,243,252,.35);
+}
+.streetSurfaceExternal:hover { color: #ecfeff; border-color: #ecfeff; }
+
+@media (max-width: 900px) {
+  .google3dSurface {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: 58px;
+    width: auto;
+    min-width: 0;
+    height: min(72vh, 660px);
+    border-radius: 14px 14px 8px 8px;
+  }
+  .google3dSurfaceMeta { align-items: stretch; flex-direction: column; }
+  .streetSurfaceSourceRow { align-items: flex-start; flex-direction: column; }
+}
