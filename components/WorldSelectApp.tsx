@@ -795,90 +795,62 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       return;
     }
 
-    loadGoogleMapsStreetView(apiKey).then(async (google) => {
-      if (disposed || !panoRef.current) return;
+    loadGoogleMaps(apiKey)
+      .then((google) => {
+        if (disposed || !panoRef.current) return;
 
-      let streetView: any = google.maps;
-      if (typeof google.maps.importLibrary === "function") {
-        try {
-          streetView = await google.maps.importLibrary("streetView");
-        } catch {
-          streetView = google.maps;
-        }
-      }
+        const service = new google.maps.StreetViewService();
+        const origin = initialPointRef.current;
 
-      const StreetViewService = streetView?.StreetViewService ?? google.maps.StreetViewService;
-      const StreetViewPanorama = streetView?.StreetViewPanorama ?? google.maps.StreetViewPanorama;
-      const StreetViewPreference = streetView?.StreetViewPreference ?? google.maps.StreetViewPreference;
-      const StreetViewSource = streetView?.StreetViewSource ?? google.maps.StreetViewSource;
-
-      if (typeof StreetViewService !== "function" || typeof StreetViewPanorama !== "function") {
-        throw new Error("Google Maps loaded without Street View constructors");
-      }
-
-      const service = new StreetViewService();
-      const origin = initialPointRef.current;
-      const attempts = [
-        { radius: 120, source: StreetViewSource?.OUTDOOR ?? "outdoor" },
-        { radius: 250, source: StreetViewSource?.OUTDOOR ?? "outdoor" },
-        { radius: 500, source: StreetViewSource?.OUTDOOR ?? "outdoor" },
-        { radius: 500, source: undefined },
-      ];
-      let location: any = null;
-
-      for (const attempt of attempts) {
-        try {
-          const request: any = {
+        return service
+          .getPanorama({
             location: { lat: origin.latitude, lng: origin.longitude },
-            radius: attempt.radius,
-          };
-          if (StreetViewPreference?.NEAREST) request.preference = StreetViewPreference.NEAREST;
-          if (attempt.source) request.source = attempt.source;
-          const result = await service.getPanorama(request);
-          if (result?.data?.location?.pano) {
-            location = result.data.location;
-            break;
-          }
-        } catch {
-          // Continue through bounded search attempts.
-        }
-      }
+            radius: 120,
+          })
+          .then(({ data }: any) => {
+            if (disposed || !panoRef.current) return;
+            const location = data?.location;
+            if (!location?.pano) throw new Error("Google Street View returned no panorama data");
 
-      if (!location?.pano) throw new Error("No Google Street View panorama found within 500 m");
-      if (disposed || !panoRef.current) return;
+            panorama = new google.maps.StreetViewPanorama(panoRef.current, {
+              pano: location.pano,
+              position: location.latLng,
+              pov: { heading: 0, pitch: 0 },
+              zoom: 1,
+              addressControl: true,
+              fullscreenControl: !window.matchMedia("(max-width: 780px)").matches,
+              motionTracking: false,
+              linksControl: true,
+              panControl: true,
+              zoomControl: true,
+            });
 
-      panorama = new StreetViewPanorama(panoRef.current, {
-        pano: location.pano,
-        position: location.latLng,
-        pov: { heading: 0, pitch: 0 },
-        zoom: 1,
-        addressControl: true,
-        fullscreenControl: !window.matchMedia("(max-width: 780px)").matches,
-        motionTracking: false,
-        linksControl: true,
-        panControl: true,
-        zoomControl: true,
+            const publishPosition = () => {
+              const current = panorama?.getPosition?.();
+              const latitude = typeof current?.lat === "function" ? current.lat() : NaN;
+              const longitude = typeof current?.lng === "function" ? current.lng() : NaN;
+              if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+                onPositionChange({ latitude, longitude });
+              }
+            };
+
+            publishPosition();
+            positionListener = panorama.addListener?.("position_changed", publishPosition);
+            onReady();
+          });
+      })
+      .catch((error: unknown) => {
+        if (disposed) return;
+        const raw =
+          error instanceof Error
+            ? error.message
+            : typeof error === "string"
+              ? error
+              : typeof (error as any)?.status === "string"
+                ? (error as any).status
+                : "Google Street View lookup failed";
+        onFallback(`Google Street View lookup failed: ${raw} · using KartaView fallback`);
       });
-
-      const publishPosition = () => {
-        const current = panorama?.getPosition?.();
-        const latitude = typeof current?.lat === "function" ? current.lat() : NaN;
-        const longitude = typeof current?.lng === "function" ? current.lng() : NaN;
-        if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-          onPositionChange({ latitude, longitude });
-        }
-      };
-
-      publishPosition();
-      positionListener = panorama.addListener?.("position_changed", publishPosition);
-      onReady();
-    }).catch((error: unknown) => {
-      if (!disposed) {
-        onFallback(error instanceof Error
-          ? `${error.message} · using KartaView fallback`
-          : "Google Street View failed · using KartaView fallback");
-      }
-    });
 
     return () => {
       disposed = true;
@@ -890,68 +862,36 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
   return <div ref={panoRef} className="googleStreetPano"><div className="streetMessage">Loading Google Street View…</div></div>;
 }
 
-function googleStreetViewReady() {
-  const maps = window.google?.maps;
-  return Boolean(
-    maps &&
-    (
-      typeof maps.importLibrary === "function" ||
-      (typeof maps.StreetViewService === "function" && typeof maps.StreetViewPanorama === "function")
-    )
-  );
-}
-
-function loadGoogleMapsStreetView(apiKey: string): Promise<any> {
-  if (googleStreetViewReady()) return Promise.resolve(window.google);
+function loadGoogleMaps(apiKey: string): Promise<any> {
+  if (window.google?.maps) return Promise.resolve(window.google);
   if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
 
   window.__worldSelectGoogleMapsPromise = new Promise((resolve, reject) => {
-    let settled = false;
-    const callbackName = "__worldSelectGoogleStreetReady";
-    const priorAuthFailure = window.gm_authFailure;
-
-    const finishError = (message: string) => {
-      if (settled) return;
-      settled = true;
-      reject(new Error(message));
-    };
-
-    const waitForStreetView = (attempt = 0) => {
-      if (settled) return;
-      if (googleStreetViewReady()) {
-        settled = true;
+    const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
+    if (existing) {
+      if (window.google?.maps) {
         resolve(window.google);
         return;
       }
-      if (attempt >= 40) {
-        finishError("Google Maps loaded without Street View support");
-        return;
-      }
-      window.setTimeout(() => waitForStreetView(attempt + 1), 50);
-    };
-
-    window.gm_authFailure = () => {
-      try { priorAuthFailure?.(); } catch {}
-      finishError("Google Maps authentication failed for this preview");
-    };
-
-    (window as any)[callbackName] = () => waitForStreetView();
-
-    const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
-    if (existing) {
-      waitForStreetView();
-      existing.addEventListener("load", () => waitForStreetView(), { once: true });
-      existing.addEventListener("error", () => finishError("Google Maps JavaScript API could not be loaded"), { once: true });
+      existing.addEventListener("load", () =>
+        window.google?.maps
+          ? resolve(window.google)
+          : reject(new Error("Google Maps loaded without maps library")),
+      { once: true });
+      existing.addEventListener("error", () => reject(new Error("Google Maps JavaScript API could not be loaded")), { once: true });
       return;
     }
 
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&libraries=streetView&callback=${callbackName}`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&libraries=streetView`;
     script.async = true;
     script.defer = true;
     script.dataset.worldSelectGoogleMaps = "1";
-    script.onload = () => waitForStreetView();
-    script.onerror = () => finishError("Google Maps JavaScript API could not be loaded");
+    script.onload = () =>
+      window.google?.maps
+        ? resolve(window.google)
+        : reject(new Error("Google Maps loaded without maps library"));
+    script.onerror = () => reject(new Error("Google Maps JavaScript API could not be loaded"));
     document.head.appendChild(script);
   }).catch((reason) => {
     window.__worldSelectGoogleMapsPromise = undefined;

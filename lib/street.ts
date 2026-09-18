@@ -25,7 +25,7 @@ function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number) 
 function normalizeKartaView(payload: any, latitude: number, longitude: number): StreetPhoto[] {
   const data = Array.isArray(payload?.result?.data) ? payload.result.data : [];
   return data.flatMap((item: any) => {
-    const imageUrl = item?.fileurlProc || item?.fileurlLTh || item?.fileurlTh || item?.fileUrl || item?.fileurl || item?.url || null;
+    const imageUrl = item?.imageProcUrl || item?.imageLThUrl || item?.fileurlProc || item?.fileurlLTh || item?.fileurlTh || item?.fileUrl || item?.fileurl || item?.url || null;
     if (typeof imageUrl !== "string" || !imageUrl.startsWith("http")) return [];
     const normalizedImageUrl = imageUrl.replace("[[sizeprefix]]", "wrapped_proc");
     const lat = numberOrNull(item.lat ?? item.latitude);
