@@ -4,7 +4,9 @@ import Script from "next/script";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SpatialEntity } from "@/lib/spatial";
 import { createCoreLiveWorld } from "@/runtime/gev/core-live-world";
-import { propagateTles, propagateTleOrbitEcf, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
+import { createEarthquakeRenderer } from "@/runtime/gev/layers/earthquakes-renderer";
+import { createSatelliteRenderer } from "@/runtime/gev/layers/satellites-renderer";
+import { propagateTles, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
 import { projectAircraftPosition, type AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
@@ -47,17 +49,15 @@ export default function WorldSelectApp() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
   const entityMapRef = useRef(new Map<string, SpatialEntity>());
-  const quakeIdsRef = useRef(new Set<string>());
-  const satIdsRef = useRef(new Set<string>());
+  const earthquakeRendererRef = useRef<ReturnType<typeof createEarthquakeRenderer> | null>(null);
+  const satelliteRendererRef = useRef<ReturnType<typeof createSatelliteRenderer> | null>(null);
   const aircraftIdsRef = useRef(new Set<string>());
-  const satelliteTrailRef = useRef(new Map<string, any[]>());
   const aircraftTrailRef = useRef(new Map<string, Array<{ longitude: number; latitude: number; altitudeMeters: number }>>());
   const geoLabelIdsRef = useRef(new Set<string>());
   const annotationIdsRef = useRef(new Set<string>());
   const trafficLayerRef = useRef<any>(null);
   const trafficIncidentLayerRef = useRef<any>(null);
   const aircraftCoverageRef = useRef<any>(null);
-  const satelliteOrbitRef = useRef<any>(null);
   const viewerLifecycleRef = useRef<ReturnType<typeof createWorldViewer> | null>(null);
   const trafficVehicleCollectionRef = useRef<any>(null);
   const trafficRoadCollectionRef = useRef<any>(null);
@@ -295,8 +295,22 @@ export default function WorldSelectApp() {
     });
     viewerLifecycleRef.current = lifecycle;
     viewerRef.current = lifecycle.viewer;
+    earthquakeRendererRef.current = createEarthquakeRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+    });
+    satelliteRendererRef.current = createSatelliteRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+    });
 
     return () => {
+      earthquakeRendererRef.current?.destroy();
+      satelliteRendererRef.current?.destroy();
+      earthquakeRendererRef.current = null;
+      satelliteRendererRef.current = null;
       lifecycle.destroy();
       viewerLifecycleRef.current = null;
       viewerRef.current = null;
@@ -385,109 +399,25 @@ export default function WorldSelectApp() {
   }, []);
 
   useEffect(() => {
-    const viewer = viewerRef.current; const Cesium = window.Cesium;
-    if (!viewer || !Cesium) return;
-    clearIds(quakeIdsRef.current);
-    if (viewMode !== "earth" || !earthquakeLayer) return;
-    for (const spatial of earthquakes) {
-      const magnitude = Number(spatial.properties.magnitude ?? 0);
-      entityMapRef.current.set(spatial.id, spatial); quakeIdsRef.current.add(spatial.id);
-      viewer.entities.add({
-        id: spatial.id,
-        position: Cesium.Cartesian3.fromDegrees(spatial.position.longitude, spatial.position.latitude, 0),
-        point: {
-          pixelSize: Math.max(7, Math.min(20, 5 + magnitude * 2)),
-          color: Cesium.Color.fromCssColorString("#fb923c").withAlpha(0.92),
-          outlineColor: Cesium.Color.fromCssColorString("#fff7ed"), outlineWidth: 1,
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        },
-      });
-    }
-  }, [earthquakes, earthquakeLayer, viewMode, clearIds, cesiumReady]);
+    earthquakeRendererRef.current?.sync(
+      earthquakes,
+      viewMode === "earth" && earthquakeLayer,
+    );
+  }, [earthquakes, earthquakeLayer, viewMode, cesiumReady]);
 
   useEffect(() => {
-    const viewer = viewerRef.current; const Cesium = window.Cesium;
-    if (!viewer || !Cesium) return;
-    if (viewMode !== "earth" || !satelliteLayer) { clearIds(satIdsRef.current); return; }
-    const liveIds = new Set<string>();
-    const selectedSatelliteId = selected?.kind === "satellite" ? selected.id : null;
-    for (const spatial of satellites) {
-      liveIds.add(spatial.id); entityMapRef.current.set(spatial.id, spatial);
-      const position = Cesium.Cartesian3.fromDegrees(spatial.position.longitude, spatial.position.latitude, spatial.position.altitudeMeters);
-      const existing = viewer.entities.getById(spatial.id);
-      const isSelected = spatial.id === selectedSatelliteId;
-      const isIss = /ISS.*ZARYA|^ISS\b/i.test(spatial.name);
-      const trail = satelliteTrailRef.current.get(spatial.id) ?? [];
-      if (isSelected && !isIss) {
-        const last = trail[trail.length - 1];
-        const moved = !last || Cesium.Cartesian3.distance(last, position) > 2_000;
-        if (moved) trail.push(position);
-        const maxTrailPoints = isMobile ? 12 : 36;
-        while (trail.length > maxTrailPoints) trail.shift();
-        satelliteTrailRef.current.set(spatial.id, trail);
-      } else if (trail.length) {
-        satelliteTrailRef.current.delete(spatial.id);
-      }
-      const pixelSize = cameraHeight > 5_000_000 ? 4 : cameraHeight > 1_500_000 ? 6 : 8;
-      const trailPositions = isSelected && !isIss ? [...trail] : [];
-      const showLabel = isSelected || spatial.name.includes("ISS") || spatial.name.includes("TIANHE");
-      if (existing) {
-        existing.position = new Cesium.ConstantPositionProperty(position);
-        if (existing.point) existing.point.pixelSize = new Cesium.ConstantProperty(pixelSize);
-        if (existing.polyline) {
-          existing.polyline.show = new Cesium.ConstantProperty(isSelected && trailPositions.length > 1);
-          existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
-        }
-        if (existing.label) {
-          existing.label.show = new Cesium.ConstantProperty(showLabel);
-          existing.label.text = new Cesium.ConstantProperty(showLabel ? spatial.name : "");
-        }
-      } else {
-        satIdsRef.current.add(spatial.id);
-        viewer.entities.add({
-          id: spatial.id, position,
-          point: { pixelSize, color: Cesium.Color.fromCssColorString("#67e8f9"), outlineColor: Cesium.Color.WHITE, outlineWidth: isSelected ? 2 : 0.5 },
-          polyline: { show: isSelected && trailPositions.length > 1, positions: trailPositions, width: 1.5, material: Cesium.Color.fromCssColorString("#67e8f9").withAlpha(0.55) },
-          label: {
-            show: showLabel, text: showLabel ? spatial.name : "",
-            font: "11px sans-serif", fillColor: Cesium.Color.WHITE, pixelOffset: new Cesium.Cartesian2(10, -10),
-          },
-        });
-      }
-    }
-    for (const id of Array.from(satIdsRef.current) as string[]) {
-      if (!liveIds.has(id)) { viewer.entities.removeById(id); entityMapRef.current.delete(id); satIdsRef.current.delete(id); satelliteTrailRef.current.delete(id); }
-    }
-  }, [satellites, satelliteLayer, viewMode, clearIds, cesiumReady, isMobile, cameraHeight, selected]);
-
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    const Cesium = window.Cesium;
-    if (!viewer || !Cesium) return;
-    if (satelliteOrbitRef.current) {
-      viewer.entities.remove(satelliteOrbitRef.current);
-      satelliteOrbitRef.current = null;
-    }
-    if (viewMode !== "earth" || !satelliteLayer) return;
-    const issRecord = tleRecords.find((record) => /ISS.*ZARYA|^ISS\b/i.test(record.name));
-    if (!issRecord) return;
-    const orbit = propagateTleOrbitEcf(issRecord, new Date(), 180);
-    if (orbit.length < 2) return;
-    satelliteOrbitRef.current = viewer.entities.add({
-      id: "iss-live-orbit",
-      polyline: {
-        positions: orbit.map((point) => new Cesium.Cartesian3(point.x, point.y, point.z)),
-        width: 2.4,
-        material: Cesium.Color.fromCssColorString("#67e8f9").withAlpha(0.58),
-      },
+    satelliteRendererRef.current?.sync({
+      satellites,
+      tleRecords,
+      visible: viewMode === "earth" && satelliteLayer,
+      selectedId: selected?.kind === "satellite" ? selected.id : null,
+      isMobile,
+      cameraHeight,
+      time: selectedTime,
     });
-    return () => {
-      if (satelliteOrbitRef.current && viewerRef.current) {
-        viewerRef.current.entities.remove(satelliteOrbitRef.current);
-        satelliteOrbitRef.current = null;
-      }
-    };
-  }, [tleRecords, satelliteLayer, viewMode, cesiumReady]);
+  }, [satellites, tleRecords, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime]);
+
+
 
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
@@ -794,7 +724,9 @@ export default function WorldSelectApp() {
 
   useEffect(() => {
     if (viewMode === "earth") return;
-    clearIds(quakeIdsRef.current); clearIds(satIdsRef.current); clearIds(aircraftIdsRef.current);
+    earthquakeRendererRef.current?.clear();
+    satelliteRendererRef.current?.clear();
+    clearIds(aircraftIdsRef.current);
   }, [viewMode, clearIds]);
 
   useEffect(() => {
