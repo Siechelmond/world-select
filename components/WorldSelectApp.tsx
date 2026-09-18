@@ -6,8 +6,9 @@ import type { SpatialEntity } from "@/lib/spatial";
 import { createCoreLiveWorld } from "@/runtime/gev/core-live-world";
 import { createEarthquakeRenderer } from "@/runtime/gev/layers/earthquakes-renderer";
 import { createSatelliteRenderer } from "@/runtime/gev/layers/satellites-renderer";
+import { createAircraftRenderer } from "@/runtime/gev/layers/aircraft-renderer";
 import { propagateTles, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
-import { projectAircraftPosition, type AircraftFeedMeta } from "@/lib/aircraft";
+import type { AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
 import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
@@ -43,21 +44,17 @@ const GROUND_HEIGHT_M = 120_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
 const SEN_ISS_LIVE_VIDEO_ID = process.env.NEXT_PUBLIC_SEN_ISS_LIVE_VIDEO_ID ?? "fO9e9jnhYK8";
-const AIRCRAFT_ICON = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path fill="white" stroke="#111827" stroke-width="2" d="M32 3c3 0 5 4 5 9v12l20 12v6L37 36v13l8 7v5l-13-4-13 4v-5l8-7V36L7 42v-6l20-12V12c0-5 2-9 5-9Z"/></svg>`)}`;
-
 export default function WorldSelectApp() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
   const entityMapRef = useRef(new Map<string, SpatialEntity>());
   const earthquakeRendererRef = useRef<ReturnType<typeof createEarthquakeRenderer> | null>(null);
   const satelliteRendererRef = useRef<ReturnType<typeof createSatelliteRenderer> | null>(null);
-  const aircraftIdsRef = useRef(new Set<string>());
-  const aircraftTrailRef = useRef(new Map<string, Array<{ longitude: number; latitude: number; altitudeMeters: number }>>());
+  const aircraftRendererRef = useRef<ReturnType<typeof createAircraftRenderer> | null>(null);
   const geoLabelIdsRef = useRef(new Set<string>());
   const annotationIdsRef = useRef(new Set<string>());
   const trafficLayerRef = useRef<any>(null);
   const trafficIncidentLayerRef = useRef<any>(null);
-  const aircraftCoverageRef = useRef<any>(null);
   const viewerLifecycleRef = useRef<ReturnType<typeof createWorldViewer> | null>(null);
   const trafficVehicleCollectionRef = useRef<any>(null);
   const trafficRoadCollectionRef = useRef<any>(null);
@@ -305,12 +302,19 @@ export default function WorldSelectApp() {
       Cesium: window.Cesium,
       entityRegistry: entityMapRef.current,
     });
+    aircraftRendererRef.current = createAircraftRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+    });
 
     return () => {
       earthquakeRendererRef.current?.destroy();
       satelliteRendererRef.current?.destroy();
+      aircraftRendererRef.current?.destroy();
       earthquakeRendererRef.current = null;
       satelliteRendererRef.current = null;
+      aircraftRendererRef.current = null;
       lifecycle.destroy();
       viewerLifecycleRef.current = null;
       viewerRef.current = null;
@@ -391,12 +395,7 @@ export default function WorldSelectApp() {
     setThreeDError(ok ? null : "Google Photorealistic 3D is not configured for this preview");
   }, [photorealistic3D]);
 
-  const clearIds = useCallback((ids: Set<string>) => {
-    const viewer = viewerRef.current;
-    if (!viewer) return;
-    for (const id of ids) { viewer.entities.removeById(id); entityMapRef.current.delete(id); }
-    ids.clear();
-  }, []);
+
 
   useEffect(() => {
     earthquakeRendererRef.current?.sync(
@@ -420,113 +419,15 @@ export default function WorldSelectApp() {
 
 
   useEffect(() => {
-    const viewer = viewerRef.current; const Cesium = window.Cesium;
-    if (!viewer || !Cesium) return;
-
-    if (aircraftCoverageRef.current) {
-      viewer.entities.remove(aircraftCoverageRef.current);
-      aircraftCoverageRef.current = null;
-    }
-
-    if (viewMode !== "earth" || (!aircraftLayer && !militaryLayer) || !aircraftAvailable) {
-      clearIds(aircraftIdsRef.current);
-      return;
-    }
-
-    // Query coverage remains in source metadata; do not paint an ambiguous yellow footprint on the globe.
-    const liveIds = new Set<string>();
-    const selectedAircraftId = selected?.kind === "aircraft" ? selected.id : null;
-
-    for (const spatial of renderedAircraft) {
-      liveIds.add(spatial.id);
-      const isSelected = spatial.id === selectedAircraftId;
-      const canProject = spatial.dataState !== "STALE" && followAircraft && isSelected;
-      const projected = canProject ? projectAircraftPosition(spatial, nowTick) : spatial.position;
-      const displayEntity: SpatialEntity = {
-        ...spatial,
-        position: projected,
-        dataState: canProject ? "ESTIMATED" : spatial.dataState,
-        properties: {
-          ...spatial.properties,
-          displayPosition: canProject ? "estimated between observed ADS-B samples" : spatial.dataState === "STALE" ? "last known stale ADS-B sample" : "last observed ADS-B sample",
-        },
-      };
-      entityMapRef.current.set(spatial.id, displayEntity);
-      const position = Cesium.Cartesian3.fromDegrees(projected.longitude, projected.latitude, projected.altitudeMeters);
-      const existing = viewer.entities.getById(spatial.id);
-      const speed = Number(spatial.properties.groundSpeedKt ?? 0);
-
-      // Trails are expensive and visually noisy: only the selected aircraft gets one.
-      const observedTrail = isSelected ? (aircraftTrailRef.current.get(spatial.id) ?? []) : [];
-      const trailPositions = observedTrail.map((p) => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitudeMeters));
-      const pixelSize = cameraHeight > 2_000_000 ? 4 : cameraHeight > 600_000 ? 5 : speed > 250 ? 8 : 7;
-
-      const headingDeg = Number(spatial.properties.trackDeg ?? 0);
-      const iconSize = Math.max(14, pixelSize * (isSelected ? 4.1 : 3.2));
-      if (existing) {
-        existing.position = new Cesium.ConstantPositionProperty(position);
-        if (existing.billboard) {
-          existing.billboard.width = new Cesium.ConstantProperty(iconSize);
-          existing.billboard.height = new Cesium.ConstantProperty(iconSize);
-          existing.billboard.rotation = new Cesium.ConstantProperty(Cesium.Math.toRadians(-headingDeg));
-          existing.billboard.color = new Cesium.ConstantProperty(isSelected ? Cesium.Color.fromCssColorString("#fde047") : Cesium.Color.fromCssColorString("#facc15"));
-        }
-        if (existing.polyline) {
-          existing.polyline.show = new Cesium.ConstantProperty(isSelected && trailPositions.length > 1);
-          existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
-        }
-        if (existing.label) {
-          existing.label.show = new Cesium.ConstantProperty(isSelected);
-          existing.label.text = new Cesium.ConstantProperty(`${spatial.name}`);
-        }
-      } else {
-        aircraftIdsRef.current.add(spatial.id);
-        viewer.entities.add({
-          id: spatial.id,
-          position,
-          billboard: {
-            image: AIRCRAFT_ICON,
-            width: iconSize,
-            height: iconSize,
-            rotation: Cesium.Math.toRadians(-headingDeg),
-            color: isSelected ? Cesium.Color.fromCssColorString("#fde047") : Cesium.Color.fromCssColorString("#facc15"),
-            disableDepthTestDistance: 3_000_000,
-          },
-          polyline: {
-            show: isSelected && trailPositions.length > 1,
-            positions: trailPositions,
-            width: 2,
-            material: Cesium.Color.fromCssColorString("#facc15").withAlpha(0.65),
-            clampToGround: false,
-          },
-          label: {
-            show: isSelected,
-            text: `${spatial.name}`,
-            font: "11px sans-serif",
-            fillColor: Cesium.Color.fromCssColorString("#fef08a"),
-            pixelOffset: new Cesium.Cartesian2(13, -13),
-            showBackground: true,
-            backgroundColor: Cesium.Color.fromCssColorString("#111827").withAlpha(0.72),
-          },
-        });
-      }
-    }
-
-    for (const id of Array.from(aircraftIdsRef.current) as string[]) {
-      if (!liveIds.has(id)) {
-        viewer.entities.removeById(id);
-        entityMapRef.current.delete(id);
-        aircraftIdsRef.current.delete(id);
-      }
-    }
-
-    return () => {
-      if (aircraftCoverageRef.current) {
-        viewer.entities.remove(aircraftCoverageRef.current);
-        aircraftCoverageRef.current = null;
-      }
-    };
-  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, clearIds, cesiumReady, nowTick, animateAircraft, cameraHeight, aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm, selected, followAircraft]);
+    aircraftRendererRef.current?.sync({
+      items: renderedAircraft,
+      visible: viewMode === "earth" && (aircraftLayer || militaryLayer) && aircraftAvailable,
+      selectedId: selected?.kind === "aircraft" ? selected.id : null,
+      followSelected: followAircraft,
+      nowMs: nowTick,
+      cameraHeight,
+    });
+  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, cesiumReady, nowTick, cameraHeight, selected?.id, selected?.kind, followAircraft]);
 
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
@@ -726,20 +627,10 @@ export default function WorldSelectApp() {
     if (viewMode === "earth") return;
     earthquakeRendererRef.current?.clear();
     satelliteRendererRef.current?.clear();
-    clearIds(aircraftIdsRef.current);
-  }, [viewMode, clearIds]);
+    aircraftRendererRef.current?.clear();
+  }, [viewMode]);
 
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer) return;
-    if (!followAircraft || selected?.kind !== "aircraft") {
-      if (viewer.trackedEntity) viewer.trackedEntity = undefined;
-      return;
-    }
-    const target = viewer.entities.getById(selected.id);
-    if (target) viewer.trackedEntity = target;
-    return () => { if (viewerRef.current?.trackedEntity?.id === selected.id) viewerRef.current.trackedEntity = undefined; };
-  }, [followAircraft, selected?.id, selected?.kind]);
+
 
   const flyEarth = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
@@ -841,7 +732,7 @@ export default function WorldSelectApp() {
   const clearSelection = useCallback(() => {
     setSelected(null);
     setFollowAircraft(false);
-    if (viewerRef.current?.trackedEntity) viewerRef.current.trackedEntity = undefined;
+    aircraftRendererRef.current?.clear();
   }, []);
   const addAnnotation = () => {
     const label = window.prompt("Annotation label", "Marker");
