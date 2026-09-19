@@ -1049,3 +1049,34 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
 @media (max-width: 780px) {
   .panelCollapse { display: none; }
 }
+
+/* v6.1 — GEV-style keyless layer groups + compact filter chips */
+.layerGroupTitle {
+  margin: 14px 2px 6px;
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .14em;
+}
+.filterChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: -4px 0 10px;
+}
+.filterChips button {
+  border: 1px solid rgba(103,232,249,.14);
+  background: rgba(15,23,42,.58);
+  color: #64748b;
+  border-radius: 999px;
+  padding: 5px 7px;
+  font-size: 8px;
+  font-weight: 800;
+  cursor: pointer;
+  letter-spacing: .04em;
+}
+.filterChips button.active {
+  color: #cffafe;
+  background: rgba(8,145,178,.2);
+  border-color: rgba(103,232,249,.3);
+}

@@ -8,6 +8,8 @@ import { createEarthquakeRenderer } from "@/runtime/gev/layers/earthquakes-rende
 import { createSatelliteRenderer } from "@/runtime/gev/layers/satellites-renderer";
 import { createAircraftRenderer } from "@/runtime/gev/layers/aircraft-renderer";
 import { createTrafficController } from "@/runtime/gev/layers/traffic-controller";
+import { createPointLayerRenderer } from "@/runtime/gev/layers/point-layer-renderer";
+import { createInfrastructureRenderer } from "@/runtime/gev/layers/infrastructure-renderer";
 import { createCelestialBridgeRenderer } from "@/runtime/gev/layers/celestial-bridge-renderer";
 import { propagateTles, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
 import type { AircraftFeedMeta } from "@/lib/aircraft";
@@ -18,6 +20,15 @@ import SpaceExplorer from "@/components/SpaceExplorer";
 import { createWorldViewer, type WorldMapMode } from "@/lib/cesium-viewer";
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
 import { resolveLayerState, type LayerLoadState as LoadState } from "@/lib/layer-runtime";
+import {
+  fetchNaturalEvents,
+  fetchAurora,
+  fetchWeather,
+  fetchRadioStations,
+  fetchInfrastructure,
+  type InfrastructureFeature,
+  type InfrastructureCategory,
+} from "@/lib/keyless";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
 
@@ -25,7 +36,11 @@ type ViewMode = "earth" | "space";
 type MobilePanel = "none" | "layers" | "inspector" | "time" | "street";
 type StreetProvider = "google" | "kartaview";
 type EarthPoint = { latitude: number; longitude: number };
-type LayerError = { earthquakes?: string; satellites?: string; aircraft?: string; military?: string; street?: string; traffic?: string };
+type LayerError = {
+  earthquakes?: string; satellites?: string; aircraft?: string; military?: string;
+  street?: string; traffic?: string; events?: string; aurora?: string;
+  weather?: string; radio?: string; infrastructure?: string;
+};
 
 const DAY_MS = 86_400_000;
 const SATELLITE_TICK_MS = 1_000;
@@ -33,6 +48,22 @@ const MOBILE_SATELLITE_TICK_MS = 2_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
+const EVENT_FILTERS = ["all", "fire", "storm", "volcano", "flood", "ice", "other"] as const;
+const RADIO_FILTERS = ["all", "news", "talk", "weather", "public-safety", "aviation-marine", "traffic-transit", "music", "other"] as const;
+const INFRA_FILTERS: InfrastructureCategory[] = ["cable", "landing", "datacenter", "dam"];
+
+function radioMatches(item: SpatialEntity, filter: string) {
+  if (filter === "all") return true;
+  const tags = String(item.properties.tags ?? "").toLowerCase();
+  if (filter === "news") return tags.includes("news");
+  if (filter === "talk") return tags.includes("talk");
+  if (filter === "weather") return tags.includes("weather") || tags.includes("emergency");
+  if (filter === "public-safety") return tags.includes("scanner") || tags.includes("public safety") || tags.includes("police") || tags.includes("fire");
+  if (filter === "aviation-marine") return tags.includes("aviation") || tags.includes("marine");
+  if (filter === "traffic-transit") return tags.includes("traffic") || tags.includes("transit");
+  if (filter === "music") return /(music|rock|pop|jazz|classical|dance|electronic|country|hip hop|metal)/.test(tags);
+  return !/(news|talk|weather|emergency|scanner|public safety|police|aviation|marine|traffic|transit|music|rock|pop|jazz|classical|dance|electronic|country|hip hop|metal)/.test(tags);
+}
 
 const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
 const CESIUM_ION_TOKEN = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN ?? "";
@@ -49,6 +80,11 @@ export default function WorldSelectApp() {
   const viewerLifecycleRef = useRef<ReturnType<typeof createWorldViewer> | null>(null);
   const trafficControllerRef = useRef<ReturnType<typeof createTrafficController> | null>(null);
   const celestialBridgeRendererRef = useRef<ReturnType<typeof createCelestialBridgeRenderer> | null>(null);
+  const eventRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
+  const auroraRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
+  const weatherRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
+  const radioRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
+  const infrastructureRendererRef = useRef<ReturnType<typeof createInfrastructureRenderer> | null>(null);
   const coreRuntimeRef = useRef<ReturnType<typeof createCoreLiveWorld> | null>(null);
 
   const [cesiumReady, setCesiumReady] = useState(false);
@@ -63,6 +99,14 @@ export default function WorldSelectApp() {
   const [aircraftLayer, setAircraftLayer] = useState(true);
   const [militaryLayer, setMilitaryLayer] = useState(true);
   const [trafficLayer, setTrafficLayer] = useState(true);
+  const [eventLayer, setEventLayer] = useState(false);
+  const [auroraLayer, setAuroraLayer] = useState(false);
+  const [weatherLayer, setWeatherLayer] = useState(false);
+  const [radioLayer, setRadioLayer] = useState(false);
+  const [infrastructureLayer, setInfrastructureLayer] = useState(false);
+  const [eventFilter, setEventFilter] = useState<(typeof EVENT_FILTERS)[number]>("all");
+  const [radioFilter, setRadioFilter] = useState<(typeof RADIO_FILTERS)[number]>("all");
+  const [infraFilters, setInfraFilters] = useState<InfrastructureCategory[]>(INFRA_FILTERS);
   const [viewMode, setViewMode] = useState<ViewMode>("earth");
   const [earthquakeState, setEarthquakeState] = useState<LoadState>("idle");
   const [satelliteState, setSatelliteState] = useState<LoadState>("idle");
@@ -72,6 +116,22 @@ export default function WorldSelectApp() {
   const [militaryMeta, setMilitaryMeta] = useState<MilitaryFeedMeta | null>(null);
   const [trafficState, setTrafficState] = useState<LoadState>("idle");
   const [trafficVehicleCount, setTrafficVehicleCount] = useState(0);
+  const [naturalEvents, setNaturalEvents] = useState<SpatialEntity[]>([]);
+  const [aurora, setAurora] = useState<SpatialEntity[]>([]);
+  const [weather, setWeather] = useState<SpatialEntity[]>([]);
+  const [radioStations, setRadioStations] = useState<SpatialEntity[]>([]);
+  const [infrastructure, setInfrastructure] = useState<InfrastructureFeature[]>([]);
+  const [eventState, setEventState] = useState<LoadState>("idle");
+  const [auroraState, setAuroraState] = useState<LoadState>("idle");
+  const [weatherState, setWeatherState] = useState<LoadState>("idle");
+  const [radioState, setRadioState] = useState<LoadState>("idle");
+  const [infrastructureState, setInfrastructureState] = useState<LoadState>("idle");
+  const [spaceKp, setSpaceKp] = useState<number | null>(null);
+  const [eventRetry, setEventRetry] = useState(0);
+  const [auroraRetry, setAuroraRetry] = useState(0);
+  const [weatherRetry, setWeatherRetry] = useState(0);
+  const [radioRetry, setRadioRetry] = useState(0);
+  const [infrastructureRetry, setInfrastructureRetry] = useState(0);
   const [viewCenter, setViewCenter] = useState<EarthPoint>(INITIAL_CENTER);
   const [cameraHeight, setCameraHeight] = useState(9_500_000);
   const [followAircraft, setFollowAircraft] = useState(false);
@@ -139,6 +199,19 @@ export default function WorldSelectApp() {
       ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
       : viewCenter
   );
+  const filteredEvents = useMemo(
+    () => eventFilter === "all" ? naturalEvents : naturalEvents.filter((item) => item.properties.category === eventFilter),
+    [naturalEvents, eventFilter],
+  );
+  const filteredRadio = useMemo(
+    () => radioStations.filter((item) => radioMatches(item, radioFilter)),
+    [radioStations, radioFilter],
+  );
+  const infrastructureRadiusKm = cameraHeight < 80_000 ? 25 : cameraHeight < 500_000 ? 70 : 180;
+  const keylessCenter = useMemo(() => ({
+    latitude: Math.round(viewCenter.latitude * 4) / 4,
+    longitude: Math.round(viewCenter.longitude * 4) / 4,
+  }), [viewCenter.latitude, viewCenter.longitude]);
 
   const setLayerError = useCallback((key: keyof LayerError, message?: string) => {
     setLayerErrors((current) => ({ ...current, [key]: message }));
@@ -226,6 +299,103 @@ export default function WorldSelectApp() {
   }, [satelliteCatalog]);
 
 
+  useEffect(() => {
+    if (!eventLayer) { setEventState("idle"); return; }
+    const controller = new AbortController();
+    setEventState("loading");
+    fetchNaturalEvents(controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        setNaturalEvents(items);
+        setEventState(items.length ? "ready" : "error");
+        setLayerError("events", items.length ? undefined : "NASA EONET returned no open events");
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setEventState("error");
+        setLayerError("events", error instanceof Error ? error.message : "NASA EONET unavailable");
+      });
+    return () => controller.abort();
+  }, [eventLayer, eventRetry, setLayerError]);
+
+  useEffect(() => {
+    if (!auroraLayer) { setAuroraState("idle"); return; }
+    const controller = new AbortController();
+    setAuroraState("loading");
+    fetchAurora(controller.signal)
+      .then(({ items, kp }) => {
+        if (controller.signal.aborted) return;
+        setAurora(items);
+        setSpaceKp(kp);
+        setAuroraState(items.length ? "ready" : "degraded");
+        setLayerError("aurora", items.length ? undefined : "NOAA SWPC returned no visible aurora cells");
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setAuroraState("error");
+        setLayerError("aurora", error instanceof Error ? error.message : "NOAA SWPC unavailable");
+      });
+    return () => controller.abort();
+  }, [auroraLayer, auroraRetry, setLayerError]);
+
+  useEffect(() => {
+    if (!weatherLayer) { setWeatherState("idle"); return; }
+    const controller = new AbortController();
+    setWeatherState("loading");
+    fetchWeather(keylessCenter.latitude, keylessCenter.longitude, controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        setWeather(items);
+        setWeatherState(items.length ? "ready" : "error");
+        setLayerError("weather", items.length ? undefined : "Open-Meteo returned no observation");
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setWeatherState("error");
+        setLayerError("weather", error instanceof Error ? error.message : "Open-Meteo unavailable");
+      });
+    return () => controller.abort();
+  }, [weatherLayer, weatherRetry, keylessCenter.latitude, keylessCenter.longitude, setLayerError]);
+
+  useEffect(() => {
+    if (!radioLayer) { setRadioState("idle"); return; }
+    const controller = new AbortController();
+    setRadioState("loading");
+    fetchRadioStations(controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        setRadioStations(items);
+        setRadioState(items.length ? "ready" : "error");
+        setLayerError("radio", items.length ? undefined : "Radio Browser returned no geolocated HTTPS stations");
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setRadioState("error");
+        setLayerError("radio", error instanceof Error ? error.message : "Radio Browser unavailable");
+      });
+    return () => controller.abort();
+  }, [radioLayer, radioRetry, setLayerError]);
+
+  useEffect(() => {
+    if (!infrastructureLayer) { setInfrastructureState("idle"); return; }
+    const controller = new AbortController();
+    setInfrastructureState("loading");
+    fetchInfrastructure(keylessCenter.latitude, keylessCenter.longitude, infrastructureRadiusKm, controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        setInfrastructure(items);
+        setInfrastructureState(items.length ? "ready" : "degraded");
+        setLayerError("infrastructure", items.length ? undefined : "No mapped infrastructure returned for this viewport");
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setInfrastructureState("error");
+        setLayerError("infrastructure", error instanceof Error ? error.message : "OSM infrastructure unavailable");
+      });
+    return () => controller.abort();
+  }, [infrastructureLayer, infrastructureRetry, keylessCenter.latitude, keylessCenter.longitude, infrastructureRadiusKm, setLayerError]);
+
+
 
   useEffect(() => {
     if (!cesiumReady || !containerRef.current || !window.Cesium || viewerRef.current) return;
@@ -287,6 +457,35 @@ export default function WorldSelectApp() {
       Cesium: window.Cesium,
       entityRegistry: entityMapRef.current,
     });
+    eventRendererRef.current = createPointLayerRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+      styleFor: (item) => {
+        const category = String(item.properties.category ?? "other");
+        const color = category === "fire" ? "#fb923c" : category === "storm" ? "#60a5fa" : category === "volcano" ? "#ef4444" : category === "flood" ? "#22d3ee" : category === "ice" ? "#e0f2fe" : "#c084fc";
+        return { color, pixelSize: 9, clampToGround: true, disableDepthTestDistance: 3000 };
+      },
+    });
+    auroraRendererRef.current = createPointLayerRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+      styleFor: (item) => ({ color: "#4ade80", pixelSize: Math.max(3, Math.min(10, Number(item.properties.probability ?? 0) / 10)), altitudeMeters: 110_000, disableDepthTestDistance: 0 }),
+    });
+    weatherRendererRef.current = createPointLayerRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+      styleFor: () => ({ color: "#38bdf8", pixelSize: 11, clampToGround: true, disableDepthTestDistance: 3000 }),
+    });
+    radioRendererRef.current = createPointLayerRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+      styleFor: () => ({ color: "#f472b6", pixelSize: 6, clampToGround: true, disableDepthTestDistance: 2500 }),
+    });
+    infrastructureRendererRef.current = createInfrastructureRenderer({ viewer: lifecycle.viewer, Cesium: window.Cesium });
 
     return () => {
       earthquakeRendererRef.current?.destroy();
@@ -294,11 +493,21 @@ export default function WorldSelectApp() {
       aircraftRendererRef.current?.destroy();
       trafficControllerRef.current?.destroy();
       celestialBridgeRendererRef.current?.destroy();
+      eventRendererRef.current?.destroy();
+      auroraRendererRef.current?.destroy();
+      weatherRendererRef.current?.destroy();
+      radioRendererRef.current?.destroy();
+      infrastructureRendererRef.current?.destroy();
       earthquakeRendererRef.current = null;
       satelliteRendererRef.current = null;
       aircraftRendererRef.current = null;
       trafficControllerRef.current = null;
       celestialBridgeRendererRef.current = null;
+      eventRendererRef.current = null;
+      auroraRendererRef.current = null;
+      weatherRendererRef.current = null;
+      radioRendererRef.current = null;
+      infrastructureRendererRef.current = null;
       lifecycle.destroy();
       viewerLifecycleRef.current = null;
       viewerRef.current = null;
@@ -462,8 +671,33 @@ export default function WorldSelectApp() {
       latitude: viewCenter.latitude,
       longitude: viewCenter.longitude,
       cameraHeight,
+      mapMode,
     });
-  }, [trafficLayer, viewMode, viewCenter.latitude, viewCenter.longitude, cameraHeight, cesiumReady]);
+  }, [trafficLayer, viewMode, viewCenter.latitude, viewCenter.longitude, cameraHeight, mapMode, cesiumReady]);
+
+  useEffect(() => {
+    eventRendererRef.current?.sync(filteredEvents, viewMode === "earth" && eventLayer);
+  }, [filteredEvents, eventLayer, viewMode, cesiumReady]);
+
+  useEffect(() => {
+    auroraRendererRef.current?.sync(aurora, viewMode === "earth" && auroraLayer);
+  }, [aurora, auroraLayer, viewMode, cesiumReady]);
+
+  useEffect(() => {
+    weatherRendererRef.current?.sync(weather, viewMode === "earth" && weatherLayer);
+  }, [weather, weatherLayer, viewMode, cesiumReady]);
+
+  useEffect(() => {
+    radioRendererRef.current?.sync(filteredRadio, viewMode === "earth" && radioLayer);
+  }, [filteredRadio, radioLayer, viewMode, cesiumReady]);
+
+  useEffect(() => {
+    infrastructureRendererRef.current?.sync(
+      infrastructure,
+      viewMode === "earth" && infrastructureLayer,
+      new Set(infraFilters),
+    );
+  }, [infrastructure, infrastructureLayer, infraFilters, viewMode, cesiumReady]);
 
 
   useEffect(() => {
@@ -710,6 +944,17 @@ export default function WorldSelectApp() {
         <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · real altitude · ${renderedAircraft.length}/${visibleAircraft.length} rendered` : "NOW only"} state={aircraftState} count={aircraftAvailable ? renderedAircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
         <LayerToggle checked={militaryLayer} onChange={toggleMilitaryLayer} onRetry={() => retryLayer("military")} title="Military" subtitle={aircraftAvailable ? `ADSB.lol · global military snapshot · ${militaryMeta?.stale ? "last-good" : "live"}` : "NOW only"} state={militaryState} count={aircraftAvailable ? military.length : 0} disabled={!aircraftAvailable} error={layerErrors.military} />
         <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="AUTO near ground · OSM roads + modeled vehicles · TomTom when available" state={trafficState} count={trafficVehicleCount} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
+        <div className="layerGroupTitle">EVENTS</div>
+        <LayerToggle checked={eventLayer} onChange={setEventLayer} onRetry={() => setEventRetry((v) => v + 1)} title="Natural Events" subtitle="NASA EONET · open events" state={eventState} count={filteredEvents.length} disabled={viewMode !== "earth"} error={layerErrors.events} />
+        {eventLayer && <div className="filterChips">{EVENT_FILTERS.map((filter) => <button key={filter} className={eventFilter === filter ? "active" : ""} onClick={() => setEventFilter(filter)}>{filter.toUpperCase()}</button>)}</div>}
+        <LayerToggle checked={auroraLayer} onChange={setAuroraLayer} onRetry={() => setAuroraRetry((v) => v + 1)} title="Space Weather" subtitle={spaceKp == null ? "NOAA SWPC · OVATION aurora" : `NOAA SWPC · OVATION · Kp ${spaceKp.toFixed(1)}`} state={auroraState} count={aurora.length} disabled={viewMode !== "earth"} error={layerErrors.aurora} />
+        <LayerToggle checked={weatherLayer} onChange={setWeatherLayer} onRetry={() => setWeatherRetry((v) => v + 1)} title="Weather" subtitle="Open-Meteo · current focus conditions" state={weatherState} count={weather.length} disabled={viewMode !== "earth"} error={layerErrors.weather} />
+        <div className="layerGroupTitle">INFRASTRUCTURE</div>
+        <LayerToggle checked={infrastructureLayer} onChange={setInfrastructureLayer} onRetry={() => setInfrastructureRetry((v) => v + 1)} title="Infrastructure" subtitle="OSM · cables · landing stations · datacenters · dams" state={infrastructureState} count={infrastructure.length} disabled={viewMode !== "earth"} error={layerErrors.infrastructure} />
+        {infrastructureLayer && <div className="filterChips">{INFRA_FILTERS.map((filter) => <button key={filter} className={infraFilters.includes(filter) ? "active" : ""} onClick={() => setInfraFilters((current) => current.includes(filter) ? current.filter((value) => value !== filter) : [...current, filter])}>{filter.toUpperCase()}</button>)}</div>}
+        <div className="layerGroupTitle">UTILITIES</div>
+        <LayerToggle checked={radioLayer} onChange={setRadioLayer} onRetry={() => setRadioRetry((v) => v + 1)} title="Radio" subtitle="Radio Browser · geolocated HTTPS stations" state={radioState} count={filteredRadio.length} disabled={viewMode !== "earth"} error={layerErrors.radio} />
+        {radioLayer && <div className="filterChips">{RADIO_FILTERS.map((filter) => <button key={filter} className={radioFilter === filter ? "active" : ""} onClick={() => setRadioFilter(filter)}>{filter.replace("-", " ").toUpperCase()}</button>)}</div>}
         <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>
           <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth"} onChange={(event) => setPlanetOrbits(event.target.checked)} />
           <span><strong>Planet orbits</strong><small>Approximate JPL elements · physical AU/m scale</small></span>
@@ -837,6 +1082,27 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, onClear, followAircr
       ["Emergency", String(entity.properties.emergency ?? "none")],
       ["Last seen", entity.properties.seenSeconds != null ? `${entity.properties.seenSeconds}s ago` : "—"],
       ["Position", String(entity.properties.displayPosition ?? "last observed ADS-B sample")],
+    );
+  } else if (entity.kind === "natural-event") {
+    rows.push(
+      ["Category", String(entity.properties.categoryTitle ?? entity.properties.category ?? "—")],
+      ["Magnitude", entity.properties.magnitude != null ? `${entity.properties.magnitude} ${entity.properties.magnitudeUnit ?? ""}`.trim() : "—"],
+    );
+  } else if (entity.kind === "aurora") {
+    rows.push(["Probability", `${Math.round(Number(entity.properties.probability ?? 0))}%`], ["Kp", String(entity.properties.kp ?? "—")]);
+  } else if (entity.kind === "weather-observation") {
+    rows.push(
+      ["Temperature", `${entity.properties.temperatureC ?? "—"} °C`],
+      ["Wind", `${entity.properties.windKmh ?? "—"} km/h`],
+      ["Cloud", `${entity.properties.cloudCoverPct ?? "—"}%`],
+      ["Visibility", `${entity.properties.visibilityM ?? "—"} m`],
+    );
+  } else if (entity.kind === "radio-station") {
+    rows.push(
+      ["Country", String(entity.properties.country ?? "—")],
+      ["Language", String(entity.properties.language ?? "—")],
+      ["Codec", String(entity.properties.codec ?? "—")],
+      ["Bitrate", `${entity.properties.bitrate ?? "—"} kbps`],
     );
   } else if (entity.kind === "celestial-body") {
     if (entity.properties.category) rows.push(["Category", String(entity.properties.category)]);

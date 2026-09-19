@@ -13,7 +13,11 @@ export type SpatialEntityKind =
   | "satellite"
   | "traffic-event"
   | "celestial-body"
-  | "spacecraft";
+  | "spacecraft"
+  | "natural-event"
+  | "aurora"
+  | "weather-observation"
+  | "radio-station";
 
 export interface SpatialEntity {
   id: string;

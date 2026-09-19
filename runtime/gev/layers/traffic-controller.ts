@@ -17,6 +17,7 @@ type Context = {
   latitude: number;
   longitude: number;
   cameraHeight: number;
+  mapMode: "photoreal" | "satellite" | "map" | "nasa";
 };
 
 type RuntimeState = {
@@ -43,6 +44,7 @@ export function createTrafficController(input: {
     latitude: 0,
     longitude: 0,
     cameraHeight: Number.POSITIVE_INFINITY,
+    mapMode: "satellite",
   };
   let status: TrafficStatus | null = null;
   let flowLayer: any = null;
@@ -52,6 +54,7 @@ export function createTrafficController(input: {
   let statusController: AbortController | null = null;
   let vectorController: AbortController | null = null;
   let roadCollection: any = null;
+  let groundRoadPrimitives: any[] = [];
   let vehicleCollection: any = null;
   let vehicleTimer: ReturnType<typeof setInterval> | null = null;
   let fallbackKey: string | null = null;
@@ -74,6 +77,10 @@ export function createTrafficController(input: {
     if (roadCollection) {
       try { viewer.scene.primitives.remove(roadCollection); } catch {}
     }
+    for (const primitive of groundRoadPrimitives) {
+      try { viewer.scene.groundPrimitives.remove(primitive); } catch {}
+    }
+    groundRoadPrimitives = [];
     vehicleCollection = null;
     roadCollection = null;
     fallbackKey = null;
@@ -95,7 +102,7 @@ export function createTrafficController(input: {
   };
 
   const mountLive = () => {
-    if (flowLayer || destroyed || !context.enabled || !context.earthVisible) return;
+    if (flowLayer || destroyed || !context.enabled || !context.earthVisible || context.mapMode === "photoreal") return;
     flowProvider = new Cesium.UrlTemplateImageryProvider({
       url: '/api/traffic?z={z}&x={x}&y={y}',
       minimumLevel: 0,
@@ -139,7 +146,7 @@ export function createTrafficController(input: {
 
   const vectorKey = () => {
     const bucket = context.cameraHeight < 35_000 ? 'near' : 'city';
-    return `${context.latitude.toFixed(2)}:${context.longitude.toFixed(2)}:${bucket}`;
+    return `${context.latitude.toFixed(2)}:${context.longitude.toFixed(2)}:${bucket}:${context.mapMode}`;
   };
 
   async function ensureFallback() {
@@ -148,7 +155,7 @@ export function createTrafficController(input: {
       context.enabled &&
       context.earthVisible &&
       context.cameraHeight < 180_000 &&
-      (liveFailed || (status != null && (!status.configured || !status.available)));
+      (context.mapMode === "photoreal" || liveFailed || (status != null && (!status.configured || !status.available)));
 
     if (!shouldFallback) {
       clearVector();
@@ -156,7 +163,7 @@ export function createTrafficController(input: {
     }
 
     const key = vectorKey();
-    if (fallbackKey === key && (roadCollection || vectorController)) return;
+    if (fallbackKey === key && (roadCollection || groundRoadPrimitives.length || vehicleCollection || vectorController)) return;
     clearVector();
     fallbackKey = key;
     const controller = new AbortController();
@@ -166,9 +173,10 @@ export function createTrafficController(input: {
     let roads: RoadSegment[] = [];
     let flows: FlowSegment[] = [];
     let vehicles: ModeledVehicle[] = [];
-    roadCollection = new Cesium.PolylineCollection();
-    vehicleCollection = new Cesium.PointPrimitiveCollection();
-    viewer.scene.primitives.add(roadCollection);
+    const photoreal = context.mapMode === "photoreal";
+    roadCollection = photoreal ? null : new Cesium.PolylineCollection();
+    vehicleCollection = new Cesium.PointPrimitiveCollection({ blendOption: Cesium.BlendOption.TRANSLUCENT });
+    if (roadCollection) viewer.scene.primitives.add(roadCollection);
     viewer.scene.primitives.add(vehicleCollection);
 
     const renderVehicles = () => {
@@ -208,24 +216,55 @@ export function createTrafficController(input: {
       vehicles = generateModeledVehicles(roads, flows, 260);
       vehicleCount = vehicles.length;
       const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
-      for (const road of roads) {
-        if (road.coordinates.length < 2) continue;
-        roadCollection.add({
-          positions: road.coordinates.map(([lon, lat]) =>
-            Cesium.Cartesian3.fromDegrees(lon, lat, 5)),
-          width: road.highway === 'motorway' || road.highway === 'trunk' ? 3 : 2,
-          material: Cesium.Material.fromType('Color', {
-            color: Cesium.Color.fromCssColorString(
-              getCongestionColor(flowMap.get(road.id)?.congestion ?? 'free-flow'),
-            ).withAlpha(0.82),
-          }),
-        });
+      if (photoreal && Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene)) {
+        const groups = new Map<string, any[]>();
+        for (const road of roads) {
+          if (road.coordinates.length < 2) continue;
+          const congestion = flowMap.get(road.id)?.congestion ?? 'free-flow';
+          const list = groups.get(congestion) ?? [];
+          list.push(new Cesium.GeometryInstance({
+            geometry: new Cesium.GroundPolylineGeometry({
+              positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat)),
+              width: road.highway === 'motorway' || road.highway === 'trunk' ? 4 : 2.5,
+            }),
+          }));
+          groups.set(congestion, list);
+        }
+        for (const [congestion, instances] of groups) {
+          if (!instances.length) continue;
+          const primitive = viewer.scene.groundPrimitives.add(new Cesium.GroundPolylinePrimitive({
+            geometryInstances: instances,
+            classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
+            appearance: new Cesium.PolylineMaterialAppearance({
+              material: Cesium.Material.fromType('PolylineGlow', {
+                color: Cesium.Color.fromCssColorString(getCongestionColor(congestion as any)).withAlpha(0.88),
+                glowPower: 0.18,
+              }),
+            }),
+          }));
+          groundRoadPrimitives.push(primitive);
+        }
+      } else if (roadCollection) {
+        for (const road of roads) {
+          if (road.coordinates.length < 2) continue;
+          roadCollection.add({
+            positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, 5)),
+            width: road.highway === 'motorway' || road.highway === 'trunk' ? 3 : 2,
+            material: Cesium.Material.fromType('Color', {
+              color: Cesium.Color.fromCssColorString(
+                getCongestionColor(flowMap.get(road.id)?.congestion ?? 'free-flow'),
+              ).withAlpha(0.82),
+            }),
+          });
+        }
       }
       renderVehicles();
       publish(
         roads.length ? 'degraded' : 'error',
         roads.length
-          ? 'OSM road geometry + modeled vehicle fallback · live TomTom unavailable'
+          ? (photoreal
+              ? '3D traffic overlay · OSM road geometry + modeled vehicles on Google 3D tiles'
+              : 'OSM road geometry + modeled vehicle fallback · live TomTom unavailable')
           : 'No OSM road geometry returned for this viewport',
       );
       if (vehicles.length) {
@@ -251,13 +290,15 @@ export function createTrafficController(input: {
       const next = await fetchTrafficStatus(controller.signal);
       if (controller.signal.aborted || destroyed) return;
       status = next;
-      if (next.configured && next.available && !liveFailed) {
+      if (next.configured && next.available && !liveFailed && context.mapMode !== 'photoreal') {
         clearVector();
         publish('ready');
       } else {
         publish(
           'degraded',
-          'Live TomTom flow unavailable · OSM road geometry + modeled vehicles available as city fallback',
+          context.mapMode === 'photoreal'
+            ? '3D traffic uses OSM road geometry + modeled vehicles over Google 3D tiles'
+            : 'Live TomTom flow unavailable · OSM road geometry + modeled vehicles available as city fallback',
         );
         void ensureFallback();
       }
@@ -294,11 +335,16 @@ export function createTrafficController(input: {
         return;
       }
 
-      mountLive();
+      if (context.mapMode === "photoreal") {
+        unmountLive();
+      } else {
+        mountLive();
+        if (status?.configured && status.available && !liveFailed) clearVector();
+      }
       if (!wasActive || (!status && !statusController)) void refreshStatus();
 
       const nextKey = vectorKey();
-      if (previousKey !== nextKey) void ensureFallback();
+      if (previousKey !== nextKey || context.mapMode === "photoreal") void ensureFallback();
       else if (liveFailed || (status && (!status.configured || !status.available))) void ensureFallback();
     },
 
