@@ -57,7 +57,15 @@ export function createTrafficController(input: {
   let groundRoadPrimitives: any[] = [];
   let vehicleCollection: any = null;
   let vehicleTimer: ReturnType<typeof setInterval> | null = null;
-  let fallbackKey: string | null = null;
+
+  // Traffic acquisition state is independent from camera zoom. Roads/flows/
+  // modeled vehicles survive zoom and map-style changes until the view has
+  // actually moved outside the cached local coverage.
+  let dataCenter: { latitude: number; longitude: number } | null = null;
+  let roads: RoadSegment[] = [];
+  let flows: FlowSegment[] = [];
+  let vehicles: ModeledVehicle[] = [];
+  let renderedMode: Context["mapMode"] | null = null;
   let liveFailed = false;
   let destroyed = false;
   let vehicleCount = 0;
@@ -66,9 +74,7 @@ export function createTrafficController(input: {
     onState({ state, status, error, vehicleCount });
   };
 
-  const clearVector = () => {
-    vectorController?.abort();
-    vectorController = null;
+  const clearRenderedFallback = () => {
     if (vehicleTimer) clearInterval(vehicleTimer);
     vehicleTimer = null;
     if (vehicleCollection) {
@@ -83,9 +89,33 @@ export function createTrafficController(input: {
     groundRoadPrimitives = [];
     vehicleCollection = null;
     roadCollection = null;
-    fallbackKey = null;
-    vehicleCount = 0;
+    renderedMode = null;
     viewer.scene?.requestRender?.();
+  };
+
+  const clearVector = () => {
+    vectorController?.abort();
+    vectorController = null;
+    clearRenderedFallback();
+    dataCenter = null;
+    roads = [];
+    flows = [];
+    vehicles = [];
+    vehicleCount = 0;
+  };
+
+  const distanceKm = (
+    a: { latitude: number; longitude: number },
+    b: { latitude: number; longitude: number },
+  ) => {
+    const toRad = (value: number) => value * Math.PI / 180;
+    const lat1 = toRad(a.latitude);
+    const lat2 = toRad(b.latitude);
+    const dLat = lat2 - lat1;
+    const dLon = toRad(b.longitude - a.longitude);
+    const h = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 6371.0088 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
   };
 
   const onTileError = (error: any) => {
@@ -144,134 +174,180 @@ export function createTrafficController(input: {
     incidentLayer = null;
   };
 
-  const vectorKey = () => {
-    const bucket = context.cameraHeight < 35_000 ? 'near' : 'city';
-    return `${context.latitude.toFixed(2)}:${context.longitude.toFixed(2)}:${bucket}:${context.mapMode}`;
-  };
+  const fallbackSourceNeeded = () =>
+    context.mapMode === "photoreal" ||
+    liveFailed ||
+    (status != null && (!status.configured || !status.available));
 
-  async function ensureFallback() {
-    const shouldFallback =
-      !destroyed &&
-      context.enabled &&
-      context.earthVisible &&
-      context.cameraHeight < 180_000 &&
-      (context.mapMode === "photoreal" || liveFailed || (status != null && (!status.configured || !status.available)));
+  const fallbackVisible = () =>
+    context.enabled &&
+    context.earthVisible &&
+    context.cameraHeight < 180_000 &&
+    fallbackSourceNeeded();
 
-    if (!shouldFallback) {
-      clearVector();
+  const renderFallback = () => {
+    if (destroyed || !fallbackVisible() || !roads.length) {
+      clearRenderedFallback();
       return;
     }
+    if (renderedMode === context.mapMode && (roadCollection || groundRoadPrimitives.length || vehicleCollection)) return;
 
-    const key = vectorKey();
-    if (fallbackKey === key && (roadCollection || groundRoadPrimitives.length || vehicleCollection || vectorController)) return;
-    clearVector();
-    fallbackKey = key;
-    const controller = new AbortController();
-    vectorController = controller;
-    publish('loading');
-
-    let roads: RoadSegment[] = [];
-    let flows: FlowSegment[] = [];
-    let vehicles: ModeledVehicle[] = [];
+    clearRenderedFallback();
+    renderedMode = context.mapMode;
     const photoreal = context.mapMode === "photoreal";
+    const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
+
     roadCollection = photoreal ? null : new Cesium.PolylineCollection();
     vehicleCollection = new Cesium.PointPrimitiveCollection({ blendOption: Cesium.BlendOption.TRANSLUCENT });
     if (roadCollection) viewer.scene.primitives.add(roadCollection);
     viewer.scene.primitives.add(vehicleCollection);
 
+    const maxVehicles = photoreal ? 100 : vehicles.length;
     const renderVehicles = () => {
       if (!vehicleCollection || destroyed) return;
-      vehicleCollection.removeAll();
-      const flowMap = new Map(flows.map((item) => [item.roadId, item]));
-      for (const vehicle of vehicles) {
-        const flow = flowMap.get(vehicle.roadId);
+      const visibleVehicles = vehicles.slice(0, maxVehicles);
+      while (vehicleCollection.length < visibleVehicles.length) {
         vehicleCollection.add({
-          position: Cesium.Cartesian3.fromDegrees(
-            vehicle.position.longitude,
-            vehicle.position.latitude,
-            8,
-          ),
-          pixelSize: context.cameraHeight < 30_000 ? 4 : 3,
-          color: Cesium.Color.fromCssColorString(
-            getCongestionColor(flow?.congestion ?? 'free-flow'),
-          ),
+          position: Cesium.Cartesian3.ZERO,
+          pixelSize: photoreal ? 3 : 3,
+          color: Cesium.Color.WHITE,
           outlineColor: Cesium.Color.fromCssColorString('#020617'),
           outlineWidth: 1,
-          disableDepthTestDistance: 5_000,
+          disableDepthTestDistance: photoreal ? 0 : 5_000,
         });
       }
+      while (vehicleCollection.length > visibleVehicles.length) {
+        vehicleCollection.remove(vehicleCollection.get(vehicleCollection.length - 1));
+      }
+
+      const flowMapNow = new Map(flows.map((item) => [item.roadId, item]));
+      visibleVehicles.forEach((vehicle, index) => {
+        const point = vehicleCollection.get(index);
+        let height = photoreal ? 1.5 : 8;
+        if (photoreal && typeof viewer.scene.sampleHeight === 'function') {
+          try {
+            const sampled = viewer.scene.sampleHeight(
+              Cesium.Cartographic.fromDegrees(vehicle.position.longitude, vehicle.position.latitude),
+            );
+            if (Number.isFinite(sampled)) height = sampled + 1.5;
+          } catch {}
+        }
+        point.position = Cesium.Cartesian3.fromDegrees(
+          vehicle.position.longitude,
+          vehicle.position.latitude,
+          height,
+        );
+        point.pixelSize = context.cameraHeight < 30_000 ? 4 : 3;
+        point.color = Cesium.Color.fromCssColorString(
+          getCongestionColor(flowMapNow.get(vehicle.roadId)?.congestion ?? 'free-flow'),
+        ).withAlpha(photoreal ? 0.82 : 0.9);
+      });
       viewer.scene?.requestRender?.();
     };
 
+    if (photoreal && Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene)) {
+      const groups = new Map<string, any[]>();
+      for (const road of roads) {
+        if (road.coordinates.length < 2) continue;
+        const congestion = flowMap.get(road.id)?.congestion ?? 'free-flow';
+        const list = groups.get(congestion) ?? [];
+        list.push(new Cesium.GeometryInstance({
+          geometry: new Cesium.GroundPolylineGeometry({
+            positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat)),
+            width: road.highway === 'motorway' || road.highway === 'trunk' ? 2.2 : 1.25,
+          }),
+        }));
+        groups.set(congestion, list);
+      }
+      for (const [congestion, instances] of groups) {
+        if (!instances.length) continue;
+        const primitive = viewer.scene.groundPrimitives.add(new Cesium.GroundPolylinePrimitive({
+          geometryInstances: instances,
+          classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
+          appearance: new Cesium.PolylineMaterialAppearance({
+            material: Cesium.Material.fromType('PolylineGlow', {
+              color: Cesium.Color.fromCssColorString(getCongestionColor(congestion as any)).withAlpha(0.58),
+              glowPower: 0.06,
+            }),
+          }),
+        }));
+        groundRoadPrimitives.push(primitive);
+      }
+    } else if (roadCollection) {
+      for (const road of roads) {
+        if (road.coordinates.length < 2) continue;
+        roadCollection.add({
+          positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, 5)),
+          width: road.highway === 'motorway' || road.highway === 'trunk' ? 3 : 2,
+          material: Cesium.Material.fromType('Color', {
+            color: Cesium.Color.fromCssColorString(
+              getCongestionColor(flowMap.get(road.id)?.congestion ?? 'free-flow'),
+            ).withAlpha(0.82),
+          }),
+        });
+      }
+    }
+
+    renderVehicles();
+    if (vehicles.length) {
+      // Reposition existing primitives; never delete/recreate the fleet each tick.
+      const tickMs = photoreal ? 500 : 250;
+      vehicleTimer = setInterval(() => {
+        vehicles = advanceModeledVehicles(vehicles, roads, flows, tickMs / 1000);
+        renderVehicles();
+      }, tickMs);
+    }
+
+    publish(
+      'degraded',
+      photoreal
+        ? `3D traffic · cached OSM roads + ${Math.min(100, vehicles.length)} modeled vehicles surface-sampled`
+        : 'Cached OSM road geometry + locally modeled vehicles · live TomTom unavailable',
+    );
+  };
+
+  async function ensureFallback() {
+    if (destroyed || !context.enabled || !context.earthVisible || !fallbackSourceNeeded()) {
+      clearRenderedFallback();
+      return;
+    }
+
+    const nextCenter = { latitude: context.latitude, longitude: context.longitude };
+    const needsRebase = !dataCenter || distanceKm(dataCenter, nextCenter) >= 3.5;
+
+    // Zoom/tilt never reacquire roads or regenerate vehicles.
+    if (!needsRebase && roads.length) {
+      renderFallback();
+      return;
+    }
+    if (vectorController) return;
+
+    const controller = new AbortController();
+    vectorController = controller;
+    publish('loading');
     try {
       const nextRoads = await fetchRoads(
-        context.latitude,
-        context.longitude,
-        context.cameraHeight < 35_000 ? 5 : 8,
+        nextCenter.latitude,
+        nextCenter.longitude,
+        8,
         controller.signal,
       );
       if (controller.signal.aborted || destroyed) return;
+
+      dataCenter = nextCenter;
       roads = nextRoads.slice(0, 500);
       flows = buildModeledFlows(roads);
       vehicles = generateModeledVehicles(roads, flows, 260);
       vehicleCount = vehicles.length;
-      const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
-      if (photoreal && Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene)) {
-        const groups = new Map<string, any[]>();
-        for (const road of roads) {
-          if (road.coordinates.length < 2) continue;
-          const congestion = flowMap.get(road.id)?.congestion ?? 'free-flow';
-          const list = groups.get(congestion) ?? [];
-          list.push(new Cesium.GeometryInstance({
-            geometry: new Cesium.GroundPolylineGeometry({
-              positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat)),
-              width: road.highway === 'motorway' || road.highway === 'trunk' ? 4 : 2.5,
-            }),
-          }));
-          groups.set(congestion, list);
-        }
-        for (const [congestion, instances] of groups) {
-          if (!instances.length) continue;
-          const primitive = viewer.scene.groundPrimitives.add(new Cesium.GroundPolylinePrimitive({
-            geometryInstances: instances,
-            classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
-            appearance: new Cesium.PolylineMaterialAppearance({
-              material: Cesium.Material.fromType('PolylineGlow', {
-                color: Cesium.Color.fromCssColorString(getCongestionColor(congestion as any)).withAlpha(0.88),
-                glowPower: 0.18,
-              }),
-            }),
-          }));
-          groundRoadPrimitives.push(primitive);
-        }
-      } else if (roadCollection) {
-        for (const road of roads) {
-          if (road.coordinates.length < 2) continue;
-          roadCollection.add({
-            positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, 5)),
-            width: road.highway === 'motorway' || road.highway === 'trunk' ? 3 : 2,
-            material: Cesium.Material.fromType('Color', {
-              color: Cesium.Color.fromCssColorString(
-                getCongestionColor(flowMap.get(road.id)?.congestion ?? 'free-flow'),
-              ).withAlpha(0.82),
-            }),
-          });
-        }
+
+      clearRenderedFallback();
+      if (!roads.length) {
+        publish('error', 'No OSM road geometry returned for this traffic coverage');
+        return;
       }
-      renderVehicles();
-      publish(
-        roads.length ? 'degraded' : 'error',
-        roads.length
-          ? (photoreal
-              ? '3D traffic overlay · OSM road geometry + modeled vehicles on Google 3D tiles'
-              : 'OSM road geometry + modeled vehicle fallback · live TomTom unavailable')
-          : 'No OSM road geometry returned for this viewport',
-      );
-      if (vehicles.length) {
-        vehicleTimer = setInterval(() => {
-          vehicles = advanceModeledVehicles(vehicles, roads, flows, 0.25);
-          renderVehicles();
-        }, 250);
+      renderFallback();
+      if (!fallbackVisible()) {
+        publish('degraded', 'Traffic data cached for this area · zoom changes rendering only');
       }
     } catch (error) {
       if (controller.signal.aborted || destroyed) return;
@@ -291,7 +367,7 @@ export function createTrafficController(input: {
       if (controller.signal.aborted || destroyed) return;
       status = next;
       if (next.configured && next.available && !liveFailed && context.mapMode !== 'photoreal') {
-        clearVector();
+        clearRenderedFallback();
         publish('ready');
       } else {
         publish(
@@ -320,8 +396,8 @@ export function createTrafficController(input: {
 
   return Object.freeze({
     sync(next: Context) {
-      const wasActive = context.enabled && context.earthVisible;
-      const previousKey = vectorKey();
+      const previous = context;
+      const wasActive = previous.enabled && previous.earthVisible;
       context = next;
       const active = context.enabled && context.earthVisible;
 
@@ -329,7 +405,7 @@ export function createTrafficController(input: {
         statusController?.abort();
         statusController = null;
         unmountLive();
-        clearVector();
+        clearRenderedFallback();
         liveFailed = false;
         publish('idle');
         return;
@@ -339,13 +415,32 @@ export function createTrafficController(input: {
         unmountLive();
       } else {
         mountLive();
-        if (status?.configured && status.available && !liveFailed) clearVector();
+        if (status?.configured && status.available && !liveFailed) clearRenderedFallback();
       }
       if (!wasActive || (!status && !statusController)) void refreshStatus();
 
-      const nextKey = vectorKey();
-      if (previousKey !== nextKey || context.mapMode === "photoreal") void ensureFallback();
-      else if (liveFailed || (status && (!status.configured || !status.available))) void ensureFallback();
+      const modeChanged = previous.mapMode !== context.mapMode;
+      const movedKm = distanceKm(
+        { latitude: previous.latitude, longitude: previous.longitude },
+        { latitude: context.latitude, longitude: context.longitude },
+      );
+      const geographicMove = !wasActive || movedKm >= 3.5;
+
+      if (fallbackSourceNeeded()) {
+        if (geographicMove || !dataCenter || !roads.length) {
+          void ensureFallback();
+        } else if (modeChanged) {
+          clearRenderedFallback();
+          renderFallback();
+        } else if (fallbackVisible()) {
+          renderFallback();
+        } else {
+          clearRenderedFallback();
+          publish('degraded', 'Traffic data cached for this area · zoom in to render');
+        }
+      } else {
+        clearRenderedFallback();
+      }
     },
 
     retry() {
