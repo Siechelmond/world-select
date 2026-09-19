@@ -1,50 +1,78 @@
 export type GroundMapStyle = "earth" | "ground";
-export type WorldMapMode = "satellite" | "map" | "nasa";
+export type WorldMapMode = "photoreal" | "satellite" | "map" | "nasa";
 
 const ESRI_WORLD_IMAGERY = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer";
 const ESRI_WORLD_STREET = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer";
 const OSM_TILES = "https://tile.openstreetmap.org/";
 const REEARTH_TERRAIN_URL = "https://terrain.reearth.land/cesium-mesh/ellipsoid";
+const GOOGLE_ION_ASSET_ID = 2275207;
+
+export type MapSwitchResult = Readonly<{
+  requestedMode: WorldMapMode;
+  activeMode: WorldMapMode;
+  ok: boolean;
+  route: "google-direct" | "google-ion" | "globe";
+  error: string | null;
+}>;
 
 export type MapController = {
   setStyle: (style: GroundMapStyle) => void;
-  setMode: (mode: WorldMapMode) => void;
-  setPhotorealistic3D: (enabled: boolean) => Promise<boolean>;
+  setMode: (mode: WorldMapMode) => Promise<MapSwitchResult>;
   destroy: () => void;
   getState: () => Readonly<{
     style: GroundMapStyle;
-    mode: WorldMapMode;
-    photorealistic3D: boolean;
+    requestedMode: WorldMapMode;
+    activeMode: WorldMapMode;
+    switching: boolean;
+    lastError: string | null;
   }>;
 };
 
-/**
- * GEV-derived map ownership boundary. Basemap, reference overlays and 3D tiles
- * live here instead of being recreated by React effects or scattered viewer code.
- */
+function clean(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function describeError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message ? `${error.name}: ${error.message}` : error.name;
+  }
+  return String(error ?? "Unknown map provider error");
+}
+
 export function createMapController(input: {
   viewer: any;
   Cesium: any;
   googleMapsApiKey?: string;
+  cesiumIonToken?: string;
 }): MapController {
-  const { viewer, Cesium, googleMapsApiKey = "" } = input;
+  const {
+    viewer,
+    Cesium,
+    googleMapsApiKey = "",
+    cesiumIonToken = "",
+  } = input;
+
   let requestedStyle: GroundMapStyle = "earth";
   let requestedMode: WorldMapMode = "satellite";
+  let activeMode: WorldMapMode = "satellite";
   let earthLayer: any = null;
   let groundLayer: any = null;
   let nasaLayer: any = null;
   let google3d: any = null;
-  let google3dLoad: Promise<boolean> | null = null;
-  let google3dGeneration = 0;
+  let google3dRoute: "google-direct" | "google-ion" | null = null;
+  let google3dLoad: Promise<{ tileset: any; route: "google-direct" | "google-ion" }> | null = null;
+  let switchGeneration = 0;
+  let switching = false;
+  let lastError: string | null = null;
   let destroyed = false;
 
   const apply = () => {
     if (destroyed || viewer.isDestroyed?.()) return;
-    const in3d = Boolean(google3d);
-    // NASA GIBS is an EO overlay, never the sole globe basemap.
-    if (earthLayer) earthLayer.show = !in3d && (requestedMode === "satellite" || requestedMode === "nasa");
-    if (groundLayer) groundLayer.show = !in3d && requestedMode === "map";
-    if (nasaLayer) nasaLayer.show = !in3d && requestedMode === "nasa";
+    const in3d = activeMode === "photoreal" && Boolean(google3d);
+    if (google3d) google3d.show = in3d;
+    if (earthLayer) earthLayer.show = !in3d && (activeMode === "satellite" || activeMode === "nasa");
+    if (groundLayer) groundLayer.show = !in3d && activeMode === "map";
+    if (nasaLayer) nasaLayer.show = !in3d && activeMode === "nasa";
     if (viewer.scene?.globe) viewer.scene.globe.show = !in3d;
     viewer.scene?.requestRender?.();
   };
@@ -56,9 +84,7 @@ export function createMapController(input: {
         viewer.scene?.requestRender?.();
       }
     })
-    .catch(() => {
-      // The viewer starts on ellipsoid terrain; keep it as the keyless fallback.
-    });
+    .catch(() => {});
 
   const addProvider = async (promise: Promise<any>, index?: number) => {
     const provider = await promise;
@@ -87,15 +113,11 @@ export function createMapController(input: {
     .then((layer) => {
       if (!layer) return;
       groundLayer = layer;
-      groundLayer.show = false;
       apply();
     })
     .catch(() => { groundLayer = null; });
 
   try {
-    // NASA mode must be globally complete and globe-safe. Daily MODIS swaths can
-    // contain no-data wedges, so the base NASA experience uses the static,
-    // seamless GIBS Blue Marble global mosaic in EPSG:4326.
     const provider = new Cesium.WebMapServiceImageryProvider({
       url: "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi",
       layers: "BlueMarble_NextGeneration",
@@ -118,87 +140,139 @@ export function createMapController(input: {
     nasaLayer = null;
   }
 
+  const createDirectGoogleTileset = async () => {
+    const key = clean(googleMapsApiKey);
+    if (!key) throw new Error("Google 3D requires an explicit browser key");
+    if (typeof Cesium.createGooglePhotorealistic3DTileset !== "function") {
+      throw new Error("This Cesium runtime does not expose the Google Photorealistic 3D helper");
+    }
+    return Cesium.createGooglePhotorealistic3DTileset({
+      key,
+      onlyUsingWithGoogleGeocoder: true,
+    });
+  };
+
+  const createIonGoogleTileset = async () => {
+    const token = clean(cesiumIonToken);
+    if (!token) throw new Error("Cesium ion fallback token is not configured");
+    const resource = await Cesium.IonResource.fromAssetId(GOOGLE_ION_ASSET_ID, {
+      accessToken: token,
+    });
+    return Cesium.Cesium3DTileset.fromUrl(resource, {
+      cacheBytes: 1536 * 1024 * 1024,
+      maximumCacheOverflowBytes: 1024 * 1024 * 1024,
+      enableCollision: true,
+    });
+  };
+
+  const ensurePhotorealistic = async () => {
+    if (google3d && google3dRoute) return { tileset: google3d, route: google3dRoute };
+    if (google3dLoad) return google3dLoad;
+
+    google3dLoad = (async () => {
+      const errors: string[] = [];
+      if (clean(googleMapsApiKey)) {
+        try {
+          return { tileset: await createDirectGoogleTileset(), route: "google-direct" as const };
+        } catch (error) {
+          errors.push(`google-direct: ${describeError(error)}`);
+        }
+      }
+      if (clean(cesiumIonToken)) {
+        try {
+          return { tileset: await createIonGoogleTileset(), route: "google-ion" as const };
+        } catch (error) {
+          errors.push(`google-ion: ${describeError(error)}`);
+        }
+      }
+      if (!errors.length) errors.push("No Google Maps browser key or Cesium ion fallback token is configured");
+      throw new Error(errors.join(" | "));
+    })();
+
+    const load = google3dLoad;
+    try {
+      const loaded = await load;
+      if (destroyed || viewer.isDestroyed?.()) {
+        try { loaded.tileset.destroy?.(); } catch {}
+        throw new Error("Viewer was destroyed while Google 3D was loading");
+      }
+      if (!google3d) {
+        loaded.tileset.show = false;
+        viewer.scene.primitives.add(loaded.tileset);
+        google3d = loaded.tileset;
+        google3dRoute = loaded.route;
+      } else if (loaded.tileset !== google3d) {
+        try { loaded.tileset.destroy?.(); } catch {}
+      }
+      return { tileset: google3d, route: google3dRoute! };
+    } finally {
+      if (google3dLoad === load) google3dLoad = null;
+    }
+  };
+
+  const result = (ok: boolean, route: MapSwitchResult["route"], error: string | null): MapSwitchResult =>
+    Object.freeze({ requestedMode, activeMode, ok, route, error });
+
   return Object.freeze({
     setStyle(style: GroundMapStyle) {
       requestedStyle = style;
-      // Kept as an explicit state lane even though current source choice is mode-driven.
-      // This prevents camera altitude from remounting the map stack.
       apply();
     },
 
-    setMode(mode: WorldMapMode) {
+    async setMode(mode: WorldMapMode) {
+      if (destroyed || viewer.isDestroyed?.()) {
+        return result(false, "globe", "Map controller is unavailable");
+      }
       requestedMode = mode;
-      apply();
-    },
+      lastError = null;
+      const generation = ++switchGeneration;
+      switching = true;
 
-    async setPhotorealistic3D(enabled: boolean) {
-      if (destroyed || viewer.isDestroyed?.()) return false;
-
-      if (!enabled) {
-        google3dGeneration += 1;
-        google3dLoad = null;
-        if (google3d) {
-          try { viewer.scene.primitives.remove(google3d); } catch { /* already gone */ }
-          google3d = null;
-        }
+      if (mode !== "photoreal") {
+        activeMode = mode;
+        switching = false;
         apply();
-        return true;
+        return result(true, "globe", null);
       }
 
-      if (!googleMapsApiKey) return false;
-      if (google3d) return true;
-      if (google3dLoad) return google3dLoad;
-
-      const generation = ++google3dGeneration;
-      const load = (async () => {
-        try {
-          // Donor path: let Cesium own Google's Photorealistic 3D Tiles
-          // contract instead of maintaining a second Google 3D viewer.
-          const tileset = await Cesium.createGooglePhotorealistic3DTileset({
-            key: googleMapsApiKey,
-            onlyUsingWithGoogleGeocoder: true,
-          });
-
-          if (
-            destroyed ||
-            viewer.isDestroyed?.() ||
-            generation !== google3dGeneration
-          ) {
-            try { tileset.destroy?.(); } catch { /* no-op */ }
-            return false;
-          }
-
-          google3d = tileset;
-          viewer.scene.primitives.add(google3d);
-          apply();
-          return true;
-        } catch {
-          if (generation === google3dGeneration) {
-            google3d = null;
-            apply();
-          }
-          return false;
+      try {
+        const loaded = await ensurePhotorealistic();
+        if (generation !== switchGeneration || destroyed || viewer.isDestroyed?.()) {
+          return result(false, "globe", "Map switch was superseded");
         }
-      })();
-
-      google3dLoad = load;
-      const ok = await load;
-      if (google3dLoad === load) google3dLoad = null;
-      return ok;
+        activeMode = "photoreal";
+        switching = false;
+        apply();
+        return result(true, loaded.route, null);
+      } catch (error) {
+        if (generation !== switchGeneration) {
+          return result(false, "globe", "Map switch was superseded");
+        }
+        lastError = describeError(error);
+        activeMode = "satellite";
+        switching = false;
+        apply();
+        return result(false, "globe", lastError);
+      }
     },
 
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      google3dGeneration += 1;
+      switchGeneration += 1;
       google3dLoad = null;
       if (google3d) {
-        try { viewer.scene.primitives.remove(google3d); } catch { /* no-op */ }
+        try {
+          if (!viewer.scene.primitives.remove(google3d)) google3d.destroy?.();
+        } catch {
+          try { google3d.destroy?.(); } catch {}
+        }
         google3d = null;
+        google3dRoute = null;
       }
       for (const layer of [nasaLayer, groundLayer, earthLayer]) {
         if (!layer) continue;
-        try { viewer.imageryLayers.remove(layer, true); } catch { /* no-op */ }
+        try { viewer.imageryLayers.remove(layer, true); } catch {}
       }
       nasaLayer = null;
       groundLayer = null;
@@ -208,8 +282,10 @@ export function createMapController(input: {
     getState() {
       return Object.freeze({
         style: requestedStyle,
-        mode: requestedMode,
-        photorealistic3D: Boolean(google3d),
+        requestedMode,
+        activeMode,
+        switching,
+        lastError,
       });
     },
   });

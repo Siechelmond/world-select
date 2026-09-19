@@ -19,7 +19,7 @@ import { createWorldViewer, type WorldMapMode } from "@/lib/cesium-viewer";
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
 import { resolveLayerState, type LayerLoadState as LoadState } from "@/lib/layer-runtime";
 
-declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; gm_authFailure?: () => void } }
+declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
 
 type ViewMode = "earth" | "space";
 type MobilePanel = "none" | "layers" | "inspector" | "time" | "street";
@@ -35,6 +35,7 @@ const GROUND_HEIGHT_M = 120_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 
 const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
+const CESIUM_ION_TOKEN = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN ?? "";
 const SEN_ISS_LIVE_VIDEO_ID = process.env.NEXT_PUBLIC_SEN_ISS_LIVE_VIDEO_ID ?? "fO9e9jnhYK8";
 export default function WorldSelectApp() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -94,7 +95,6 @@ export default function WorldSelectApp() {
   const [streetProvider, setStreetProvider] = useState<StreetProvider>(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
   const [streetNotice, setStreetNotice] = useState<string | null>(null);
   const [mapMode, setMapMode] = useState<WorldMapMode>("satellite");
-  const [photorealistic3D, setPhotorealistic3D] = useState(false);
   const [threeDError, setThreeDError] = useState<string | null>(null);
   const [earthHandoff, setEarthHandoff] = useState<{ latitude: number; longitude: number; height: number } | null>(null);
   const [frameHandoff, setFrameHandoff] = useState<"earth-to-space" | "space-to-earth" | null>(null);
@@ -254,6 +254,7 @@ export default function WorldSelectApp() {
         }
       },
       googleMapsApiKey: GOOGLE_MAPS_API_KEY,
+      cesiumIonToken: CESIUM_ION_TOKEN,
     });
     viewerLifecycleRef.current = lifecycle;
     viewerRef.current = lifecycle.viewer;
@@ -307,8 +308,22 @@ export default function WorldSelectApp() {
   useEffect(() => {
     if (viewMode !== "earth") return;
     viewerLifecycleRef.current?.setMapStyle(cameraHeight < 350_000 ? "ground" : "earth");
-    viewerLifecycleRef.current?.setMapMode(mapMode);
-  }, [cameraHeight, viewMode, mapMode]);
+  }, [cameraHeight, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== "earth") return;
+    let cancelled = false;
+    void viewerLifecycleRef.current?.setMapMode(mapMode).then((result) => {
+      if (cancelled || !result) return;
+      if (!result.ok) {
+        if (mapMode === "photoreal") {
+          setThreeDError(result.error ?? "Google Photorealistic 3D is unavailable");
+        }
+        if (result.activeMode !== mapMode) setMapMode(result.activeMode);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [viewMode, mapMode, cesiumReady]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -359,37 +374,11 @@ export default function WorldSelectApp() {
     }
   }, [viewMode, selected?.kind, selected?.id]);
 
-  const switchMapMode = useCallback(async (mode: WorldMapMode) => {
-    setThreeDError(null);
-    if (photorealistic3D) {
-      await viewerLifecycleRef.current?.setPhotorealistic3D(false);
-      setPhotorealistic3D(false);
-    }
-    setMapMode(mode);
-    viewerLifecycleRef.current?.setMapMode(mode);
-  }, [photorealistic3D]);
-
-  const toggle3D = useCallback(async () => {
-    if (!GOOGLE_MAPS_API_KEY) {
-      setThreeDError("Google Maps JavaScript API is not configured for this preview");
-      return;
-    }
-
-    const next = !photorealistic3D;
+  const switchMapMode = useCallback((mode: WorldMapMode) => {
     setStreetOpen(false);
     setThreeDError(null);
-
-    const ok = await viewerLifecycleRef.current?.setPhotorealistic3D(next);
-    if (ok === false || ok == null) {
-      setPhotorealistic3D(false);
-      if (next) {
-        setThreeDError("Google Photorealistic 3D could not be loaded in this preview");
-      }
-      return;
-    }
-
-    setPhotorealistic3D(next);
-  }, [photorealistic3D]);
+    setMapMode(mode);
+  }, []);
 
 
 
@@ -487,7 +476,11 @@ export default function WorldSelectApp() {
 
 
   const enterSpaceFromEarth = useCallback(() => {
-    if (viewMode !== "earth" || streetOpen || photorealistic3D) return;
+    if (viewMode !== "earth" || streetOpen) return;
+    if (mapMode === "photoreal") {
+      void viewerLifecycleRef.current?.setMapMode("satellite");
+      setMapMode("satellite");
+    }
     setEarthHandoff({
       latitude: viewCenter.latitude,
       longitude: viewCenter.longitude,
@@ -499,7 +492,7 @@ export default function WorldSelectApp() {
     setMobilePanel("none");
     setViewMode("space");
     window.setTimeout(() => setFrameHandoff(null), 520);
-  }, [viewMode, streetOpen, photorealistic3D, viewCenter.latitude, viewCenter.longitude, cameraHeight]);
+  }, [viewMode, streetOpen, mapMode, viewCenter.latitude, viewCenter.longitude, cameraHeight]);
 
   const returnToEarthFromSpace = useCallback(() => {
     const handoff = earthHandoff ?? {
@@ -586,12 +579,8 @@ export default function WorldSelectApp() {
       });
   }, [streetPoint.latitude, streetPoint.longitude, setLayerError]);
 
-  const openStreet = useCallback(async () => {
+  const openStreet = useCallback(() => {
     if (viewMode !== "earth") return;
-    if (photorealistic3D) {
-      await viewerLifecycleRef.current?.setPhotorealistic3D(false);
-      setPhotorealistic3D(false);
-    }
     setStreetTarget(streetPoint);
     setStreetOpen(true);
     setMobilePanel("street");
@@ -599,14 +588,17 @@ export default function WorldSelectApp() {
     setStreetPhotos([]);
     setLayerError("street");
 
+    setStreetProvider("google");
     if (GOOGLE_MAPS_API_KEY) {
-      setStreetProvider("google");
       setStreetState("loading");
       setStreetNotice(`Google Street View · searching near ${streetPoint.latitude.toFixed(5)}, ${streetPoint.longitude.toFixed(5)}`);
     } else {
-      loadKartaViewStreet("Google Street View is not configured · using KartaView fallback");
+      const message = "Google Street View is not configured for this preview";
+      setStreetState("error");
+      setStreetNotice(message);
+      setLayerError("street", message);
     }
-  }, [photorealistic3D, viewMode, loadKartaViewStreet, setLayerError, streetPoint.latitude, streetPoint.longitude]);
+  }, [viewMode, setLayerError, streetPoint.latitude, streetPoint.longitude]);
 
   const handleGoogleStreetReady = useCallback(() => {
     setStreetState("ready");
@@ -615,8 +607,10 @@ export default function WorldSelectApp() {
   }, [setLayerError]);
 
   const handleGoogleStreetFallback = useCallback((message: string) => {
-    loadKartaViewStreet(message);
-  }, [loadKartaViewStreet]);
+    setStreetState("error");
+    setStreetNotice(message);
+    setLayerError("street", message);
+  }, [setLayerError]);
 
   const handleGoogleStreetPosition = useCallback((point: EarthPoint) => {
     setStreetTarget(point);
@@ -700,12 +694,12 @@ export default function WorldSelectApp() {
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""} ${!isMobile && layersCollapsed ? "panelCollapsed" : ""}`}>
         <div className="panelHead"><p className="panelLabel">LAYERS</p><div className="panelHeadActions"><button className="panelCollapse" type="button" aria-expanded={!layersCollapsed} onClick={() => setLayersCollapsed((value) => !value)}>{layersCollapsed ? "›" : "‹"}</button><button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button></div></div>
         <div className="basemapSwitch" role="group" aria-label="Basemap mode">
-          <button className={!photorealistic3D && mapMode === "satellite" ? "active" : ""} onClick={() => switchMapMode("satellite")}>SAT</button>
-          <button className={!photorealistic3D && mapMode === "map" ? "active" : ""} onClick={() => switchMapMode("map")}>MAP</button>
-          <button className={!photorealistic3D && mapMode === "nasa" ? "active" : ""} onClick={() => switchMapMode("nasa")}>NASA EO</button>
-          <button className={photorealistic3D ? "active" : ""} disabled={!GOOGLE_MAPS_API_KEY} onClick={toggle3D}>3D</button>
+          <button className={mapMode === "satellite" ? "active" : ""} onClick={() => switchMapMode("satellite")}>SAT</button>
+          <button className={mapMode === "map" ? "active" : ""} onClick={() => switchMapMode("map")}>MAP</button>
+          <button className={mapMode === "nasa" ? "active" : ""} onClick={() => switchMapMode("nasa")}>NASA EO</button>
+          <button className={mapMode === "photoreal" ? "active" : ""} disabled={!GOOGLE_MAPS_API_KEY && !CESIUM_ION_TOKEN} onClick={() => switchMapMode("photoreal")}>3D</button>
         </div>
-        {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View + Maps JavaScript 3D are not configured on this preview. SAT / MAP / NASA remain available.</div>}
+        {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View is not configured on this preview. KartaView remains available manually.</div>}
         {threeDError && <div className="mapModeNotice">{threeDError}</div>}
         <LayerToggle checked={earthquakeLayer} onChange={toggleEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
         <LayerToggle checked={satelliteLayer} onChange={toggleSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle={`CelesTrak ${satelliteCatalog.toUpperCase()} · SGP4 · real altitude · perspective-scaled`} state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
@@ -734,7 +728,7 @@ export default function WorldSelectApp() {
         <div className="panelHead"><p className="panelLabel">INSPECTOR</p><div className="panelHeadActions"><button className="panelCollapse" type="button" aria-expanded={!inspectorCollapsed} onClick={() => setInspectorCollapsed((value) => !value)}>{inspectorCollapsed ? "‹" : "›"}</button><button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button></div></div>
         {selected
           ? <Inspector entity={selected} onFocus={focusSelected} onStreet={openStreet} onAnnotate={addAnnotation} onClear={clearSelection} followAircraft={followAircraft} onToggleFollow={() => setFollowAircraft((v) => !v)} />
-          : <div className="emptyState"><div className="reticle">+</div><p>Click a point on the globe/map to set the Street View target, or select an entity.</p><div className="emptyActions"><button className="streetButton" onClick={openStreet} disabled={viewMode !== "earth"}>Open street level at target</button><button className="annotationButton" onClick={addAnnotation} disabled={viewMode !== "earth"}>Mark this location</button></div></div>}
+          : <div className="emptyState"><div className="reticle">+</div><p>Street View opens at the current focus/view center. Click the map only when you want to refine the target.</p><div className="emptyActions"><button className="streetButton" onClick={openStreet} disabled={viewMode !== "earth"}>Open street level here</button><button className="annotationButton" onClick={addAnnotation} disabled={viewMode !== "earth"}>Mark this location</button></div></div>}
       </section>
 
       <section className={`timebar glass ${viewMode === "space" ? "spaceTimebar" : ""} ${mobilePanel === "time" ? "mobileOpen" : ""} ${!isMobile && timeCollapsed ? "panelCollapsed" : ""}`}>
@@ -920,7 +914,9 @@ function StreetViewer({ provider, googleApiKey, notice, state, photo, index, tot
 
     <div className="streetSurfaceFrame">
       {provider === "google"
-        ? <GoogleStreetPanorama apiKey={googleApiKey} point={point} onReady={onGoogleReady} onFallback={onGoogleFallback} onPositionChange={onGooglePositionChange} />
+        ? state === "error"
+          ? <div className="streetMessage"><strong>GOOGLE STREET VIEW UNAVAILABLE</strong><span>{error ?? notice ?? "Google Street View could not be loaded."}</span></div>
+          : <GoogleStreetPanorama apiKey={googleApiKey} point={point} onReady={onGoogleReady} onFallback={onGoogleFallback} onPositionChange={onGooglePositionChange} />
         : <>
             {state === "loading" && <div className="streetMessage">Searching KartaView imagery…</div>}
             {state !== "loading" && !photo && <div className="streetMessage"><strong>NO IMAGERY</strong><span>{error ?? notice ?? "No KartaView imagery is available near this point."}</span></div>}
@@ -961,8 +957,6 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
 
   useEffect(() => {
     let disposed = false;
-    let failed = false;
-    let ready = false;
     let panorama: any = null;
     let positionListener: any = null;
     let statusListener: any = null;
@@ -970,94 +964,57 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
     const priorAuthFailure = window.gm_authFailure;
 
     const fail = (message: string) => {
-      if (disposed || failed) return;
-      failed = true;
+      if (disposed) return;
       if (watchdog != null) window.clearTimeout(watchdog);
       onFallback(message);
     };
 
-    const markReady = () => {
-      if (disposed || failed || ready) return;
-      ready = true;
-      if (watchdog != null) window.clearTimeout(watchdog);
-      onReady();
-    };
-
     const authFailure = () => {
       try { priorAuthFailure?.(); } catch {}
-      fail("Google Maps authentication failed · using KartaView fallback");
+      fail("Google Maps authentication failed");
     };
-
     window.gm_authFailure = authFailure;
 
     if (!apiKey) {
-      fail("Google Street View is not configured · using KartaView fallback");
+      fail("Google Street View is not configured for this preview");
       return () => {
         if (window.gm_authFailure === authFailure) window.gm_authFailure = priorAuthFailure;
       };
     }
 
     watchdog = window.setTimeout(() => {
-      fail("Google Street View timed out after 12 seconds · using KartaView fallback");
-    }, 12_000);
+      fail("Google Street View did not become ready within 15 seconds");
+    }, 15_000);
 
     loadGoogleMaps(apiKey)
       .then(async (google) => {
-        if (disposed || failed || !panoRef.current) return null;
+        if (disposed || !panoRef.current) return;
 
-        const streetView = typeof google.maps?.importLibrary === "function"
-          ? await google.maps.importLibrary("streetView")
-          : google.maps;
-        const StreetViewService = streetView?.StreetViewService ?? google.maps?.StreetViewService;
-        const StreetViewPanorama = streetView?.StreetViewPanorama ?? google.maps?.StreetViewPanorama;
-        const StreetViewStatus = streetView?.StreetViewStatus ?? google.maps?.StreetViewStatus;
+        const {
+          StreetViewService,
+          StreetViewPanorama,
+          StreetViewStatus,
+        } = await google.maps.importLibrary("streetView");
 
-        if (typeof StreetViewService !== "function" || typeof StreetViewPanorama !== "function") {
-          throw new Error("Google Street View library is unavailable");
+        if (
+          typeof StreetViewService !== "function" ||
+          typeof StreetViewPanorama !== "function"
+        ) {
+          throw new Error("Google Street View library loaded without constructors");
         }
 
-        const service = new StreetViewService();
         const origin = initialPointRef.current;
-        const request = {
+        const service = new StreetViewService();
+        const response = await service.getPanorama({
           location: { lat: origin.latitude, lng: origin.longitude },
-          radius: 120,
-        };
-
-        const data = await new Promise<any>((resolve, reject) => {
-          let settled = false;
-          const accept = (value: any, status?: any) => {
-            if (settled) return;
-            const payload = value?.data ?? value;
-            const ok = status == null || status === StreetViewStatus?.OK || status === "OK";
-            settled = true;
-            if (ok && payload?.location?.pano) resolve(payload);
-            else reject(new Error(`Google Street View status: ${String(status ?? "NO_PANORAMA")}`));
-          };
-          const rejectOnce = (reason: unknown) => {
-            if (settled) return;
-            settled = true;
-            reject(reason);
-          };
-
-          try {
-            const maybePromise = service.getPanorama(request, (value: any, status: any) => accept(value, status));
-            if (maybePromise && typeof maybePromise.then === "function") {
-              maybePromise.then(
-                (value: any) => accept(value),
-                rejectOnce,
-              );
-            }
-          } catch (reason) {
-            rejectOnce(reason);
-          }
+          radius: 250,
         });
+        if (disposed || !panoRef.current) return;
 
-        return { StreetViewPanorama, StreetViewStatus, data };
-      })
-      .then((result: any) => {
-        if (!result || disposed || failed || !panoRef.current) return;
-        const { StreetViewPanorama, StreetViewStatus, data } = result;
-        const location = data.location;
+        const location = response?.data?.location;
+        if (!location?.pano) {
+          throw new Error("Google Street View returned no panorama near the current focus");
+        }
 
         panorama = new StreetViewPanorama(panoRef.current, {
           pano: location.pano,
@@ -1082,36 +1039,30 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
           }
         };
 
+        const markReady = () => {
+          if (disposed) return;
+          if (watchdog != null) window.clearTimeout(watchdog);
+          publishPosition();
+          onReady();
+        };
+
         positionListener = panorama.addListener?.("position_changed", publishPosition);
         statusListener = panorama.addListener?.("status_changed", () => {
           const status = panorama?.getStatus?.();
           if (status === StreetViewStatus?.OK || status === "OK") {
-            publishPosition();
             markReady();
           } else if (status != null) {
-            fail(`Google Street View render status: ${String(status)} · using KartaView fallback`);
+            fail(`Google Street View render status: ${String(status)}`);
           }
         });
 
-        publishPosition();
-
-        // Some Maps JS builds do not emit status_changed after construction
-        // when a validated pano id is supplied. Construction is then the
-        // readiness signal while gm_authFailure remains active afterwards.
         window.setTimeout(() => {
-          if (!disposed && !failed) markReady();
-        }, 250);
+          if (!disposed) markReady();
+        }, 300);
       })
       .catch((error: unknown) => {
-        const raw =
-          error instanceof Error
-            ? error.message
-            : typeof error === "string"
-              ? error
-              : typeof (error as any)?.status === "string"
-                ? (error as any).status
-                : "Google Street View lookup failed";
-        fail(`Google Street View lookup failed: ${raw} · using KartaView fallback`);
+        const message = error instanceof Error ? error.message : String(error);
+        fail(`Google Street View failed: ${message}`);
       });
 
     return () => {
@@ -1128,35 +1079,40 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
 }
 
 function loadGoogleMaps(apiKey: string): Promise<any> {
-  if (window.google?.maps) return Promise.resolve(window.google);
+  if (window.google?.maps?.importLibrary) return Promise.resolve(window.google);
   if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
 
   window.__worldSelectGoogleMapsPromise = new Promise((resolve, reject) => {
+    const callbackName = "__worldSelectGoogleMapsReady";
     const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
-    if (existing) {
-      if (window.google?.maps) {
-        resolve(window.google);
-        return;
+    if (existing) existing.remove();
+
+    let settled = false;
+    let timeout = 0;
+    const ready = () => finish();
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      if (window.__worldSelectGoogleMapsReady === ready) {
+        delete window.__worldSelectGoogleMapsReady;
       }
-      existing.addEventListener("load", () =>
-        window.google?.maps
-          ? resolve(window.google)
-          : reject(new Error("Google Maps loaded without maps library")),
-      { once: true });
-      existing.addEventListener("error", () => reject(new Error("Google Maps JavaScript API could not be loaded")), { once: true });
-      return;
-    }
+      if (error) reject(error);
+      else if (window.google?.maps?.importLibrary) resolve(window.google);
+      else reject(new Error("Google Maps callback fired without Maps JavaScript API"));
+    };
+
+    window.__worldSelectGoogleMapsReady = ready;
+    timeout = window.setTimeout(() => {
+      finish(new Error("Google Maps JavaScript API initialization timed out"));
+    }, 15_000);
 
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&callback=${callbackName}`;
     script.async = true;
     script.defer = true;
     script.dataset.worldSelectGoogleMaps = "1";
-    script.onload = () =>
-      window.google?.maps
-        ? resolve(window.google)
-        : reject(new Error("Google Maps loaded without maps library"));
-    script.onerror = () => reject(new Error("Google Maps JavaScript API could not be loaded"));
+    script.onerror = () => finish(new Error("Google Maps JavaScript API could not be loaded"));
     document.head.appendChild(script);
   }).catch((reason) => {
     window.__worldSelectGoogleMapsPromise = undefined;

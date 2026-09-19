@@ -2,16 +2,16 @@ import { GEO_LABELS_DE } from '@/lib/geo-labels';
 import {
   createMapController,
   type GroundMapStyle,
+  type MapSwitchResult,
   type WorldMapMode,
 } from '@/runtime/gev/map-controller';
 
-export type { GroundMapStyle, WorldMapMode };
+export type { GroundMapStyle, MapSwitchResult, WorldMapMode };
 
 export type ViewerLifecycle = {
   viewer: any;
   setMapStyle: (style: GroundMapStyle) => void;
-  setMapMode: (mode: WorldMapMode) => void;
-  setPhotorealistic3D: (enabled: boolean) => Promise<boolean>;
+  setMapMode: (mode: WorldMapMode) => Promise<MapSwitchResult>;
   destroy: () => void;
 };
 
@@ -23,6 +23,7 @@ export function createWorldViewer(input: {
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
   onEmptyClick?: (point: { latitude: number; longitude: number } | null) => void;
   googleMapsApiKey?: string;
+  cesiumIonToken?: string;
 }): ViewerLifecycle {
   const {
     Cesium,
@@ -32,6 +33,7 @@ export function createWorldViewer(input: {
     onEntityHover,
     onEmptyClick,
     googleMapsApiKey = '',
+    cesiumIonToken = '',
   } = input;
   Cesium.Ion.defaultAccessToken = undefined;
 
@@ -65,7 +67,7 @@ export function createWorldViewer(input: {
     destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000),
   });
 
-  const mapController = createMapController({ viewer, Cesium, googleMapsApiKey });
+  const mapController = createMapController({ viewer, Cesium, googleMapsApiKey, cesiumIonToken });
 
   for (const label of GEO_LABELS_DE) {
     viewer.entities.add({
@@ -123,17 +125,26 @@ export function createWorldViewer(input: {
     if (typeof id === 'string') {
       onEntityClick(id);
     } else {
+      let scenePoint: any;
+      try {
+        if (viewer.scene.pickPositionSupported) {
+          scenePoint = viewer.scene.pickPosition(movement.position);
+        }
+      } catch {
+        scenePoint = undefined;
+      }
       const ray = viewer.camera.getPickRay(movement.position);
       const terrainPoint = ray
         ? viewer.scene.globe.pick(ray, viewer.scene)
         : undefined;
-      const ellipsoidPoint = terrainPoint
+      const earthPoint = scenePoint
+        ?? terrainPoint
         ?? viewer.camera.pickEllipsoid(movement.position, viewer.scene.globe.ellipsoid);
-      if (!ellipsoidPoint) {
+      if (!earthPoint) {
         onEmptyClick?.(null);
         return;
       }
-      const cartographic = Cesium.Cartographic.fromCartesian(ellipsoidPoint);
+      const cartographic = Cesium.Cartographic.fromCartesian(earthPoint);
       const latitude = Cesium.Math.toDegrees(cartographic.latitude);
       const longitude = Cesium.Math.toDegrees(cartographic.longitude);
       onEmptyClick?.(
@@ -164,14 +175,14 @@ export function createWorldViewer(input: {
   return {
     viewer,
     setMapStyle: (style: GroundMapStyle) => mapController.setStyle(style),
-    setMapMode: (mode: WorldMapMode) => {
-      mapController.setMode(mode);
+    setMapMode: async (mode: WorldMapMode) => {
+      const result = await mapController.setMode(mode);
       for (const label of GEO_LABELS_DE) {
         const entity = viewer.entities.getById(`geo-label:${label.id}`);
-        if (entity) entity.show = mode !== 'map';
+        if (entity) entity.show = result.activeMode !== 'map';
       }
+      return result;
     },
-    setPhotorealistic3D: (enabled: boolean) => mapController.setPhotorealistic3D(enabled),
     destroy: () => {
       viewer.camera.moveEnd.removeEventListener(updateView);
       handler.destroy();
