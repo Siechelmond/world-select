@@ -34,8 +34,9 @@ const INTERVALS: Record<CoreLayerKey, number> = {
 // Acquisition is deliberately independent from camera zoom. A regional ADS-B
 // snapshot covers a stable area; zoom/tilt only changes rendering. We only
 // rebase the source query after the view center leaves a substantial safe zone.
-const AIRCRAFT_COVERAGE_RADIUS_NM = 220;
-const AIRCRAFT_REBASE_DISTANCE_NM = 90;
+const AIRCRAFT_COVERAGE_RADIUS_NM = 250;
+const AIRCRAFT_REBASE_DISTANCE_NM = 95;
+const AIRCRAFT_CONTACT_TTL_MS = 3 * 60_000;
 
 function distanceNm(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }) {
   const toRad = (value: number) => value * Math.PI / 180;
@@ -69,6 +70,7 @@ export function createCoreLiveWorld() {
     military: cell<SpatialEntity[], MilitaryFeedMeta>([]),
   };
   let aircraftContext: AircraftQuery | null = null;
+  const aircraftStore = new Map<string, { entity: SpatialEntity; refreshedAt: number }>();
   let satelliteCatalog: SatelliteCatalog = "core";
   let startPromise: Promise<void> | null = null;
   let destroyPromise: Promise<void> | null = null;
@@ -166,14 +168,27 @@ export function createCoreLiveWorld() {
       await withFailure("aircraft", async () => {
         const result = await fetchAircraftSnapshot(aircraftContext!, signal);
         if (signal.aborted) return;
+        const refreshedAt = Date.now();
+
+        // Keep contacts from recently visited coverage cells instead of
+        // replacing the whole world with one circular snapshot. ICAO identity
+        // deduplicates overlaps; TTL prevents old regional contacts lingering.
+        for (const entity of result.entities) {
+          aircraftStore.set(entity.id, { entity, refreshedAt });
+        }
+        for (const [id, cached] of aircraftStore) {
+          if (refreshedAt - cached.refreshedAt > AIRCRAFT_CONTACT_TTL_MS) aircraftStore.delete(id);
+        }
+        const data = [...aircraftStore.values()].map((cached) => cached.entity);
+
         patch("aircraft", {
-          data: result.entities,
+          data,
           meta: result.meta,
-          status: result.entities.length
+          status: data.length
             ? (result.meta.stale || result.meta.degraded ? "degraded" : "ready")
             : "error",
-          error: result.entities.length ? undefined : "No positioned civil aircraft returned",
-          updatedAt: Date.now(),
+          error: data.length ? undefined : "No positioned civil aircraft returned",
+          updatedAt: refreshedAt,
         });
       });
     },

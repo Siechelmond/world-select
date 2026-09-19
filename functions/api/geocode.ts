@@ -25,17 +25,26 @@ function parseCoordinates(query: string) {
 }
 
 function heightFor(row: NominatimRow) {
+  const type = String(row.type ?? "").toLowerCase();
+
+  // Place type wins over Nominatim's administrative bounding box. Large city
+  // boxes (Berlin/San Francisco) were previously converted into hundreds of
+  // kilometres of camera height, which made a correct result look "off".
+  if (/(house|building|address)/.test(type)) return 5_000;
+  if (/suburb|neighbourhood|quarter/.test(type)) return 14_000;
+  if (/village|hamlet/.test(type)) return 20_000;
+  if (/town/.test(type)) return 32_000;
+  if (/city|municipality/.test(type)) return 55_000;
+  if (/(state|region|province)/.test(type)) return 450_000;
+  if (/country/.test(type)) return 1_500_000;
+
   const box = row.boundingbox?.map(Number);
   if (box?.length === 4 && box.every(Number.isFinite)) {
     const latSpan = Math.abs(box[1] - box[0]);
     const lonSpan = Math.abs(box[3] - box[2]);
-    return Math.min(5_500_000, Math.max(8_000, Math.max(latSpan, lonSpan) * 111_000 * 2.8));
+    return Math.min(900_000, Math.max(10_000, Math.max(latSpan, lonSpan) * 111_000 * 1.5));
   }
-  const type = String(row.type ?? "").toLowerCase();
-  if (/(house|building|address)/.test(type)) return 12_000;
-  if (/(city|town|village|suburb)/.test(type)) return 120_000;
-  if (/(state|region)/.test(type)) return 900_000;
-  return 350_000;
+  return 180_000;
 }
 
 export const onRequestGet = async ({ request }: { request: Request }) => {

@@ -66,6 +66,8 @@ export function createWorldViewer(input: {
   viewer.scene.logarithmicDepthBuffer = true;
   viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
   viewer.scene.screenSpaceCameraController.maximumZoomDistance = 6_000_000_000_000;
+  viewer.scene.screenSpaceCameraController.enableTilt = true;
+  viewer.scene.screenSpaceCameraController.enableLook = true;
 
   viewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000),
@@ -151,13 +153,42 @@ export function createWorldViewer(input: {
     return { target, range, pitch, heading };
   };
 
-  const applyFrame = (frame: any, pitch: number, heading: number) => {
-    viewer.camera.lookAt(frame.target, new Cesium.HeadingPitchRange(heading, pitch, frame.range));
+  const applyFrame = (frame: any, pitch: number, heading: number, range = frame.range) => {
+    viewer.camera.lookAt(frame.target, new Cesium.HeadingPitchRange(heading, pitch, range));
     const destination = Cesium.Cartesian3.clone(viewer.camera.positionWC);
     const direction = Cesium.Cartesian3.clone(viewer.camera.directionWC);
     const up = Cesium.Cartesian3.clone(viewer.camera.upWC);
     viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
     viewer.camera.setView({ destination, orientation: { direction, up } });
+    viewer.scene?.requestRender?.();
+  };
+
+  let removeOrientationAnimation: (() => void) | null = null;
+  const animateFrame = (
+    frame: any,
+    destination: { pitch: number; heading: number; range?: number },
+    durationMs = 650,
+  ) => {
+    removeOrientationAnimation?.();
+    removeOrientationAnimation = null;
+    const start = performance.now();
+    const targetRange = destination.range ?? frame.range;
+    const headingDelta = Cesium.Math.negativePiToPi(destination.heading - frame.heading);
+    const remove = viewer.scene.preUpdate.addEventListener(() => {
+      const t = Cesium.Math.clamp((performance.now() - start) / durationMs, 0, 1);
+      const eased = Cesium.EasingFunction.CUBIC_IN_OUT(t);
+      applyFrame(
+        frame,
+        Cesium.Math.lerp(frame.pitch, destination.pitch, eased),
+        frame.heading + headingDelta * eased,
+        Cesium.Math.lerp(frame.range, targetRange, eased),
+      );
+      if (t >= 1) {
+        remove();
+        if (removeOrientationAnimation === remove) removeOrientationAnimation = null;
+      }
+    });
+    removeOrientationAnimation = remove;
     viewer.scene?.requestRender?.();
   };
 
@@ -237,22 +268,37 @@ export function createWorldViewer(input: {
       const frame = targetFrame();
       if (!frame) return;
       const tilted = frame.pitch > Cesium.Math.toRadians(-60);
-      applyFrame(frame, tilted ? Cesium.Math.toRadians(-89) : Cesium.Math.toRadians(-35), frame.heading);
+      // A stronger oblique target than the old -35° makes the scene read much
+      // more like GEV/Google Earth while still orbiting the visible target.
+      animateFrame(frame, {
+        pitch: tilted ? Cesium.Math.toRadians(-89) : Cesium.Math.toRadians(-25),
+        heading: frame.heading,
+      });
     },
     northUp: () => {
       const frame = targetFrame();
       if (!frame) return;
-      applyFrame(frame, frame.pitch, 0);
+      animateFrame(frame, { pitch: frame.pitch, heading: 0 });
     },
     flyTo: (point) => {
       lastGroundCenter = { latitude: point.latitude, longitude: point.longitude };
-      viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(point.longitude, point.latitude, point.height ?? 120_000),
-        orientation: { heading: 0, pitch: Cesium.Math.toRadians(-55), roll: 0 },
-        duration: 1.1,
-      });
+      removeOrientationAnimation?.();
+      removeOrientationAnimation = null;
+      const target = Cesium.Cartesian3.fromDegrees(point.longitude, point.latitude, 0);
+      const range = Math.max(4_000, point.height ?? 55_000);
+      // Fly around the destination target rather than placing the camera above
+      // it and pitching away from it. This keeps the searched place centered.
+      viewer.camera.flyToBoundingSphere(
+        new Cesium.BoundingSphere(target, 1),
+        {
+          offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-45), range),
+          duration: 1.1,
+        },
+      );
     },
     destroy: () => {
+      removeOrientationAnimation?.();
+      removeOrientationAnimation = null;
       viewer.camera.moveEnd.removeEventListener(updateView);
       handler.destroy();
       mapController.destroy();

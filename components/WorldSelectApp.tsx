@@ -137,6 +137,7 @@ export default function WorldSelectApp() {
   const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
   const [searchState, setSearchState] = useState<"idle" | "loading" | "error">("idle");
   const [searchMessage, setSearchMessage] = useState("");
+  const [searchTarget, setSearchTarget] = useState<PlaceSearchResult | null>(null);
   const [viewCenter, setViewCenter] = useState<EarthPoint>(INITIAL_CENTER);
   const [cameraHeight, setCameraHeight] = useState(9_500_000);
   const [followAircraft, setFollowAircraft] = useState(false);
@@ -580,6 +581,41 @@ export default function WorldSelectApp() {
     }
   }, [viewMode, selected?.kind, selected?.id]);
 
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    const Cesium = window.Cesium;
+    const markerId = "search-target";
+    if (!viewer || !Cesium) return;
+    viewer.entities.removeById(markerId);
+    if (!searchTarget || viewMode !== "earth") return;
+
+    viewer.entities.add({
+      id: markerId,
+      position: Cesium.Cartesian3.fromDegrees(searchTarget.longitude, searchTarget.latitude, 0),
+      point: {
+        pixelSize: 13,
+        color: Cesium.Color.fromCssColorString("#22d3ee"),
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        disableDepthTestDistance: 25_000,
+      },
+      label: {
+        text: searchTarget.label.split(",")[0],
+        font: "700 14px sans-serif",
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.fromCssColorString("#020617"),
+        outlineWidth: 4,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        pixelOffset: new Cesium.Cartesian2(0, -24),
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        disableDepthTestDistance: 25_000,
+      },
+    });
+
+    return () => { viewer.entities.removeById(markerId); };
+  }, [searchTarget?.id, searchTarget?.latitude, searchTarget?.longitude, viewMode, cesiumReady]);
+
   const switchMapMode = useCallback((mode: WorldMapMode) => {
     setStreetOpen(false);
     setThreeDError(null);
@@ -768,28 +804,11 @@ export default function WorldSelectApp() {
     viewerLifecycleRef.current?.flyTo({ latitude: viewCenter.latitude, longitude: viewCenter.longitude, height: 18_000 });
   }, [viewCenter.latitude, viewCenter.longitude]);
 
-  const runPlaceSearch = useCallback(async (event?: FormEvent) => {
-    event?.preventDefault();
-    const query = searchQuery.trim();
-    if (!query) return;
-    setSearchState("loading");
-    setSearchMessage("");
-    try {
-      const results = await searchPlaces(query);
-      setSearchResults(results);
-      setSearchState("idle");
-      if (!results.length) setSearchMessage("No place found");
-    } catch (error) {
-      setSearchResults([]);
-      setSearchState("error");
-      setSearchMessage(error instanceof Error ? error.message : "Place search unavailable");
-    }
-  }, [searchQuery]);
-
-  const goToPlace = useCallback((place: PlaceSearchResult) => {
+  const goToPlace = useCallback((place: PlaceSearchResult, keepAlternatives = false) => {
     setSearchQuery(place.label);
-    setSearchResults([]);
-    setSearchMessage("");
+    if (!keepAlternatives) setSearchResults([]);
+    setSearchMessage(keepAlternatives ? "Showing best match · choose another result if needed" : "");
+    setSearchTarget(place);
     setViewMode("earth");
     setSelected(null);
     setFollowAircraft(false);
@@ -799,6 +818,37 @@ export default function WorldSelectApp() {
       height: place.heightMeters,
     });
   }, []);
+
+  const runPlaceSearch = useCallback(async (event?: FormEvent) => {
+    event?.preventDefault();
+    const query = searchQuery.trim();
+    if (!query) return;
+    setSearchState("loading");
+    setSearchMessage("");
+    try {
+      const results = await searchPlaces(query);
+      setSearchState("idle");
+      if (!results.length) {
+        setSearchResults([]);
+        setSearchTarget(null);
+        setSearchMessage("No place found");
+        return;
+      }
+
+      const explicitQuery = query.includes(",") || /^[+-]?\d+(?:\.\d+)?\s*[,;]\s*[+-]?\d+(?:\.\d+)?$/.test(query);
+      if (results.length === 1 || explicitQuery) {
+        setSearchResults(results.length > 1 ? results : []);
+        goToPlace(results[0], results.length > 1);
+      } else {
+        setSearchResults(results);
+        setSearchMessage("Multiple matches · choose a result");
+      }
+    } catch (error) {
+      setSearchResults([]);
+      setSearchState("error");
+      setSearchMessage(error instanceof Error ? error.message : "Place search unavailable");
+    }
+  }, [searchQuery, goToPlace]);
 
   const focusSelected = useCallback(() => {
     if (!selected || selected.kind === "celestial-body" || !viewerRef.current || !window.Cesium) return;

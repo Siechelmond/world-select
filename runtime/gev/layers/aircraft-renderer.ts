@@ -19,8 +19,20 @@ export function createAircraftRenderer(input: {
 }) {
   const { viewer, Cesium, entityRegistry } = input;
   const ids = new Set<string>();
-  const trails = new Map<string, Array<{ longitude: number; latitude: number; altitudeMeters: number }>>();
+  type TrailPoint = { longitude: number; latitude: number; altitudeMeters: number; observedAtMs: number };
+  const trails = new Map<string, TrailPoint[]>();
   let trackedId: string | null = null;
+
+  const trailDistanceKm = (a: TrailPoint, b: TrailPoint) => {
+    const toRad = (value: number) => value * Math.PI / 180;
+    const lat1 = toRad(a.latitude);
+    const lat2 = toRad(b.latitude);
+    const dLat = lat2 - lat1;
+    const dLon = toRad(b.longitude - a.longitude);
+    const h = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 6371.0088 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
+  };
 
   const clearTracking = () => {
     if (viewer.trackedEntity) viewer.trackedEntity = undefined;
@@ -43,15 +55,24 @@ export function createAircraftRenderer(input: {
       trails.delete(spatial.id);
       return [];
     }
-    const trail = trails.get(spatial.id) ?? [];
-    const point = spatial.position;
+    const observedAtMs = Date.parse(spatial.observedAt);
+    if (!Number.isFinite(observedAtMs)) return trails.get(spatial.id) ?? [];
+
+    let trail = trails.get(spatial.id) ?? [];
+    const point: TrailPoint = { ...spatial.position, observedAtMs };
     const last = trail[trail.length - 1];
-    const moved = !last ||
-      Math.abs(last.longitude - point.longitude) > 0.0002 ||
-      Math.abs(last.latitude - point.latitude) > 0.0002 ||
-      Math.abs(last.altitudeMeters - point.altitudeMeters) > 30;
-    if (moved) trail.push({ ...point });
-    while (trail.length > 60) trail.shift();
+
+    // Only real ADS-B samples extend the history. Local projection moves the
+    // icon between polls but must not manufacture a fake breadcrumb every tick.
+    if (!last || observedAtMs > last.observedAtMs) {
+      const gapMs = last ? observedAtMs - last.observedAtMs : 0;
+      const jumpKm = last ? trailDistanceKm(last, point) : 0;
+      if (last && (gapMs > 60_000 || jumpKm > 45)) trail = [];
+      trail.push(point);
+    }
+
+    const cutoff = Date.now() - 5 * 60_000;
+    trail = trail.filter((item) => item.observedAtMs >= cutoff).slice(-24);
     trails.set(spatial.id, trail);
     return trail;
   };
@@ -140,8 +161,8 @@ export function createAircraftRenderer(input: {
             polyline: {
               show: isSelected && trailPositions.length > 1,
               positions: trailPositions,
-              width: 2,
-              material: Cesium.Color.fromCssColorString('#facc15').withAlpha(0.65),
+              width: 1.5,
+              material: Cesium.Color.fromCssColorString('#facc15').withAlpha(0.48),
               clampToGround: false,
             },
             label: {
