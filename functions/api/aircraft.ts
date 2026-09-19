@@ -228,31 +228,51 @@ async function fetchGateway(lat: number, lon: number, radiusNm: number, env: Env
   const configured = String(env.AIRCRAFT_GATEWAY_URL ?? "").trim();
   if (!configured) throw new Error("gateway not configured");
 
-  const primaryUrl = gatewayUrl(configured, lat, lon, radiusNm);
-  let response = await fetchWithTimeout(primaryUrl.toString(), {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "WorldSelect/5.1 (+https://world-select.pages.dev)",
-    },
-    cf: { cacheTtl: 15, cacheEverything: true },
-  } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } }, AIRCRAFT_GATEWAY_TIMEOUT_MS, "gateway", "snapshot");
+  const configuredUrl = new URL(configured);
+  const candidates = configuredUrl.pathname === "/"
+    ? ["/", "/aircraft", "/api/aircraft"]
+    : [configuredUrl.pathname];
 
-  // The original Render helper exposed /health and may be configured either
-  // as a full data endpoint or as the service root. Only on a root 404 do we
-  // make one compatibility attempt at /aircraft; no retry loop.
-  if (response.status === 404 && primaryUrl.pathname === "/") {
-    const fallbackUrl = gatewayUrl(new URL("/aircraft", primaryUrl).toString(), lat, lon, radiusNm);
-    response = await fetchWithTimeout(fallbackUrl.toString(), {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "WorldSelect/5.1 (+https://world-select.pages.dev)",
-      },
-      cf: { cacheTtl: 15, cacheEverything: true },
-    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } }, AIRCRAFT_GATEWAY_TIMEOUT_MS, "gateway", "snapshot");
+  let lastStatus = 502;
+  let lastError: unknown = null;
+
+  for (const pathname of candidates) {
+    const candidate = new URL(configuredUrl.toString());
+    candidate.pathname = pathname;
+    const url = gatewayUrl(candidate.toString(), lat, lon, radiusNm);
+
+    try {
+      const response = await fetchWithTimeout(url.toString(), {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "WorldSelect/5.1 (+https://world-select.pages.dev)",
+        },
+        cf: { cacheTtl: 15, cacheEverything: true },
+      } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } }, AIRCRAFT_GATEWAY_TIMEOUT_MS, "gateway", "snapshot");
+
+      lastStatus = response.status;
+      if (!response.ok) {
+        if (response.status === 404 && configuredUrl.pathname === "/") continue;
+        throw new ProviderHttpError(response.status, "gateway", "snapshot");
+      }
+
+      const payload = await response.json();
+      try {
+        return normalizeGatewayPayload(payload);
+      } catch (error) {
+        lastError = error;
+        if (configuredUrl.pathname === "/" && pathname === "/") continue;
+        throw error;
+      }
+    } catch (error) {
+      lastError = error;
+      if (configuredUrl.pathname === "/" && pathname !== "/api/aircraft") continue;
+      throw error;
+    }
   }
 
-  if (!response.ok) throw new ProviderHttpError(response.status, "gateway", "snapshot");
-  return normalizeGatewayPayload(await response.json());
+  if (lastError instanceof Error) throw lastError;
+  throw new ProviderHttpError(lastStatus, "gateway", "snapshot");
 }
 
 function bucketCoordinate(value: number, step: number) {
