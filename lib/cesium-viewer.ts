@@ -35,7 +35,7 @@ export function createWorldViewer(input: {
     googleMapsApiKey = '',
     cesiumIonToken = '',
   } = input;
-  Cesium.Ion.defaultAccessToken = undefined;
+  Cesium.Ion.defaultAccessToken = cesiumIonToken.trim() || undefined;
 
   const viewer = new Cesium.Viewer(container, {
     animation: false,

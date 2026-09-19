@@ -5,7 +5,6 @@ const ESRI_WORLD_IMAGERY = "https://services.arcgisonline.com/ArcGIS/rest/servic
 const ESRI_WORLD_STREET = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer";
 const OSM_TILES = "https://tile.openstreetmap.org/";
 const REEARTH_TERRAIN_URL = "https://terrain.reearth.land/cesium-mesh/ellipsoid";
-const GOOGLE_ION_ASSET_ID = 2275207;
 
 export type MapSwitchResult = Readonly<{
   requestedMode: WorldMapMode;
@@ -154,15 +153,22 @@ export function createMapController(input: {
 
   const createIonGoogleTileset = async () => {
     const token = clean(cesiumIonToken);
-    if (!token) throw new Error("Cesium ion fallback token is not configured");
-    const resource = await Cesium.IonResource.fromAssetId(GOOGLE_ION_ASSET_ID, {
-      accessToken: token,
-    });
-    return Cesium.Cesium3DTileset.fromUrl(resource, {
-      cacheBytes: 1536 * 1024 * 1024,
-      maximumCacheOverflowBytes: 1024 * 1024 * 1024,
-      enableCollision: true,
-    });
+    if (!token) {
+      throw new Error("NEXT_PUBLIC_CESIUM_ION_TOKEN is not configured");
+    }
+
+    // CesiumJS >=1.110 routes Google Photorealistic 3D Tiles through
+    // Cesium ion when no Google Maps API key is supplied and
+    // Ion.defaultAccessToken is configured.
+    const previousToken = Cesium.Ion.defaultAccessToken;
+    Cesium.Ion.defaultAccessToken = token;
+    try {
+      return await Cesium.createGooglePhotorealistic3DTileset({
+        onlyUsingWithGoogleGeocoder: true,
+      });
+    } finally {
+      Cesium.Ion.defaultAccessToken = previousToken;
+    }
   };
 
   const ensurePhotorealistic = async () => {
@@ -184,6 +190,8 @@ export function createMapController(input: {
         } catch (error) {
           errors.push(`google-ion: ${describeError(error)}`);
         }
+      } else {
+        errors.push("google-ion: NEXT_PUBLIC_CESIUM_ION_TOKEN is not configured");
       }
       if (!errors.length) errors.push("No Google Maps browser key or Cesium ion fallback token is configured");
       throw new Error(errors.join(" | "));
