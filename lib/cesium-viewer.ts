@@ -1,5 +1,5 @@
 import { GEO_LABELS_DE } from '@/lib/geo-labels';
-import { installRenderGovernor, uninstallRenderGovernor } from '@/runtime/gev/render-governor';
+import { holdContinuousRender, installRenderGovernor, releaseContinuousRender, uninstallRenderGovernor } from '@/runtime/gev/render-governor';
 import {
   createMapController,
   type GroundMapStyle,
@@ -173,6 +173,8 @@ export function createWorldViewer(input: {
   ) => {
     removeOrientationAnimation?.();
     removeOrientationAnimation = null;
+    releaseContinuousRender('camera-orientation');
+    holdContinuousRender('camera-orientation');
     const start = performance.now();
     const targetRange = destination.range ?? frame.range;
     const headingDelta = Cesium.Math.negativePiToPi(destination.heading - frame.heading);
@@ -187,6 +189,7 @@ export function createWorldViewer(input: {
       );
       if (t >= 1) {
         remove();
+        releaseContinuousRender('camera-orientation');
         if (removeOrientationAnimation === remove) removeOrientationAnimation = null;
       }
     });
@@ -309,6 +312,7 @@ export function createWorldViewer(input: {
     destroy: () => {
       removeOrientationAnimation?.();
       removeOrientationAnimation = null;
+      releaseContinuousRender('camera-orientation');
       viewer.camera.moveEnd.removeEventListener(updateView);
       handler.destroy();
       mapController.destroy();

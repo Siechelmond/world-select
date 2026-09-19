@@ -8,6 +8,8 @@ type CesiumLikeViewer = {
 
 let viewer: CesiumLikeViewer | null = null;
 const holds = new Set<string>();
+const recentRequests: Array<{ reason: string; at: number }> = [];
+const RECENT_REQUEST_CAP = 16;
 
 function applyMode() {
   if (!viewer?.scene) return;
@@ -34,7 +36,11 @@ export function releaseContinuousRender(owner: string) {
   applyMode();
 }
 
-export function requestRender() {
+export function requestRender(reason = "unspecified") {
+  if (viewer?.scene && holds.size === 0) {
+    recentRequests.push({ reason, at: Date.now() });
+    if (recentRequests.length > RECENT_REQUEST_CAP) recentRequests.shift();
+  }
   viewer?.scene?.requestRender?.();
 }
 
@@ -42,8 +48,9 @@ export function uninstallRenderGovernor(target?: CesiumLikeViewer) {
   if (target && viewer !== target) return;
   viewer = null;
   holds.clear();
+  recentRequests.length = 0;
 }
 
 export function renderGovernorDiagnostics() {
-  return { installed: Boolean(viewer), mode: holds.size ? "continuous" as const : "idle" as const, holds: [...holds].sort() };
+  return { installed: Boolean(viewer), mode: holds.size ? "continuous" as const : "idle" as const, holds: [...holds].sort(), recentRequests: [...recentRequests] };
 }

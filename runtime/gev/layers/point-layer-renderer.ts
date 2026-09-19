@@ -17,14 +17,15 @@ export function createPointLayerRenderer(input: {
   styleFor: (item: SpatialEntity) => Style;
 }) {
   const { viewer, Cesium, entityRegistry, styleFor } = input;
-  const ids = new Set<string>();
+  const collection = viewer.scene.primitives.add(
+    new Cesium.PointPrimitiveCollection({ blendOption: Cesium.BlendOption.TRANSLUCENT }),
+  );
+  const points = new Map<string, any>();
 
   const clear = () => {
-    for (const id of ids) {
-      viewer.entities.removeById(id);
-      entityRegistry.delete(id);
-    }
-    ids.clear();
+    collection.removeAll();
+    for (const id of points.keys()) entityRegistry.delete(id);
+    points.clear();
     viewer.scene?.requestRender?.();
   };
 
@@ -34,10 +35,10 @@ export function createPointLayerRenderer(input: {
         clear();
         return;
       }
+
       const live = new Set<string>();
       for (const item of items) {
         live.add(item.id);
-        ids.add(item.id);
         entityRegistry.set(item.id, item);
         const style = styleFor(item);
         const altitude = style.altitudeMeters ?? item.position.altitudeMeters ?? 0;
@@ -46,39 +47,42 @@ export function createPointLayerRenderer(input: {
           item.position.latitude,
           altitude,
         );
-        const existing = viewer.entities.getById(item.id);
-        if (existing) {
-          existing.position = new Cesium.ConstantPositionProperty(position);
-          continue;
-        }
-        viewer.entities.add({
-          id: item.id,
-          position,
-          point: {
+
+        let point = points.get(item.id);
+        if (!point) {
+          point = collection.add({
+            id: item.id,
+            position,
             pixelSize: style.pixelSize ?? 8,
             color: Cesium.Color.fromCssColorString(style.color),
             outlineColor: Cesium.Color.fromCssColorString(style.outline ?? "#ffffff"),
             outlineWidth: style.outlineWidth ?? 1,
-            ...(style.clampToGround
-              ? { heightReference: Cesium.HeightReference.CLAMP_TO_GROUND }
-              : {}),
             disableDepthTestDistance: style.disableDepthTestDistance ?? 2500,
-          },
-          label: {
-            show: false,
-            text: item.name,
-          },
-        });
+          });
+          points.set(item.id, point);
+        } else {
+          point.position = position;
+          point.pixelSize = style.pixelSize ?? 8;
+          point.color = Cesium.Color.fromCssColorString(style.color);
+          point.outlineColor = Cesium.Color.fromCssColorString(style.outline ?? "#ffffff");
+          point.outlineWidth = style.outlineWidth ?? 1;
+          point.disableDepthTestDistance = style.disableDepthTestDistance ?? 2500;
+          point.show = true;
+        }
       }
-      for (const id of [...ids]) {
+
+      for (const [id, point] of [...points]) {
         if (live.has(id)) continue;
-        viewer.entities.removeById(id);
+        collection.remove(point);
+        points.delete(id);
         entityRegistry.delete(id);
-        ids.delete(id);
       }
       viewer.scene?.requestRender?.();
     },
     clear,
-    destroy() { clear(); },
+    destroy() {
+      clear();
+      try { viewer.scene.primitives.remove(collection); } catch {}
+    },
   });
 }

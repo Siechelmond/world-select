@@ -10,6 +10,7 @@ import {
   type RoadSegment,
 } from '@/lib/traffic-vector';
 import type { LayerLoadState } from '@/lib/layer-runtime';
+import { holdContinuousRender, releaseContinuousRender } from '@/runtime/gev/render-governor';
 
 type Context = {
   enabled: boolean;
@@ -56,7 +57,8 @@ export function createTrafficController(input: {
   let roadCollection: any = null;
   let groundRoadPrimitives: any[] = [];
   let vehicleCollection: any = null;
-  let vehicleTimer: ReturnType<typeof setInterval> | null = null;
+  let vehiclePreRenderRemover: (() => void) | null = null;
+  let lastVehicleFrameMs = 0;
 
   // Traffic acquisition state is independent from camera zoom. Roads/flows/
   // modeled vehicles survive zoom and map-style changes until the view has
@@ -75,8 +77,10 @@ export function createTrafficController(input: {
   };
 
   const clearRenderedFallback = () => {
-    if (vehicleTimer) clearInterval(vehicleTimer);
-    vehicleTimer = null;
+    vehiclePreRenderRemover?.();
+    vehiclePreRenderRemover = null;
+    lastVehicleFrameMs = 0;
+    releaseContinuousRender('traffic');
     if (vehicleCollection) {
       try { viewer.scene.primitives.remove(vehicleCollection); } catch {}
     }
@@ -306,12 +310,20 @@ export function createTrafficController(input: {
 
     renderVehicles();
     if (vehicles.length) {
-      // Reposition existing primitives; never delete/recreate the fleet each tick.
-      const tickMs = photoreal ? 500 : 250;
-      vehicleTimer = setInterval(() => {
-        vehicles = advanceModeledVehicles(vehicles, roads, flows, tickMs / 1000);
+      // Bilawal/GEV pattern: animation belongs to Cesium's frame lifecycle, not
+      // an independent timer. The governor keeps frames continuous only while
+      // this animator actually exists.
+      holdContinuousRender('traffic');
+      lastVehicleFrameMs = performance.now();
+      vehiclePreRenderRemover = viewer.scene.preRender.addEventListener(() => {
+        if (!vehicleCollection || destroyed || !fallbackVisible()) return;
+        const nowMs = performance.now();
+        const dt = Math.min(Math.max((nowMs - lastVehicleFrameMs) / 1000, 0), 0.1);
+        lastVehicleFrameMs = nowMs;
+        if (dt <= 0) return;
+        vehicles = advanceModeledVehicles(vehicles, roads, flows, dt);
         renderVehicles();
-      }, tickMs);
+      });
     }
 
     publish(
