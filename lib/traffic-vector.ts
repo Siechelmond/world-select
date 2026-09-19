@@ -68,38 +68,64 @@ function bearingDeg(a: [number, number], b: [number, number]): number {
   return (toDeg(Math.atan2(y, x)) + 360) % 360;
 }
 
-function totalRoadLength(coords: Array<[number, number]>): number {
-  let len = 0;
+type RoadMetrics = {
+  totalLengthM: number;
+  segmentLengthsM: number[];
+  segmentHeadingsDeg: number[];
+};
+
+const ROAD_METRICS_CACHE = new WeakMap<Array<[number, number]>, RoadMetrics>();
+
+function roadMetrics(coords: Array<[number, number]>): RoadMetrics {
+  const cached = ROAD_METRICS_CACHE.get(coords);
+  if (cached) return cached;
+
+  const segmentLengthsM: number[] = [];
+  const segmentHeadingsDeg: number[] = [];
+  let totalLengthM = 0;
   for (let i = 1; i < coords.length; i++) {
-    len += haversineM(coords[i - 1], coords[i]);
+    const lengthM = haversineM(coords[i - 1], coords[i]);
+    segmentLengthsM.push(lengthM);
+    segmentHeadingsDeg.push(bearingDeg(coords[i - 1], coords[i]));
+    totalLengthM += lengthM;
   }
-  return len;
+  const metrics = { totalLengthM, segmentLengthsM, segmentHeadingsDeg };
+  ROAD_METRICS_CACHE.set(coords, metrics);
+  return metrics;
+}
+
+function totalRoadLength(coords: Array<[number, number]>): number {
+  return roadMetrics(coords).totalLengthM;
 }
 
 function interpolateAlongRoad(
   coords: Array<[number, number]>,
   progress: number,
 ): { position: [number, number]; heading: number; segmentIndex: number } {
-  const total = totalRoadLength(coords);
-  const target = total * progress;
+  const metrics = roadMetrics(coords);
+  const target = metrics.totalLengthM * progress;
   let traveled = 0;
   for (let i = 1; i < coords.length; i++) {
-    const segLen = haversineM(coords[i - 1], coords[i]);
+    const segLen = metrics.segmentLengthsM[i - 1] ?? 0;
     if (traveled + segLen >= target) {
       const frac = segLen > 0 ? (target - traveled) / segLen : 0;
       const lon = coords[i - 1][0] + (coords[i][0] - coords[i - 1][0]) * frac;
       const lat = coords[i - 1][1] + (coords[i][1] - coords[i - 1][1]) * frac;
       return {
         position: [lon, lat],
-        heading: bearingDeg(coords[i - 1], coords[i]),
+        heading: metrics.segmentHeadingsDeg[i - 1] ?? 0,
         segmentIndex: i - 1,
       };
     }
     traveled += segLen;
   }
   const last = coords[coords.length - 1];
-  const prev = coords[coords.length - 2] ?? last;
-  return { position: last, heading: bearingDeg(prev, last), segmentIndex: coords.length - 2 };
+  const segmentIndex = Math.max(0, coords.length - 2);
+  return {
+    position: last,
+    heading: metrics.segmentHeadingsDeg[segmentIndex] ?? 0,
+    segmentIndex,
+  };
 }
 
 function inferFreeFlowSpeed(road: RoadSegment): number {

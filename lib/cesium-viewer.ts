@@ -1,4 +1,5 @@
 import { GEO_LABELS_DE } from '@/lib/geo-labels';
+import { installRenderGovernor, uninstallRenderGovernor } from '@/runtime/gev/render-governor';
 import {
   createMapController,
   type GroundMapStyle,
@@ -74,6 +75,7 @@ export function createWorldViewer(input: {
   });
 
   const mapController = createMapController({ viewer, Cesium, googleMapsApiKey, cesiumIonToken });
+  installRenderGovernor(viewer);
 
   for (const label of GEO_LABELS_DE) {
     viewer.entities.add({
@@ -310,6 +312,7 @@ export function createWorldViewer(input: {
       viewer.camera.moveEnd.removeEventListener(updateView);
       handler.destroy();
       mapController.destroy();
+      uninstallRenderGovernor(viewer);
       if (!viewer.isDestroyed()) viewer.destroy();
     },
   };

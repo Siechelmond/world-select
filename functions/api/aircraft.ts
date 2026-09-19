@@ -28,7 +28,7 @@ type Attempt = {
   authMode?: "anonymous" | "oauth" | "anonymous-fallback";
 };
 
-const AIRCRAFT_GATEWAY_TIMEOUT_MS = 5_000;
+const AIRCRAFT_GATEWAY_TIMEOUT_MS = 10_000;
 const OPEN_SKY_TOKEN_TIMEOUT_MS = 5_000;
 const OPEN_SKY_STATES_TIMEOUT_MS = 6_000;
 const ADSB_LOL_TIMEOUT_MS = 5_000;
@@ -230,7 +230,7 @@ async function fetchGateway(lat: number, lon: number, radiusNm: number, env: Env
 
   const configuredUrl = new URL(configured);
   const candidates = configuredUrl.pathname === "/"
-    ? ["/", "/aircraft", "/api/aircraft"]
+    ? ["/aircraft", "/api/aircraft", "/"]
     : [configuredUrl.pathname];
 
   let lastStatus = 502;
