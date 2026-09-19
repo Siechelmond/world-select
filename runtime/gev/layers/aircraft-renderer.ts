@@ -12,16 +12,25 @@ type SyncInput = {
   cameraHeight: number;
 };
 
+type TrailPoint = {
+  longitude: number;
+  latitude: number;
+  altitudeMeters: number;
+  observedAtMs: number;
+};
+
 export function createAircraftRenderer(input: {
   viewer: any;
   Cesium: any;
   entityRegistry: Map<string, SpatialEntity>;
 }) {
   const { viewer, Cesium, entityRegistry } = input;
-  const ids = new Set<string>();
-  type TrailPoint = { longitude: number; latitude: number; altitudeMeters: number; observedAtMs: number };
+  const billboardCollection = viewer.scene.primitives.add(new Cesium.BillboardCollection());
+  const billboards = new Map<string, any>();
   const trails = new Map<string, TrailPoint[]>();
   let trackedId: string | null = null;
+  let selectedEntityId: string | null = null;
+  let destroyed = false;
 
   const trailDistanceKm = (a: TrailPoint, b: TrailPoint) => {
     const toRad = (value: number) => value * Math.PI / 180;
@@ -35,17 +44,23 @@ export function createAircraftRenderer(input: {
   };
 
   const clearTracking = () => {
-    if (viewer.trackedEntity) viewer.trackedEntity = undefined;
+    if (trackedId && viewer.trackedEntity?.id === trackedId) {
+      viewer.trackedEntity = undefined;
+    }
     trackedId = null;
   };
 
-  const clear = () => {
+  const clearSelectedEntity = () => {
     clearTracking();
-    for (const id of ids) {
-      viewer.entities.removeById(id);
-      entityRegistry.delete(id);
-    }
-    ids.clear();
+    if (selectedEntityId) viewer.entities.removeById(selectedEntityId);
+    selectedEntityId = null;
+  };
+
+  const clear = () => {
+    clearSelectedEntity();
+    billboardCollection.removeAll();
+    for (const id of billboards.keys()) entityRegistry.delete(id);
+    billboards.clear();
     trails.clear();
     viewer.scene?.requestRender?.();
   };
@@ -62,8 +77,6 @@ export function createAircraftRenderer(input: {
     const point: TrailPoint = { ...spatial.position, observedAtMs };
     const last = trail[trail.length - 1];
 
-    // Only real ADS-B samples extend the history. Local projection moves the
-    // icon between polls but must not manufacture a fake breadcrumb every tick.
     if (!last || observedAtMs > last.observedAtMs) {
       const gapMs = last ? observedAtMs - last.observedAtMs : 0;
       const jumpKm = last ? trailDistanceKm(last, point) : 0;
@@ -77,20 +90,71 @@ export function createAircraftRenderer(input: {
     return trail;
   };
 
+  const syncSelectedEntity = (
+    spatial: SpatialEntity | null,
+    position: any,
+    trailPositions: any[],
+  ) => {
+    if (!spatial) {
+      clearSelectedEntity();
+      return null;
+    }
+
+    if (selectedEntityId && selectedEntityId !== spatial.id) clearSelectedEntity();
+
+    let entity = viewer.entities.getById(spatial.id);
+    if (!entity) {
+      entity = viewer.entities.add({
+        id: spatial.id,
+        position,
+        polyline: {
+          show: trailPositions.length > 1,
+          positions: trailPositions,
+          width: 1.5,
+          material: Cesium.Color.fromCssColorString('#facc15').withAlpha(0.48),
+          clampToGround: false,
+        },
+        label: {
+          show: true,
+          text: spatial.name,
+          font: '11px sans-serif',
+          fillColor: Cesium.Color.fromCssColorString('#fef08a'),
+          pixelOffset: new Cesium.Cartesian2(13, -13),
+          showBackground: true,
+          backgroundColor: Cesium.Color.fromCssColorString('#111827').withAlpha(0.72),
+        },
+      });
+    } else {
+      entity.position = new Cesium.ConstantPositionProperty(position);
+      if (entity.polyline) {
+        entity.polyline.show = new Cesium.ConstantProperty(trailPositions.length > 1);
+        entity.polyline.positions = new Cesium.ConstantProperty(trailPositions);
+      }
+      if (entity.label) {
+        entity.label.show = new Cesium.ConstantProperty(true);
+        entity.label.text = new Cesium.ConstantProperty(spatial.name);
+      }
+    }
+    selectedEntityId = spatial.id;
+    return entity;
+  };
+
   return Object.freeze({
     sync({ items, visible, selectedId, followSelected, nowMs, cameraHeight }: SyncInput) {
+      if (destroyed) return;
       if (!visible) {
         clear();
         return;
       }
 
       const live = new Set<string>();
+      let selectedSpatial: SpatialEntity | null = null;
+      let selectedPosition: any = null;
+      let selectedTrailPositions: any[] = [];
+
       for (const spatial of items) {
         live.add(spatial.id);
         const isSelected = spatial.id === selectedId;
-        // Every fresh contact is locally repositioned between ADS-B polls.
-        // Camera zoom never causes source acquisition; this is display-only
-        // dead reckoning from the latest observed speed/track.
         const canProject = spatial.dataState !== 'STALE';
         const projected = canProject ? projectAircraftPosition(spatial, nowMs) : spatial.position;
         const displayEntity: SpatialEntity = {
@@ -116,81 +180,72 @@ export function createAircraftRenderer(input: {
         const speed = Number(spatial.properties.groundSpeedKt ?? 0);
         const pixelSize = speed > 250 ? 7 : 6;
         const headingDeg = Number(spatial.properties.trackDeg ?? 0);
-        const iconSize = Math.max(14, pixelSize * (isSelected ? 4.1 : 3.2));
+        const minIconSize = cameraHeight > 3_000_000 ? 12 : 14;
+        const iconSize = Math.max(minIconSize, pixelSize * (isSelected ? 4.1 : 3.2));
         const distanceScale = new Cesium.NearFarScalar(5_000, 1.15, 20_000_000, 0.08);
         const distanceAlpha = new Cesium.NearFarScalar(500_000, 1, 35_000_000, 0.06);
-        const trail = updateTrail(spatial, isSelected);
-        const trailPositions = trail.map((p) => Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitudeMeters));
-        const existing = viewer.entities.getById(spatial.id);
 
-        if (existing) {
-          existing.position = new Cesium.ConstantPositionProperty(position);
-          if (existing.billboard) {
-            existing.billboard.width = new Cesium.ConstantProperty(iconSize);
-            existing.billboard.height = new Cesium.ConstantProperty(iconSize);
-            existing.billboard.rotation = new Cesium.ConstantProperty(Cesium.Math.toRadians(-headingDeg));
-            existing.billboard.scaleByDistance = new Cesium.ConstantProperty(distanceScale);
-            existing.billboard.translucencyByDistance = new Cesium.ConstantProperty(distanceAlpha);
-            existing.billboard.color = new Cesium.ConstantProperty(
-              isSelected ? Cesium.Color.fromCssColorString('#fde047') : Cesium.Color.fromCssColorString('#facc15'),
-            );
-          }
-          if (existing.polyline) {
-            existing.polyline.show = new Cesium.ConstantProperty(isSelected && trailPositions.length > 1);
-            existing.polyline.positions = new Cesium.ConstantProperty(trailPositions);
-          }
-          if (existing.label) {
-            existing.label.show = new Cesium.ConstantProperty(isSelected);
-            existing.label.text = new Cesium.ConstantProperty(spatial.name);
-          }
-        } else {
-          ids.add(spatial.id);
-          viewer.entities.add({
+        let billboard = billboards.get(spatial.id);
+        if (!billboard) {
+          billboard = billboardCollection.add({
             id: spatial.id,
             position,
-            billboard: {
-              image: AIRCRAFT_ICON,
-              width: iconSize,
-              height: iconSize,
-              rotation: Cesium.Math.toRadians(-headingDeg),
-              color: isSelected ? Cesium.Color.fromCssColorString('#fde047') : Cesium.Color.fromCssColorString('#facc15'),
-              scaleByDistance: distanceScale,
-              translucencyByDistance: distanceAlpha,
-              disableDepthTestDistance: 3_000_000,
-            },
-            polyline: {
-              show: isSelected && trailPositions.length > 1,
-              positions: trailPositions,
-              width: 1.5,
-              material: Cesium.Color.fromCssColorString('#facc15').withAlpha(0.48),
-              clampToGround: false,
-            },
-            label: {
-              show: isSelected,
-              text: spatial.name,
-              font: '11px sans-serif',
-              fillColor: Cesium.Color.fromCssColorString('#fef08a'),
-              pixelOffset: new Cesium.Cartesian2(13, -13),
-              showBackground: true,
-              backgroundColor: Cesium.Color.fromCssColorString('#111827').withAlpha(0.72),
-            },
+            image: AIRCRAFT_ICON,
+            width: iconSize,
+            height: iconSize,
+            rotation: Cesium.Math.toRadians(-headingDeg),
+            color: isSelected
+              ? Cesium.Color.fromCssColorString('#fde047')
+              : Cesium.Color.fromCssColorString('#facc15'),
+            scaleByDistance: distanceScale,
+            translucencyByDistance: distanceAlpha,
+            disableDepthTestDistance: 3_000_000,
           });
+          billboards.set(spatial.id, billboard);
+        } else {
+          billboard.position = position;
+          billboard.width = iconSize;
+          billboard.height = iconSize;
+          billboard.rotation = Cesium.Math.toRadians(-headingDeg);
+          billboard.color = isSelected
+            ? Cesium.Color.fromCssColorString('#fde047')
+            : Cesium.Color.fromCssColorString('#facc15');
+          billboard.scaleByDistance = distanceScale;
+          billboard.translucencyByDistance = distanceAlpha;
+          billboard.show = true;
+        }
+
+        if (isSelected) {
+          selectedSpatial = displayEntity;
+          selectedPosition = position;
+          const trail = updateTrail(spatial, true);
+          selectedTrailPositions = trail.map((p) =>
+            Cesium.Cartesian3.fromDegrees(p.longitude, p.latitude, p.altitudeMeters)
+          );
+        } else {
+          trails.delete(spatial.id);
         }
       }
 
-      for (const id of [...ids]) {
+      for (const [id, billboard] of [...billboards]) {
         if (live.has(id)) continue;
-        viewer.entities.removeById(id);
+        billboardCollection.remove(billboard);
+        billboards.delete(id);
         entityRegistry.delete(id);
-        ids.delete(id);
         trails.delete(id);
+        if (selectedEntityId === id) clearSelectedEntity();
       }
 
-      if (followSelected && selectedId) {
-        const target = viewer.entities.getById(selectedId);
-        if (target && trackedId !== selectedId) {
-          viewer.trackedEntity = target;
-          trackedId = selectedId;
+      const selectedEntity = syncSelectedEntity(
+        selectedSpatial,
+        selectedPosition,
+        selectedTrailPositions,
+      );
+
+      if (followSelected && selectedSpatial && selectedEntity) {
+        if (trackedId !== selectedSpatial.id) {
+          viewer.trackedEntity = selectedEntity;
+          trackedId = selectedSpatial.id;
         }
       } else {
         clearTracking();
@@ -200,6 +255,11 @@ export function createAircraftRenderer(input: {
     },
     clearTracking,
     clear,
-    destroy() { clear(); },
+    destroy() {
+      if (destroyed) return;
+      clear();
+      destroyed = true;
+      try { viewer.scene.primitives.remove(billboardCollection); } catch {}
+    },
   });
 }

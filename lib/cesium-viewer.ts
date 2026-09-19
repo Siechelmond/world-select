@@ -192,10 +192,18 @@ export function createWorldViewer(input: {
     viewer.scene?.requestRender?.();
   };
 
+  const pickedObjectId = (picked: any) => {
+    if (typeof picked?.id === 'string') return picked.id;
+    if (typeof picked?.id?.id === 'string') return picked.id.id;
+    if (typeof picked?.primitive?.id === 'string') return picked.primitive.id;
+    if (typeof picked?.primitive?.id?.id === 'string') return picked.primitive.id.id;
+    return null;
+  };
+
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   handler.setInputAction((movement: any) => {
     const picked = viewer.scene.pick(movement.position);
-    const id = picked?.id?.id;
+    const id = pickedObjectId(picked);
     if (typeof id === 'string') {
       onEntityClick(id);
     } else {
@@ -232,7 +240,7 @@ export function createWorldViewer(input: {
   handler.setInputAction((movement: any) => {
     if (!onEntityHover) return;
     const picked = viewer.scene.pick(movement.endPosition);
-    const id = picked?.id?.id;
+    const id = pickedObjectId(picked);
     if (typeof id === 'string') {
       onEntityHover(id, {
         x: Number(movement.endPosition?.x ?? 0),

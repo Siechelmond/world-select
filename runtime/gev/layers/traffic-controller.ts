@@ -196,11 +196,34 @@ export function createTrafficController(input: {
     renderedMode = context.mapMode;
     const photoreal = context.mapMode === "photoreal";
     const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
+    const roadMap = new Map(roads.map((road) => [road.id, road]));
+    const roadBaseHeights = new Map<number, number>();
+    const groundPolylineSupported = Boolean(
+      photoreal && Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene),
+    );
 
-    roadCollection = photoreal ? null : new Cesium.PolylineCollection();
+    roadCollection = (!photoreal || !groundPolylineSupported)
+      ? new Cesium.PolylineCollection()
+      : null;
     vehicleCollection = new Cesium.PointPrimitiveCollection({ blendOption: Cesium.BlendOption.TRANSLUCENT });
     if (roadCollection) viewer.scene.primitives.add(roadCollection);
     viewer.scene.primitives.add(vehicleCollection);
+
+    const roadHeight = (roadId: number) => {
+      if (!photoreal) return 8;
+      const cached = roadBaseHeights.get(roadId);
+      if (cached != null) return cached;
+      let height = 0;
+      const first = roadMap.get(roadId)?.coordinates?.[0];
+      if (first && viewer.scene.sampleHeightSupported && typeof viewer.scene.sampleHeight === 'function') {
+        try {
+          const sampled = viewer.scene.sampleHeight(Cesium.Cartographic.fromDegrees(first[0], first[1]));
+          if (Number.isFinite(sampled)) height = sampled;
+        } catch {}
+      }
+      roadBaseHeights.set(roadId, height);
+      return height;
+    };
 
     const maxVehicles = photoreal ? 100 : vehicles.length;
     const renderVehicles = () => {
@@ -209,11 +232,11 @@ export function createTrafficController(input: {
       while (vehicleCollection.length < visibleVehicles.length) {
         vehicleCollection.add({
           position: Cesium.Cartesian3.ZERO,
-          pixelSize: photoreal ? 3 : 3,
+          pixelSize: 3,
           color: Cesium.Color.WHITE,
           outlineColor: Cesium.Color.fromCssColorString('#020617'),
           outlineWidth: 1,
-          disableDepthTestDistance: photoreal ? 0 : 5_000,
+          disableDepthTestDistance: photoreal ? 15_000 : 5_000,
         });
       }
       while (vehicleCollection.length > visibleVehicles.length) {
@@ -223,15 +246,7 @@ export function createTrafficController(input: {
       const flowMapNow = new Map(flows.map((item) => [item.roadId, item]));
       visibleVehicles.forEach((vehicle, index) => {
         const point = vehicleCollection.get(index);
-        let height = photoreal ? 1.5 : 8;
-        if (photoreal && typeof viewer.scene.sampleHeight === 'function') {
-          try {
-            const sampled = viewer.scene.sampleHeight(
-              Cesium.Cartographic.fromDegrees(vehicle.position.longitude, vehicle.position.latitude),
-            );
-            if (Number.isFinite(sampled)) height = sampled + 1.5;
-          } catch {}
-        }
+        const height = photoreal ? roadHeight(vehicle.roadId) + 3 : 8;
         point.position = Cesium.Cartesian3.fromDegrees(
           vehicle.position.longitude,
           vehicle.position.latitude,
@@ -245,7 +260,7 @@ export function createTrafficController(input: {
       viewer.scene?.requestRender?.();
     };
 
-    if (photoreal && Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene)) {
+    if (groundPolylineSupported) {
       const groups = new Map<string, any[]>();
       for (const road of roads) {
         if (road.coordinates.length < 2) continue;
@@ -276,13 +291,14 @@ export function createTrafficController(input: {
     } else if (roadCollection) {
       for (const road of roads) {
         if (road.coordinates.length < 2) continue;
+        const fallbackHeight = photoreal ? 25 : 5;
         roadCollection.add({
-          positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, 5)),
+          positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, fallbackHeight)),
           width: road.highway === 'motorway' || road.highway === 'trunk' ? 3 : 2,
           material: Cesium.Material.fromType('Color', {
             color: Cesium.Color.fromCssColorString(
               getCongestionColor(flowMap.get(road.id)?.congestion ?? 'free-flow'),
-            ).withAlpha(0.82),
+            ).withAlpha(photoreal ? 0.68 : 0.82),
           }),
         });
       }
@@ -301,7 +317,7 @@ export function createTrafficController(input: {
     publish(
       'degraded',
       photoreal
-        ? `3D traffic · cached OSM roads + ${Math.min(100, vehicles.length)} modeled vehicles surface-sampled`
+        ? `3D traffic · cached OSM roads + ${Math.min(100, vehicles.length)} modeled vehicles · cached road heights`
         : 'Cached OSM road geometry + locally modeled vehicles · live TomTom unavailable',
     );
   };

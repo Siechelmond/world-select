@@ -27,9 +27,9 @@ type Attempt = {
   authMode?: "anonymous" | "oauth" | "anonymous-fallback";
 };
 
-const OPEN_SKY_TOKEN_TIMEOUT_MS = 12_000;
-const OPEN_SKY_STATES_TIMEOUT_MS = 12_000;
-const ADSB_LOL_TIMEOUT_MS = 7_000;
+const OPEN_SKY_TOKEN_TIMEOUT_MS = 5_000;
+const OPEN_SKY_STATES_TIMEOUT_MS = 6_000;
+const ADSB_LOL_TIMEOUT_MS = 5_000;
 const OPEN_SKY_MAX_SOURCE_AGE_SECONDS = 120;
 const FRESH_EDGE_CACHE_MS = 30_000;
 const OPEN_SKY_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
@@ -291,8 +291,21 @@ export const onRequestGet = async (context: { request: Request; env: Env; waitUn
   let firstNonEmptyStale: ProviderResult | null = null;
   let selected: ProviderResult | null = null;
 
+  // Start all allowed providers together. The former serial OpenSky -> ADSB
+  // chain could spend ~20s waiting before a usable fallback was even tried.
+  const pending = new Map<ProviderName, Promise<{ provider: ProviderName; result: ProviderResult | null }>>();
   for (const provider of providerOrder) {
-    const result = await tryProvider(provider, lat, lon, radius, context.env, attempts);
+    pending.set(
+      provider,
+      tryProvider(provider, lat, lon, radius, context.env, attempts)
+        .then((result) => ({ provider, result })),
+    );
+  }
+
+  while (pending.size && !selected) {
+    const completed = await Promise.race([...pending.values()]);
+    pending.delete(completed.provider);
+    const result = completed.result;
     if (!result || !result.ac.length) continue;
     if (isUsableSnapshot(result, OPEN_SKY_MAX_SOURCE_AGE_SECONDS)) {
       selected = result;
