@@ -15,6 +15,7 @@ import { propagateTles, type SatelliteCatalog, type TleRecord } from "@/lib/cele
 import type { AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
+import { loadGoogleMaps } from "@/lib/google-street";
 import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
 import SpaceExplorer from "@/components/SpaceExplorer";
 import { createWorldViewer, type WorldMapMode } from "@/lib/cesium-viewer";
@@ -47,6 +48,7 @@ type LayerError = {
 const DAY_MS = 86_400_000;
 const SATELLITE_TICK_MS = 1_000;
 const MOBILE_SATELLITE_TICK_MS = 2_000;
+const UI_CLOCK_TICK_MS = 10_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
@@ -176,7 +178,7 @@ export default function WorldSelectApp() {
   const satellites = useMemo(() => propagateTles(tleRecords, selectedTime), [tleRecords, selectedTime]);
   const planets = useMemo(() => computePlanetPositions(selectedTime), [selectedTime]);
   const sun = useMemo(() => sunEntity(selectedTime), [selectedTime]);
-  const aircraftAvailable = viewMode === "earth" && timeOffsetDays === 0;
+  const aircraftAvailable = viewMode === "earth" && timeOffsetDays === 0 && spacePlaybackDays === 0;
   const visibleAircraft = useMemo(() => {
     const byId = new Map<string, SpatialEntity>();
     if (aircraftLayer) for (const item of aircraft) byId.set(item.id, item);
@@ -234,11 +236,86 @@ export default function WorldSelectApp() {
     return () => window.removeEventListener("resize", update);
   }, []);
 
+  // Keep the React/UI clock deliberately slow. The hot live motion path below
+  // updates Cesium directly so the entire application tree is not reconciled
+  // every second just to move satellites or nearby aircraft.
   useEffect(() => {
-    if ((!satelliteLayer && !((aircraftLayer || militaryLayer) && animateAircraft)) || timeOffsetDays !== 0) return;
-    const timer = window.setInterval(() => setNowTick(Date.now()), isMobile ? MOBILE_SATELLITE_TICK_MS : SATELLITE_TICK_MS);
+    if (viewMode !== "earth" || timeOffsetDays !== 0) return;
+    const timer = window.setInterval(() => setNowTick(Date.now()), UI_CLOCK_TICK_MS);
     return () => window.clearInterval(timer);
-  }, [satelliteLayer, aircraftLayer, militaryLayer, animateAircraft, timeOffsetDays, isMobile]);
+  }, [viewMode, timeOffsetDays]);
+
+  useEffect(() => {
+    if (
+      viewMode !== "earth" ||
+      timeOffsetDays !== 0 ||
+      spacePlaybackDays !== 0 ||
+      !cesiumReady
+    ) return;
+
+    const tickSatellites = satelliteLayer;
+    const tickAircraft = (aircraftLayer || militaryLayer) && aircraftAvailable && animateAircraft;
+    if (!tickSatellites && !tickAircraft) return;
+
+    const tick = () => {
+      const nowMs = Date.now();
+      const liveTime = new Date(nowMs);
+
+      if (tickSatellites) {
+        satelliteRendererRef.current?.sync({
+          satellites: propagateTles(tleRecords, liveTime),
+          tleRecords,
+          visible: true,
+          selectedId: selected?.kind === "satellite" ? selected.id : null,
+          isMobile,
+          cameraHeight,
+          time: liveTime,
+        });
+      }
+
+      if (tickAircraft) {
+        aircraftRendererRef.current?.sync({
+          items: renderedAircraft,
+          visible: true,
+          selectedId: selected?.kind === "aircraft" ? selected.id : null,
+          followSelected: followAircraft,
+          nowMs,
+          cameraHeight,
+        });
+      }
+
+      const viewer = viewerRef.current;
+      const Cesium = window.Cesium;
+      if (viewer && Cesium) {
+        viewer.clock.currentTime = Cesium.JulianDate.fromDate(liveTime);
+        viewer.scene?.requestRender?.();
+      }
+    };
+
+    tick();
+    const timer = window.setInterval(
+      tick,
+      isMobile ? MOBILE_SATELLITE_TICK_MS : SATELLITE_TICK_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [
+    viewMode,
+    timeOffsetDays,
+    spacePlaybackDays,
+    cesiumReady,
+    satelliteLayer,
+    tleRecords,
+    aircraftLayer,
+    militaryLayer,
+    aircraftAvailable,
+    animateAircraft,
+    renderedAircraft,
+    selected?.id,
+    selected?.kind,
+    followAircraft,
+    isMobile,
+    cameraHeight,
+  ]);
 
   useEffect(() => {
     if (viewMode !== "space" || !spacePlaying) return;
@@ -1456,50 +1533,6 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
   }, [apiKey, onReady, onFallback, onPositionChange]);
 
   return <div ref={panoRef} className="googleStreetPano"><div className="streetMessage">Loading Google Street View…</div></div>;
-}
-
-function loadGoogleMaps(apiKey: string): Promise<any> {
-  if (window.google?.maps?.importLibrary) return Promise.resolve(window.google);
-  if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
-
-  window.__worldSelectGoogleMapsPromise = new Promise((resolve, reject) => {
-    const callbackName = "__worldSelectGoogleMapsReady";
-    const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
-    if (existing) existing.remove();
-
-    let settled = false;
-    let timeout = 0;
-    const ready = () => finish();
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      if (window.__worldSelectGoogleMapsReady === ready) {
-        delete window.__worldSelectGoogleMapsReady;
-      }
-      if (error) reject(error);
-      else if (window.google?.maps?.importLibrary) resolve(window.google);
-      else reject(new Error("Google Maps callback fired without Maps JavaScript API"));
-    };
-
-    window.__worldSelectGoogleMapsReady = ready;
-    timeout = window.setTimeout(() => {
-      finish(new Error("Google Maps JavaScript API initialization timed out"));
-    }, 15_000);
-
-    const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&callback=${callbackName}`;
-    script.async = true;
-    script.defer = true;
-    script.dataset.worldSelectGoogleMaps = "1";
-    script.onerror = () => finish(new Error("Google Maps JavaScript API could not be loaded"));
-    document.head.appendChild(script);
-  }).catch((reason) => {
-    window.__worldSelectGoogleMapsPromise = undefined;
-    throw reason;
-  });
-
-  return window.__worldSelectGoogleMapsPromise;
 }
 
 function SolarSystemView({ planets, sun, onSelect }: { planets: PlanetPosition[]; sun: SpatialEntity; onSelect: (entity: SpatialEntity) => void }) {

@@ -75,6 +75,24 @@ type RoadMetrics = {
 };
 
 const ROAD_METRICS_CACHE = new WeakMap<Array<[number, number]>, RoadMetrics>();
+const ROAD_BY_ID_CACHE = new WeakMap<RoadSegment[], Map<number, RoadSegment>>();
+const FLOW_BY_ROAD_CACHE = new WeakMap<FlowSegment[], Map<number, FlowSegment>>();
+
+function roadById(roads: RoadSegment[]) {
+  const cached = ROAD_BY_ID_CACHE.get(roads);
+  if (cached) return cached;
+  const map = new Map(roads.map((road) => [road.id, road]));
+  ROAD_BY_ID_CACHE.set(roads, map);
+  return map;
+}
+
+function flowByRoad(flows: FlowSegment[]) {
+  const cached = FLOW_BY_ROAD_CACHE.get(flows);
+  if (cached) return cached;
+  const map = new Map(flows.map((flow) => [flow.roadId, flow]));
+  FLOW_BY_ROAD_CACHE.set(flows, map);
+  return map;
+}
 
 function roadMetrics(coords: Array<[number, number]>): RoadMetrics {
   const cached = ROAD_METRICS_CACHE.get(coords);
@@ -214,27 +232,33 @@ export function advanceModeledVehicles(
   flows: FlowSegment[],
   deltaSeconds: number,
 ): ModeledVehicle[] {
-  const roadMap = new Map(roads.map((r) => [r.id, r]));
-  const flowMap = new Map(flows.map((f) => [f.roadId, f]));
-  return vehicles.map((v) => {
-    const road = roadMap.get(v.roadId);
-    if (!road) return v;
-    const flow = flowMap.get(v.roadId);
-    const speedMs = (flow?.currentSpeedKmh ?? 50) / 3.6;
+  const roadMap = roadById(roads);
+  const flowMap = flowByRoad(flows);
+
+  // This is a render hot path. Reuse the vehicle records and nested position
+  // objects instead of allocating a replacement fleet on every animation tick.
+  for (const vehicle of vehicles) {
+    const road = roadMap.get(vehicle.roadId);
+    if (!road) continue;
+
+    const flow = flowMap.get(vehicle.roadId);
+    const speedKmh = flow?.currentSpeedKmh ?? vehicle.speedKmh ?? 50;
     const roadLength = totalRoadLength(road.coordinates);
-    if (roadLength <= 0) return v;
-    const distance = speedMs * deltaSeconds;
-    let progress = v.progress + distance / roadLength;
+    if (roadLength <= 0) continue;
+
+    let progress = vehicle.progress + ((speedKmh / 3.6) * deltaSeconds) / roadLength;
     if (progress > 1) progress -= Math.floor(progress);
-    const { position, heading, segmentIndex } = interpolateAlongRoad(road.coordinates, progress);
-    return {
-      ...v,
-      progress,
-      position: { latitude: position[1], longitude: position[0] },
-      headingDeg: heading,
-      segmentIndex,
-    };
-  });
+
+    const next = interpolateAlongRoad(road.coordinates, progress);
+    vehicle.progress = progress;
+    vehicle.position.longitude = next.position[0];
+    vehicle.position.latitude = next.position[1];
+    vehicle.headingDeg = next.heading;
+    vehicle.segmentIndex = next.segmentIndex;
+    vehicle.speedKmh = speedKmh;
+    vehicle.congestion = flow?.congestion ?? vehicle.congestion;
+  }
+  return vehicles;
 }
 
 export function getCongestionColor(congestion: FlowSegment['congestion']): string {

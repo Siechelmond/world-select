@@ -228,8 +228,8 @@ export function createTrafficController(input: {
     const maxVehicles = photoreal ? 100 : vehicles.length;
     const renderVehicles = () => {
       if (!vehicleCollection || destroyed) return;
-      const visibleVehicles = vehicles.slice(0, maxVehicles);
-      while (vehicleCollection.length < visibleVehicles.length) {
+      const visibleCount = Math.min(maxVehicles, vehicles.length);
+      while (vehicleCollection.length < visibleCount) {
         vehicleCollection.add({
           position: Cesium.Cartesian3.ZERO,
           pixelSize: 3,
@@ -239,12 +239,12 @@ export function createTrafficController(input: {
           disableDepthTestDistance: photoreal ? 15_000 : 5_000,
         });
       }
-      while (vehicleCollection.length > visibleVehicles.length) {
+      while (vehicleCollection.length > visibleCount) {
         vehicleCollection.remove(vehicleCollection.get(vehicleCollection.length - 1));
       }
 
-      const flowMapNow = new Map(flows.map((item) => [item.roadId, item]));
-      visibleVehicles.forEach((vehicle, index) => {
+      for (let index = 0; index < visibleCount; index += 1) {
+        const vehicle = vehicles[index];
         const point = vehicleCollection.get(index);
         const height = photoreal ? roadHeight(vehicle.roadId) + 3 : 8;
         point.position = Cesium.Cartesian3.fromDegrees(
@@ -254,9 +254,9 @@ export function createTrafficController(input: {
         );
         point.pixelSize = context.cameraHeight < 30_000 ? 4 : 3;
         point.color = Cesium.Color.fromCssColorString(
-          getCongestionColor(flowMapNow.get(vehicle.roadId)?.congestion ?? 'free-flow'),
+          getCongestionColor(vehicle.congestion ?? 'free-flow'),
         ).withAlpha(photoreal ? 0.82 : 0.9);
-      });
+      }
       viewer.scene?.requestRender?.();
     };
 
