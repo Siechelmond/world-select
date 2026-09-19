@@ -67,7 +67,10 @@ export function createAircraftRenderer(input: {
       for (const spatial of items) {
         live.add(spatial.id);
         const isSelected = spatial.id === selectedId;
-        const canProject = spatial.dataState !== 'STALE' && followSelected && isSelected;
+        // Every fresh contact is locally repositioned between ADS-B polls.
+        // Camera zoom never causes source acquisition; this is display-only
+        // dead reckoning from the latest observed speed/track.
+        const canProject = spatial.dataState !== 'STALE';
         const projected = canProject ? projectAircraftPosition(spatial, nowMs) : spatial.position;
         const displayEntity: SpatialEntity = {
           ...spatial,
@@ -76,7 +79,7 @@ export function createAircraftRenderer(input: {
           properties: {
             ...spatial.properties,
             displayPosition: canProject
-              ? 'estimated between observed ADS-B samples'
+              ? 'locally projected from latest observed ADS-B sample'
               : spatial.dataState === 'STALE'
                 ? 'last known stale ADS-B sample'
                 : 'last observed ADS-B sample',

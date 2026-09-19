@@ -176,28 +176,16 @@ export default function WorldSelectApp() {
   const planets = useMemo(() => computePlanetPositions(selectedTime), [selectedTime]);
   const sun = useMemo(() => sunEntity(selectedTime), [selectedTime]);
   const aircraftAvailable = viewMode === "earth" && timeOffsetDays === 0;
-  const visibleAircraft = useMemo(() => [
-    ...(aircraftLayer ? aircraft : []),
-    ...(militaryLayer ? military : []),
-  ], [aircraftLayer, aircraft, militaryLayer, military]);
-  const renderedAircraft = useMemo(() => {
-    const budget = cameraHeight > 2_000_000 ? 180 : cameraHeight > 500_000 ? 260 : 420;
-    return [...visibleAircraft]
-      .sort((a, b) => {
-        const da = (a.position.latitude - viewCenter.latitude) ** 2 + (a.position.longitude - viewCenter.longitude) ** 2;
-        const db = (b.position.latitude - viewCenter.latitude) ** 2 + (b.position.longitude - viewCenter.longitude) ** 2;
-        return da - db;
-      })
-      .slice(0, budget);
-  }, [visibleAircraft, cameraHeight, viewCenter.latitude, viewCenter.longitude]);
-  const aircraftQueryCenter = useMemo(() => {
-    const step = cameraHeight < 300_000 ? 0.05 : cameraHeight < 2_000_000 ? 0.15 : 0.35;
-    return {
-      latitude: Math.round(viewCenter.latitude / step) * step,
-      longitude: Math.round(viewCenter.longitude / step) * step,
-    };
-  }, [viewCenter.latitude, viewCenter.longitude, cameraHeight]);
-  const aircraftRadiusNm = cameraHeight < 120_000 ? 70 : cameraHeight < 1_000_000 ? 130 : 220;
+  const visibleAircraft = useMemo(() => {
+    const byId = new Map<string, SpatialEntity>();
+    if (aircraftLayer) for (const item of aircraft) byId.set(item.id, item);
+    if (militaryLayer) for (const item of military) byId.set(item.id, item);
+    return [...byId.values()];
+  }, [aircraftLayer, aircraft, militaryLayer, military]);
+
+  // Render every unique contact already held by the data layer. Camera zoom is
+  // a pure LOD/view concern and must never decide which contacts are fetched.
+  const renderedAircraft = visibleAircraft;
   const animateAircraft = cameraHeight < 900_000;
   const streetPoint = streetTarget ?? (
     selected && selected.kind !== "celestial-body"
@@ -288,6 +276,10 @@ export default function WorldSelectApp() {
       setLayerError("military", snapshot.military.error);
     });
 
+    runtime.setAircraftContext({
+      latitude: INITIAL_CENTER.latitude,
+      longitude: INITIAL_CENTER.longitude,
+    });
     runtime.start();
     return () => {
       unsubscribe();
@@ -298,11 +290,10 @@ export default function WorldSelectApp() {
 
   useEffect(() => {
     coreRuntimeRef.current?.setAircraftContext({
-      latitude: aircraftQueryCenter.latitude,
-      longitude: aircraftQueryCenter.longitude,
-      radiusNm: aircraftRadiusNm,
+      latitude: viewCenter.latitude,
+      longitude: viewCenter.longitude,
     });
-  }, [aircraftQueryCenter.latitude, aircraftQueryCenter.longitude, aircraftRadiusNm]);
+  }, [viewCenter.latitude, viewCenter.longitude]);
 
   useEffect(() => {
     coreRuntimeRef.current?.setSatelliteCatalog(satelliteCatalog);
@@ -995,7 +986,7 @@ export default function WorldSelectApp() {
           <button className={satelliteCatalog === "core" ? "active" : ""} onClick={() => setSatelliteCatalog("core")}>CORE</button>
           <button className={satelliteCatalog === "dense" ? "active" : ""} onClick={() => setSatelliteCatalog("dense")}>DENSE</button>
         </div>
-        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · real altitude · ${renderedAircraft.length}/${visibleAircraft.length} rendered` : "NOW only"} state={aircraftState} count={aircraftAvailable ? renderedAircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
+        <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · stable coverage · all ${renderedAircraft.length} contacts rendered` : "NOW only"} state={aircraftState} count={aircraftAvailable ? renderedAircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
         <LayerToggle checked={militaryLayer} onChange={toggleMilitaryLayer} onRetry={() => retryLayer("military")} title="Military" subtitle={aircraftAvailable ? `ADSB.lol · global military snapshot · ${militaryMeta?.stale ? "last-good" : "live"}` : "NOW only"} state={militaryState} count={aircraftAvailable ? military.length : 0} disabled={!aircraftAvailable} error={layerErrors.military} />
         <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="AUTO near ground · OSM roads + modeled vehicles · TomTom when available" state={trafficState} count={trafficVehicleCount} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
         <div className="layerGroupTitle">EVENTS</div>

@@ -31,6 +31,23 @@ const INTERVALS: Record<CoreLayerKey, number> = {
   military: 30_000,
 };
 
+// Acquisition is deliberately independent from camera zoom. A regional ADS-B
+// snapshot covers a stable area; zoom/tilt only changes rendering. We only
+// rebase the source query after the view center leaves a substantial safe zone.
+const AIRCRAFT_COVERAGE_RADIUS_NM = 220;
+const AIRCRAFT_REBASE_DISTANCE_NM = 90;
+
+function distanceNm(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }) {
+  const toRad = (value: number) => value * Math.PI / 180;
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const dLat = lat2 - lat1;
+  const dLon = toRad(b.longitude - a.longitude);
+  const h = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 3440.065 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
+}
+
 function cell<T, M = never>(data: T): LayerCell<T, M> {
   return { enabled: true, status: "idle", data, meta: null, updatedAt: null };
 }
@@ -208,18 +225,36 @@ export function createCoreLiveWorld() {
       refresh("satellites", "params");
     },
     setAircraftContext(query: AircraftQuery) {
-      const next: AircraftQuery = {
+      const viewpoint = {
         latitude: Number(query.latitude.toFixed(4)),
         longitude: Number(query.longitude.toFixed(4)),
-        radiusNm: query.radiusNm,
       };
       const prior = aircraftContext;
-      aircraftContext = next;
-      const changed = !prior ||
-        prior.latitude !== next.latitude ||
-        prior.longitude !== next.longitude ||
-        prior.radiusNm !== next.radiusNm;
-      if (changed) refresh("aircraft", "context");
+
+      // First viewpoint establishes the acquisition region. After that, normal
+      // zoom/tilt/pan inside the loaded coverage does NOT hit the network.
+      if (!prior) {
+        aircraftContext = {
+          ...viewpoint,
+          radiusNm: AIRCRAFT_COVERAGE_RADIUS_NM,
+          scope: "regional",
+        };
+        refresh("aircraft", "context");
+        return;
+      }
+
+      const movedNm = distanceNm(
+        { latitude: prior.latitude, longitude: prior.longitude },
+        viewpoint,
+      );
+      if (movedNm < AIRCRAFT_REBASE_DISTANCE_NM) return;
+
+      aircraftContext = {
+        ...viewpoint,
+        radiusNm: AIRCRAFT_COVERAGE_RADIUS_NM,
+        scope: "regional",
+      };
+      refresh("aircraft", "context");
     },
     retry(key: CoreLayerKey) {
       refresh(key, "retry");
