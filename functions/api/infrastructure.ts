@@ -8,6 +8,17 @@ type OverpassElement = {
   tags?: Record<string, string>;
 };
 
+type InfrastructureCategory = "cable" | "landing" | "datacenter" | "dam";
+
+type InfrastructureFeature = {
+  id: string;
+  category: InfrastructureCategory;
+  name: string;
+  operator: string;
+  point?: { longitude: number; latitude: number };
+  coordinates?: Array<[number, number]>;
+};
+
 function json(body: unknown, status = 200) {
   return Response.json(body, {
     status,
@@ -21,7 +32,7 @@ function bboxAround(lat: number, lon: number, radiusKm: number) {
   return { south: lat - latDeg, west: lon - lonDeg, north: lat + latDeg, east: lon + lonDeg };
 }
 
-function category(el: OverpassElement) {
+function category(el: OverpassElement): InfrastructureCategory | null {
   const tags = el.tags ?? {};
   if (tags.communication === "line" && (tags.submarine === "yes" || tags.location === "underwater" || tags["seamark:type"] === "cable_submarine")) return "cable";
   if (tags.telecom === "cable_landing_station") return "landing";
@@ -64,29 +75,49 @@ out center geom 12000;`;
       cf: { cacheTtl: 900, cacheEverything: true },
     } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
     if (!response.ok) return json({ error: `Overpass returned HTTP ${response.status}`, features: [] }, 502);
+
     const payload = await response.json() as { elements?: OverpassElement[] };
     const seen = new Set<string>();
-    const features = (payload.elements ?? []).flatMap((el) => {
+    const features = (payload.elements ?? []).reduce<InfrastructureFeature[]>((out, el) => {
       const cat = category(el);
-      if (!cat) return [];
+      if (!cat) return out;
+
       const id = `osm:${el.type}:${el.id}`;
-      if (seen.has(id)) return [];
+      if (seen.has(id)) return out;
       seen.add(id);
+
       const tags = el.tags ?? {};
-      const name = tags.name || tags.ref || (cat === "cable" ? "Submarine telecom cable" : cat === "landing" ? "Cable landing station" : cat === "datacenter" ? "Data center" : "Dam");
+      const name = tags.name || tags.ref || (
+        cat === "cable"
+          ? "Submarine telecom cable"
+          : cat === "landing"
+            ? "Cable landing station"
+            : cat === "datacenter"
+              ? "Data center"
+              : "Dam"
+      );
+
       if (cat === "cable") {
         const coordinates = (el.geometry ?? [])
           .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
           .map((point) => [point.lon, point.lat] as [number, number]);
-        if (coordinates.length < 2) return [];
-        return [{ id, category: cat, name, operator: tags.operator ?? "", coordinates }];
+
+        if (coordinates.length >= 2) {
+          out.push({ id, category: cat, name, operator: tags.operator ?? "", coordinates });
+        }
+        return out;
       }
+
       const point = el.type === "node"
         ? { longitude: Number(el.lon), latitude: Number(el.lat) }
         : { longitude: Number(el.center?.lon), latitude: Number(el.center?.lat) };
-      if (![point.longitude, point.latitude].every(Number.isFinite)) return [];
-      return [{ id, category: cat, name, operator: tags.operator ?? "", point }];
-    });
+
+      if ([point.longitude, point.latitude].every(Number.isFinite)) {
+        out.push({ id, category: cat, name, operator: tags.operator ?? "", point });
+      }
+      return out;
+    }, []);
+
     return json({ features, count: features.length, center: { lat, lon }, radius });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Overpass unavailable", features: [] }, 502);
