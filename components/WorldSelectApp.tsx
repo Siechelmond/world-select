@@ -1,7 +1,7 @@
 "use client";
 
 import Script from "next/script";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { SpatialEntity } from "@/lib/spatial";
 import { createCoreLiveWorld } from "@/runtime/gev/core-live-world";
 import { createEarthquakeRenderer } from "@/runtime/gev/layers/earthquakes-renderer";
@@ -26,6 +26,8 @@ import {
   fetchWeather,
   fetchRadioStations,
   fetchInfrastructure,
+  searchPlaces,
+  type PlaceSearchResult,
   type InfrastructureFeature,
   type InfrastructureCategory,
 } from "@/lib/keyless";
@@ -82,7 +84,6 @@ export default function WorldSelectApp() {
   const celestialBridgeRendererRef = useRef<ReturnType<typeof createCelestialBridgeRenderer> | null>(null);
   const eventRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
   const auroraRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
-  const weatherRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
   const radioRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
   const infrastructureRendererRef = useRef<ReturnType<typeof createInfrastructureRenderer> | null>(null);
   const coreRuntimeRef = useRef<ReturnType<typeof createCoreLiveWorld> | null>(null);
@@ -132,6 +133,10 @@ export default function WorldSelectApp() {
   const [weatherRetry, setWeatherRetry] = useState(0);
   const [radioRetry, setRadioRetry] = useState(0);
   const [infrastructureRetry, setInfrastructureRetry] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<PlaceSearchResult[]>([]);
+  const [searchState, setSearchState] = useState<"idle" | "loading" | "error">("idle");
+  const [searchMessage, setSearchMessage] = useState("");
   const [viewCenter, setViewCenter] = useState<EarthPoint>(INITIAL_CENTER);
   const [cameraHeight, setCameraHeight] = useState(9_500_000);
   const [followAircraft, setFollowAircraft] = useState(false);
@@ -156,7 +161,7 @@ export default function WorldSelectApp() {
   const [streetNotice, setStreetNotice] = useState<string | null>(null);
   const [mapMode, setMapMode] = useState<WorldMapMode>("satellite");
   const [threeDError, setThreeDError] = useState<string | null>(null);
-  const [earthHandoff, setEarthHandoff] = useState<{ latitude: number; longitude: number; height: number } | null>(null);
+  const [earthHandoff, setEarthHandoff] = useState<{ latitude: number; longitude: number; height: number; mapMode: WorldMapMode } | null>(null);
   const [frameHandoff, setFrameHandoff] = useState<"earth-to-space" | "space-to-earth" | null>(null);
   const [layersCollapsed, setLayersCollapsed] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
@@ -207,6 +212,11 @@ export default function WorldSelectApp() {
     () => radioStations.filter((item) => radioMatches(item, radioFilter)),
     [radioStations, radioFilter],
   );
+  const infrastructureCounts = useMemo(() => {
+    const counts: Record<InfrastructureCategory, number> = { cable: 0, landing: 0, datacenter: 0, dam: 0 };
+    for (const item of infrastructure) counts[item.category] += 1;
+    return counts;
+  }, [infrastructure]);
   const infrastructureRadiusKm = cameraHeight < 80_000 ? 25 : cameraHeight < 500_000 ? 70 : 180;
   const keylessCenter = useMemo(() => ({
     latitude: Math.round(viewCenter.latitude * 4) / 4,
@@ -384,8 +394,8 @@ export default function WorldSelectApp() {
       .then((items) => {
         if (controller.signal.aborted) return;
         setInfrastructure(items);
-        setInfrastructureState(items.length ? "ready" : "degraded");
-        setLayerError("infrastructure", items.length ? undefined : "No mapped infrastructure returned for this viewport");
+        setInfrastructureState("ready");
+        setLayerError("infrastructure", undefined);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
@@ -473,19 +483,17 @@ export default function WorldSelectApp() {
       entityRegistry: entityMapRef.current,
       styleFor: (item) => ({ color: "#4ade80", pixelSize: Math.max(3, Math.min(10, Number(item.properties.probability ?? 0) / 10)), altitudeMeters: 110_000, disableDepthTestDistance: 0 }),
     });
-    weatherRendererRef.current = createPointLayerRenderer({
-      viewer: lifecycle.viewer,
-      Cesium: window.Cesium,
-      entityRegistry: entityMapRef.current,
-      styleFor: () => ({ color: "#38bdf8", pixelSize: 11, clampToGround: true, disableDepthTestDistance: 3000 }),
-    });
     radioRendererRef.current = createPointLayerRenderer({
       viewer: lifecycle.viewer,
       Cesium: window.Cesium,
       entityRegistry: entityMapRef.current,
       styleFor: () => ({ color: "#f472b6", pixelSize: 6, clampToGround: true, disableDepthTestDistance: 2500 }),
     });
-    infrastructureRendererRef.current = createInfrastructureRenderer({ viewer: lifecycle.viewer, Cesium: window.Cesium });
+    infrastructureRendererRef.current = createInfrastructureRenderer({
+      viewer: lifecycle.viewer,
+      Cesium: window.Cesium,
+      entityRegistry: entityMapRef.current,
+    });
 
     return () => {
       earthquakeRendererRef.current?.destroy();
@@ -495,7 +503,6 @@ export default function WorldSelectApp() {
       celestialBridgeRendererRef.current?.destroy();
       eventRendererRef.current?.destroy();
       auroraRendererRef.current?.destroy();
-      weatherRendererRef.current?.destroy();
       radioRendererRef.current?.destroy();
       infrastructureRendererRef.current?.destroy();
       earthquakeRendererRef.current = null;
@@ -505,7 +512,6 @@ export default function WorldSelectApp() {
       celestialBridgeRendererRef.current = null;
       eventRendererRef.current = null;
       auroraRendererRef.current = null;
-      weatherRendererRef.current = null;
       radioRendererRef.current = null;
       infrastructureRendererRef.current = null;
       lifecycle.destroy();
@@ -684,10 +690,6 @@ export default function WorldSelectApp() {
   }, [aurora, auroraLayer, viewMode, cesiumReady]);
 
   useEffect(() => {
-    weatherRendererRef.current?.sync(weather, viewMode === "earth" && weatherLayer);
-  }, [weather, weatherLayer, viewMode, cesiumReady]);
-
-  useEffect(() => {
     radioRendererRef.current?.sync(filteredRadio, viewMode === "earth" && radioLayer);
   }, [filteredRadio, radioLayer, viewMode, cesiumReady]);
 
@@ -719,6 +721,7 @@ export default function WorldSelectApp() {
       latitude: viewCenter.latitude,
       longitude: viewCenter.longitude,
       height: cameraHeight,
+      mapMode,
     });
     setFrameHandoff("earth-to-space");
     setFollowAircraft(false);
@@ -733,14 +736,15 @@ export default function WorldSelectApp() {
       latitude: viewCenter.latitude,
       longitude: viewCenter.longitude,
       height: 6_500_000,
+      mapMode,
     };
     setFrameHandoff("space-to-earth");
     setViewMode("earth");
     setFollowAircraft(false);
     setSelected(null);
-    setMapMode("satellite");
+    setMapMode(handoff.mapMode);
     viewerLifecycleRef.current?.setMapStyle("earth");
-    viewerLifecycleRef.current?.setMapMode("satellite");
+    viewerLifecycleRef.current?.setMapMode(handoff.mapMode);
 
     window.setTimeout(() => {
       const viewer = viewerRef.current;
@@ -757,26 +761,53 @@ export default function WorldSelectApp() {
       }
       setFrameHandoff(null);
     }, 40);
-  }, [earthHandoff, viewCenter.latitude, viewCenter.longitude]);
+  }, [earthHandoff, viewCenter.latitude, viewCenter.longitude, mapMode]);
 
   const flyEarth = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
-    setViewMode("earth"); setFollowAircraft(false); setSelected(null); setMapMode("satellite");
+    setViewMode("earth"); setFollowAircraft(false); setSelected(null);
     viewerLifecycleRef.current?.setMapStyle("earth");
-    viewerLifecycleRef.current?.setMapMode("satellite");
-    viewerRef.current.camera.flyTo({ destination: window.Cesium.Cartesian3.fromDegrees(viewCenter.longitude, viewCenter.latitude, 6_500_000), duration: 1.0 });
+    viewerLifecycleRef.current?.home();
   }, [viewCenter.latitude, viewCenter.longitude]);
 
   const flyGround = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
-    setViewMode("earth"); setFollowAircraft(false); setSelected(null); setMapMode("map");
+    setViewMode("earth"); setFollowAircraft(false); setSelected(null);
     viewerLifecycleRef.current?.setMapStyle("ground");
-    viewerLifecycleRef.current?.setMapMode("map");
-    viewerRef.current.camera.flyTo({
-      destination: window.Cesium.Cartesian3.fromDegrees(viewCenter.longitude, viewCenter.latitude, 18_000),
-      orientation: { heading: 0, pitch: window.Cesium.Math.toRadians(-48), roll: 0 }, duration: 1.2,
-    });
+    viewerLifecycleRef.current?.flyTo({ latitude: viewCenter.latitude, longitude: viewCenter.longitude, height: 18_000 });
   }, [viewCenter.latitude, viewCenter.longitude]);
+
+  const runPlaceSearch = useCallback(async (event?: FormEvent) => {
+    event?.preventDefault();
+    const query = searchQuery.trim();
+    if (!query) return;
+    setSearchState("loading");
+    setSearchMessage("");
+    try {
+      const results = await searchPlaces(query);
+      setSearchResults(results);
+      setSearchState("idle");
+      if (!results.length) setSearchMessage("No place found");
+    } catch (error) {
+      setSearchResults([]);
+      setSearchState("error");
+      setSearchMessage(error instanceof Error ? error.message : "Place search unavailable");
+    }
+  }, [searchQuery]);
+
+  const goToPlace = useCallback((place: PlaceSearchResult) => {
+    setSearchQuery(place.label);
+    setSearchResults([]);
+    setSearchMessage("");
+    setViewMode("earth");
+    setSelected(null);
+    setFollowAircraft(false);
+    viewerLifecycleRef.current?.flyTo({
+      latitude: place.latitude,
+      longitude: place.longitude,
+      height: place.heightMeters,
+    });
+  }, []);
 
   const focusSelected = useCallback(() => {
     if (!selected || selected.kind === "celestial-body" || !viewerRef.current || !window.Cesium) return;
@@ -925,6 +956,29 @@ export default function WorldSelectApp() {
         <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
+      {viewMode === "earth" && <div className="mapNav glass">
+        <form className="placeSearch" onSubmit={runPlaceSearch}>
+          <input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search city, address or coordinates"
+            aria-label="Search city, address or coordinates"
+          />
+          <button type="submit" disabled={searchState === "loading"}>{searchState === "loading" ? "…" : "GO"}</button>
+        </form>
+        <div className="orientationControls" role="group" aria-label="Map orientation">
+          <button type="button" onClick={() => viewerLifecycleRef.current?.home()}>HOME</button>
+          <button type="button" onClick={() => viewerLifecycleRef.current?.toggleTilt()}>TILT</button>
+          <button type="button" onClick={() => viewerLifecycleRef.current?.northUp()}>NORTH</button>
+        </div>
+        {(searchResults.length > 0 || searchMessage) && <div className="searchResults">
+          {searchMessage && <small>{searchMessage}</small>}
+          {searchResults.map((place) => <button key={place.id} type="button" onClick={() => goToPlace(place)}>
+            <strong>{place.label.split(",")[0]}</strong><span>{place.label}</span>
+          </button>)}
+        </div>}
+      </div>}
+
       <aside className={`layers glass ${mobilePanel === "layers" ? "mobileOpen" : ""} ${!isMobile && layersCollapsed ? "panelCollapsed" : ""}`}>
         <div className="panelHead"><p className="panelLabel">LAYERS</p><div className="panelHeadActions"><button className="panelCollapse" type="button" aria-expanded={!layersCollapsed} onClick={() => setLayersCollapsed((value) => !value)}>{layersCollapsed ? "›" : "‹"}</button><button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button></div></div>
         <div className="basemapSwitch" role="group" aria-label="Basemap mode">
@@ -949,9 +1003,14 @@ export default function WorldSelectApp() {
         {eventLayer && <div className="filterChips">{EVENT_FILTERS.map((filter) => <button key={filter} className={eventFilter === filter ? "active" : ""} onClick={() => setEventFilter(filter)}>{filter.toUpperCase()}</button>)}</div>}
         <LayerToggle checked={auroraLayer} onChange={setAuroraLayer} onRetry={() => setAuroraRetry((v) => v + 1)} title="Space Weather" subtitle={spaceKp == null ? "NOAA SWPC · OVATION aurora" : `NOAA SWPC · OVATION · Kp ${spaceKp.toFixed(1)}`} state={auroraState} count={aurora.length} disabled={viewMode !== "earth"} error={layerErrors.aurora} />
         <LayerToggle checked={weatherLayer} onChange={setWeatherLayer} onRetry={() => setWeatherRetry((v) => v + 1)} title="Weather" subtitle="Open-Meteo · current focus conditions" state={weatherState} count={weather.length} disabled={viewMode !== "earth"} error={layerErrors.weather} />
+        {weatherLayer && weather[0] && <div className="weatherContext">
+          <strong>{weather[0].properties.temperatureC}°C</strong>
+          <span>Wind {weather[0].properties.windKmh} km/h · Cloud {weather[0].properties.cloudCoverPct}%</span>
+          <small>{viewCenter.latitude.toFixed(3)}, {viewCenter.longitude.toFixed(3)} · Open-Meteo</small>
+        </div>}
         <div className="layerGroupTitle">INFRASTRUCTURE</div>
-        <LayerToggle checked={infrastructureLayer} onChange={setInfrastructureLayer} onRetry={() => setInfrastructureRetry((v) => v + 1)} title="Infrastructure" subtitle="OSM · cables · landing stations · datacenters · dams" state={infrastructureState} count={infrastructure.length} disabled={viewMode !== "earth"} error={layerErrors.infrastructure} />
-        {infrastructureLayer && <div className="filterChips">{INFRA_FILTERS.map((filter) => <button key={filter} className={infraFilters.includes(filter) ? "active" : ""} onClick={() => setInfraFilters((current) => current.includes(filter) ? current.filter((value) => value !== filter) : [...current, filter])}>{filter.toUpperCase()}</button>)}</div>}
+        <LayerToggle checked={infrastructureLayer} onChange={setInfrastructureLayer} onRetry={() => setInfrastructureRetry((v) => v + 1)} title="Infrastructure" subtitle={infrastructure.length ? "OSM · mapped infrastructure in this area" : (cameraHeight > 500_000 ? "OSM · zoom in to load local infrastructure" : "OSM · no mapped infrastructure in this area")} state={infrastructureState} count={infrastructure.length} disabled={viewMode !== "earth"} error={layerErrors.infrastructure} />
+        {infrastructureLayer && <div className="filterChips">{INFRA_FILTERS.map((filter) => <button key={filter} className={infraFilters.includes(filter) ? "active" : ""} onClick={() => setInfraFilters((current) => current.includes(filter) ? current.filter((value) => value !== filter) : [...current, filter])}>{filter.toUpperCase()} {infrastructureCounts[filter]}</button>)}</div>}
         <div className="layerGroupTitle">UTILITIES</div>
         <LayerToggle checked={radioLayer} onChange={setRadioLayer} onRetry={() => setRadioRetry((v) => v + 1)} title="Radio" subtitle="Radio Browser · geolocated HTTPS stations" state={radioState} count={filteredRadio.length} disabled={viewMode !== "earth"} error={layerErrors.radio} />
         {radioLayer && <div className="filterChips">{RADIO_FILTERS.map((filter) => <button key={filter} className={radioFilter === filter ? "active" : ""} onClick={() => setRadioFilter(filter)}>{filter.replace("-", " ").toUpperCase()}</button>)}</div>}
@@ -1085,6 +1144,7 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, onClear, followAircr
     );
   } else if (entity.kind === "natural-event") {
     rows.push(
+      ["Event status", "OPEN EVENT"],
       ["Category", String(entity.properties.categoryTitle ?? entity.properties.category ?? "—")],
       ["Magnitude", entity.properties.magnitude != null ? `${entity.properties.magnitude} ${entity.properties.magnitudeUnit ?? ""}`.trim() : "—"],
     );
@@ -1104,6 +1164,11 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, onClear, followAircr
       ["Codec", String(entity.properties.codec ?? "—")],
       ["Bitrate", `${entity.properties.bitrate ?? "—"} kbps`],
     );
+  } else if (entity.kind === "infrastructure") {
+    rows.push(
+      ["Type", String(entity.properties.category ?? "—").replace("-", " ").toUpperCase()],
+      ["Operator", String(entity.properties.operator || "Not mapped")],
+    );
   } else if (entity.kind === "celestial-body") {
     if (entity.properties.category) rows.push(["Category", String(entity.properties.category)]);
     if (entity.properties.parentBody) rows.push(["Parent", String(entity.properties.parentBody)]);
@@ -1113,8 +1178,16 @@ function Inspector({ entity, onFocus, onStreet, onAnnotate, onClear, followAircr
     if (entity.properties.orbitalPeriodDays != null) rows.push(["Orbit period", `${entity.properties.orbitalPeriodDays} days`]);
     if (entity.properties.model) rows.push(["Model", String(entity.properties.model)]);
   }
-  rows.push(["Time", new Date(entity.observedAt).toLocaleString()], ["State", entity.dataState], ["Source", entity.source.label]);
-  return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2><button className="clearSelectionButton" onClick={onClear}>CLEAR</button></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" && <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button>}<button className="streetButton" onClick={onStreet}>Street near entity</button><button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
+  rows.push([
+    entity.kind === "natural-event" ? "Event time" : "Time",
+    new Date(entity.observedAt).toLocaleString(),
+  ]);
+  if (entity.kind !== "natural-event") rows.push(["State", entity.dataState]);
+  rows.push(["Source", entity.source.label]);
+  return <><div className="entityHeading"><div className="kindBadge">{entity.kind}</div><h2>{entity.name}</h2><button className="clearSelectionButton" onClick={onClear}>CLEAR</button></div><dl>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{label === "State" ? <span className="stateBadge">{value}</span> : value}</dd></div>)}</dl>{entity.kind === "radio-station" && typeof entity.properties.streamUrl === "string" && <div className="radioPlayer">
+    <audio controls preload="none" src={String(entity.properties.streamUrl)} />
+    <small>Live stream · playback availability depends on the station</small>
+  </div>}{entity.kind !== "celestial-body" && <div className="inspectorActions"><button className="focusButton" onClick={onFocus}>Focus entity</button>{entity.kind === "aircraft" && <button className="followButton" onClick={onToggleFollow}>{followAircraft ? "Stop follow" : "Follow aircraft"}</button>}<button className="streetButton" onClick={onStreet}>Street near entity</button><button className="annotationButton" onClick={onAnnotate}>Mark location</button></div>}</>;
 }
 
 function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; screen: { x: number; y: number } | null; onClose: () => void }) {

@@ -55,3 +55,21 @@ export async function fetchInfrastructure(
   );
   return payload.features ?? [];
 }
+
+
+export type PlaceSearchResult = {
+  id: string;
+  label: string;
+  latitude: number;
+  longitude: number;
+  kind: string;
+  heightMeters: number;
+};
+
+export async function searchPlaces(query: string, signal?: AbortSignal): Promise<PlaceSearchResult[]> {
+  const payload = await getJson<{ results?: PlaceSearchResult[] }>(
+    `/api/geocode?q=${encodeURIComponent(query.trim())}`,
+    signal,
+  );
+  return payload.results ?? [];
+}

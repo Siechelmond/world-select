@@ -17,7 +17,8 @@ export type SpatialEntityKind =
   | "natural-event"
   | "aurora"
   | "weather-observation"
-  | "radio-station";
+  | "radio-station"
+  | "infrastructure";
 
 export interface SpatialEntity {
   id: string;

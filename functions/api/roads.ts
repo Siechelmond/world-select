@@ -1,5 +1,5 @@
 type OverpassElement = {
-  type: 'way' | 'node';
+  type: "way" | "node";
   id: number;
   lat?: number;
   lon?: number;
@@ -8,9 +8,7 @@ type OverpassElement = {
   nodes?: number[];
 };
 
-type OverpassResponse = {
-  elements: OverpassElement[];
-};
+type OverpassResponse = { elements: OverpassElement[] };
 
 type RoadSegment = {
   id: number;
@@ -23,117 +21,98 @@ type RoadSegment = {
   lanes: number | null;
 };
 
-const OVERPASS_TIMEOUT_S = 25;
-const MAX_ELEMENTS = 50_000;
+const OVERPASS_TIMEOUT_MS = 6500;
+const MAX_ELEMENTS = 30000;
+const OVERPASS_UPSTREAMS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://lz4.overpass-api.de/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+];
 
 function bboxAround(lat: number, lon: number, radiusKm: number) {
-  const deg = radiusKm / 111;
-  return {
-    south: lat - deg,
-    west: lon - deg,
-    north: lat + deg,
-    east: lon + deg,
-  };
+  const latDeg = radiusKm / 111;
+  const lonDeg = radiusKm / Math.max(20, 111 * Math.cos(lat * Math.PI / 180));
+  return { south: lat - latDeg, west: lon - lonDeg, north: lat + latDeg, east: lon + lonDeg };
 }
 
 function buildOverpassQuery(bbox: { south: number; west: number; north: number; east: number }) {
   const bb = `(${bbox.south},${bbox.west},${bbox.north},${bbox.east})`;
-  return `[out:json][timeout:${OVERPASS_TIMEOUT_S}];
-(
-  way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link)$"]${bb};
-);
-out geom ${MAX_ELEMENTS};
-`;
+  return `[out:json][timeout:20];(way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link)$"]${bb};);out geom ${MAX_ELEMENTS};`;
 }
 
 function normalizeRoads(data: OverpassResponse): RoadSegment[] {
-  const nodes = new Map<number, { lat: number; lon: number }>();
-  for (const el of data.elements) {
-    if (el.type === 'node' && typeof el.lat === 'number' && typeof el.lon === 'number') {
-      nodes.set(el.id, { lat: el.lat, lon: el.lon });
-    }
-  }
   const roads: RoadSegment[] = [];
-  for (const el of data.elements) {
-    if (el.type !== 'way') continue;
-    const highway = el.tags?.highway ?? 'unclassified';
-    if (!el.geometry?.length && !el.nodes?.length) continue;
-    let coords: Array<[number, number]> = [];
-    if (el.geometry?.length) {
-      coords = el.geometry.map((p) => [p.lon, p.lat] as [number, number]);
-    } else if (el.nodes?.length) {
-      for (const nodeId of el.nodes) {
-        const n = nodes.get(nodeId);
-        if (n) coords.push([n.lon, n.lat]);
-      }
-    }
+  for (const el of data.elements ?? []) {
+    if (el.type !== "way" || !el.geometry?.length) continue;
+    const coords = el.geometry
+      .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
+      .map((point) => [point.lon, point.lat] as [number, number]);
     if (coords.length < 2) continue;
     const maxspeedMatch = el.tags?.maxspeed?.match(/^(\d+)/);
     roads.push({
       id: el.id,
       coordinates: coords,
-      highway,
-      name: el.tags?.name ?? '',
-      ref: el.tags?.ref ?? '',
+      highway: el.tags?.highway ?? "unclassified",
+      name: el.tags?.name ?? "",
+      ref: el.tags?.ref ?? "",
       maxspeed: maxspeedMatch ? Number(maxspeedMatch[1]) : null,
-      oneway: el.tags?.oneway === 'yes' || el.tags?.oneway === 'true',
+      oneway: el.tags?.oneway === "yes" || el.tags?.oneway === "true",
       lanes: el.tags?.lanes ? Number(el.tags.lanes) : null,
     });
   }
   return roads;
 }
 
-export const onRequestGet = async (context: { request: Request }) => {
-  const url = new URL(context.request.url);
-  const lat = Number(url.searchParams.get('lat'));
-  const lon = Number(url.searchParams.get('lon'));
-  const radius = Math.min(15, Math.max(2, Number(url.searchParams.get('radius') ?? 8)));
-
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-    return Response.json({ error: 'invalid coordinates' }, { status: 400 });
-  }
-
-  const bbox = bboxAround(lat, lon, radius);
-  const query = buildOverpassQuery(bbox);
-
+async function fetchMirror(endpoint: string, body: string) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_S * 1000);
-
+  const timeout = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
   try {
-    const response = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+        "User-Agent": "WorldSelect/0.7 (+https://world-select.pages.dev)",
+      },
+      body,
       signal: controller.signal,
     });
-
-    clearTimeout(timeout);
-
-    if (!response.ok) {
-      return Response.json(
-        { error: `Overpass returned HTTP ${response.status}`, roads: [] },
-        { status: 502 },
-      );
-    }
-
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json() as OverpassResponse;
-    const roads = normalizeRoads(data);
-
-    return Response.json(
-      { roads, count: roads.length, center: { lat, lon }, radius },
-      {
-        headers: {
-          'Cache-Control': 'public, max-age=60, s-maxage=120, stale-while-revalidate=300',
-          'Content-Type': 'application/json',
-        },
-      },
-    );
-  } catch (error) {
+    if (!Array.isArray(data?.elements)) throw new Error("Malformed Overpass response");
+    return data;
+  } finally {
     clearTimeout(timeout);
-    const message = error instanceof Error ? error.message : 'Overpass request failed';
-    return Response.json(
-      { error: message, roads: [] },
-      { status: 502 },
-    );
   }
+}
+
+export const onRequestGet = async ({ request }: { request: Request }) => {
+  const url = new URL(request.url);
+  const lat = Number(url.searchParams.get("lat"));
+  const lon = Number(url.searchParams.get("lon"));
+  const radius = Math.min(12, Math.max(2, Number(url.searchParams.get("radius") ?? 6)));
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return Response.json({ error: "invalid coordinates", roads: [] }, { status: 400 });
+
+  const query = buildOverpassQuery(bboxAround(lat, lon, radius));
+  const body = `data=${encodeURIComponent(query)}`;
+  let lastError = "Overpass unavailable";
+
+  for (const endpoint of OVERPASS_UPSTREAMS) {
+    try {
+      const data = await fetchMirror(endpoint, body);
+      const roads = normalizeRoads(data);
+      return Response.json(
+        { roads, count: roads.length, center: { lat, lon }, radius },
+        { headers: {
+          "Cache-Control": "public, max-age=300, s-maxage=900, stale-while-revalidate=3600",
+          "X-World-Select-Source": endpoint,
+        } },
+      );
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Overpass unavailable";
+    }
+  }
+
+  return Response.json({ error: `All Overpass mirrors failed: ${lastError}`, roads: [] }, { status: 502 });
 };

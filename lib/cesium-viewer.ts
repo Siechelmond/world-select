@@ -12,6 +12,10 @@ export type ViewerLifecycle = {
   viewer: any;
   setMapStyle: (style: GroundMapStyle) => void;
   setMapMode: (mode: WorldMapMode) => Promise<MapSwitchResult>;
+  home: () => void;
+  toggleTilt: () => void;
+  northUp: () => void;
+  flyTo: (point: { latitude: number; longitude: number; height?: number }) => void;
   destroy: () => void;
 };
 
@@ -42,7 +46,7 @@ export function createWorldViewer(input: {
     timeline: false,
     baseLayerPicker: false,
     geocoder: false,
-    homeButton: true,
+    homeButton: false,
     sceneModePicker: false,
     navigationHelpButton: false,
     fullscreenButton: false,
@@ -76,46 +80,85 @@ export function createWorldViewer(input: {
       label: {
         text: label.name,
         font: label.kind === 'country'
-          ? '600 12px "Segoe UI", Arial, sans-serif'
+          ? '600 13px "Segoe UI", Arial, sans-serif'
           : label.kind === 'water'
             ? 'italic 11px "Segoe UI", Arial, sans-serif'
-            : '600 12px "Segoe UI", Arial, sans-serif',
+            : '600 13px "Segoe UI", Arial, sans-serif',
         fillColor: label.kind === 'water'
           ? Cesium.Color.fromCssColorString('#93c5fd')
           : label.kind === 'country'
             ? Cesium.Color.fromCssColorString('#cbd5e1')
             : Cesium.Color.fromCssColorString('#f8fafc'),
         outlineColor: Cesium.Color.fromCssColorString('#020617'),
-        outlineWidth: 2,
+        outlineWidth: label.kind === 'city' ? 3 : 2,
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         verticalOrigin: Cesium.VerticalOrigin.CENTER,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
         distanceDisplayCondition: new Cesium.DistanceDisplayCondition(label.minHeight, label.maxHeight),
-        translucencyByDistance: new Cesium.NearFarScalar(label.minHeight || 1, 1, label.maxHeight, 0.35),
+        translucencyByDistance: new Cesium.NearFarScalar(label.minHeight || 1, 1, label.maxHeight, label.kind === 'city' ? 0.72 : 0.5),
         disableDepthTestDistance: 0,
       },
     });
   }
 
-  const updateView = () => {
+  let lastGroundCenter = { latitude: 47.6, longitude: 14.2 };
+
+  const pickGroundCenter = () => {
     const canvas = viewer.scene.canvas;
     const center = new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2);
-    const centerHit = viewer.camera.pickEllipsoid(center, viewer.scene.globe.ellipsoid);
-    const cameraCartographic = viewer.camera.positionCartographic;
-
-    // At interplanetary scale the screen center can legitimately miss Earth.
-    // Continue reporting camera height instead of freezing the deep-zoom state.
-    const referenceCartographic = centerHit
-      ? Cesium.Cartographic.fromCartesian(centerHit)
-      : cameraCartographic;
-
-    const latitude = Cesium.Math.toDegrees(referenceCartographic?.latitude ?? 0);
-    const longitude = Cesium.Math.toDegrees(referenceCartographic?.longitude ?? 0);
-    const height = cameraCartographic?.height;
-
-    if ([latitude, longitude, height].every(Number.isFinite)) {
-      onViewChange({ latitude, longitude, height });
+    let hit: any = null;
+    try {
+      if (viewer.scene.pickPositionSupported) hit = viewer.scene.pickPosition(center);
+    } catch {}
+    if (!hit) {
+      try {
+        const ray = viewer.camera.getPickRay(center);
+        hit = ray ? viewer.scene.globe.pick(ray, viewer.scene) : null;
+      } catch {}
     }
+    if (!hit) {
+      try {
+        hit = viewer.camera.pickEllipsoid(center, Cesium.Ellipsoid.WGS84);
+      } catch {}
+    }
+    if (!hit) return null;
+    const cartographic = Cesium.Cartographic.fromCartesian(hit);
+    const latitude = Cesium.Math.toDegrees(cartographic.latitude);
+    const longitude = Cesium.Math.toDegrees(cartographic.longitude);
+    return [latitude, longitude].every(Number.isFinite) ? { latitude, longitude, cartesian: hit } : null;
+  };
+
+  const updateView = () => {
+    const cameraCartographic = viewer.camera.positionCartographic;
+    const ground = pickGroundCenter();
+    if (ground) lastGroundCenter = { latitude: ground.latitude, longitude: ground.longitude };
+    const height = cameraCartographic?.height;
+    if (Number.isFinite(height)) {
+      onViewChange({ ...lastGroundCenter, height });
+    }
+  };
+
+  const targetFrame = () => {
+    const target = pickGroundCenter()?.cartesian
+      ?? Cesium.Cartesian3.fromDegrees(lastGroundCenter.longitude, lastGroundCenter.latitude, 0);
+    const transform = Cesium.Transforms.eastNorthUpToFixedFrame(target);
+    const inverse = Cesium.Matrix4.inverseTransformation(transform, new Cesium.Matrix4());
+    const localOffset = Cesium.Matrix4.multiplyByPoint(inverse, viewer.camera.positionWC, new Cesium.Cartesian3());
+    const range = Cesium.Cartesian3.magnitude(localOffset);
+    if (!Number.isFinite(range) || range < 1) return null;
+    const pitch = -Math.asin(Cesium.Math.clamp(localOffset.z / range, -1, 1));
+    const heading = Math.atan2(-localOffset.x, -localOffset.y);
+    return { target, range, pitch, heading };
+  };
+
+  const applyFrame = (frame: any, pitch: number, heading: number) => {
+    viewer.camera.lookAt(frame.target, new Cesium.HeadingPitchRange(heading, pitch, frame.range));
+    const destination = Cesium.Cartesian3.clone(viewer.camera.positionWC);
+    const direction = Cesium.Cartesian3.clone(viewer.camera.directionWC);
+    const up = Cesium.Cartesian3.clone(viewer.camera.upWC);
+    viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    viewer.camera.setView({ destination, orientation: { direction, up } });
+    viewer.scene?.requestRender?.();
   };
 
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -182,6 +225,32 @@ export function createWorldViewer(input: {
         if (entity) entity.show = result.activeMode !== 'map';
       }
       return result;
+    },
+    home: () => {
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(lastGroundCenter.longitude, lastGroundCenter.latitude, 6_500_000),
+        orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+        duration: 0.9,
+      });
+    },
+    toggleTilt: () => {
+      const frame = targetFrame();
+      if (!frame) return;
+      const tilted = frame.pitch > Cesium.Math.toRadians(-60);
+      applyFrame(frame, tilted ? Cesium.Math.toRadians(-89) : Cesium.Math.toRadians(-35), frame.heading);
+    },
+    northUp: () => {
+      const frame = targetFrame();
+      if (!frame) return;
+      applyFrame(frame, frame.pitch, 0);
+    },
+    flyTo: (point) => {
+      lastGroundCenter = { latitude: point.latitude, longitude: point.longitude };
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(point.longitude, point.latitude, point.height ?? 120_000),
+        orientation: { heading: 0, pitch: Cesium.Math.toRadians(-55), roll: 0 },
+        duration: 1.1,
+      });
     },
     destroy: () => {
       viewer.camera.moveEnd.removeEventListener(updateView);

@@ -1,0 +1,92 @@
+type NominatimRow = {
+  place_id?: number | string;
+  display_name?: string;
+  lat?: string;
+  lon?: string;
+  type?: string;
+  class?: string;
+  boundingbox?: [string, string, string, string];
+};
+
+function json(body: unknown, status = 200) {
+  return Response.json(body, {
+    status,
+    headers: { "Cache-Control": "public, max-age=300, s-maxage=900, stale-while-revalidate=3600" },
+  });
+}
+
+function parseCoordinates(query: string) {
+  const match = query.trim().match(/^\s*([+-]?\d+(?:\.\d+)?)\s*[,;]\s*([+-]?\d+(?:\.\d+)?)\s*$/);
+  if (!match) return null;
+  const latitude = Number(match[1]);
+  const longitude = Number(match[2]);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
+  return { latitude, longitude };
+}
+
+function heightFor(row: NominatimRow) {
+  const box = row.boundingbox?.map(Number);
+  if (box?.length === 4 && box.every(Number.isFinite)) {
+    const latSpan = Math.abs(box[1] - box[0]);
+    const lonSpan = Math.abs(box[3] - box[2]);
+    return Math.min(5_500_000, Math.max(8_000, Math.max(latSpan, lonSpan) * 111_000 * 2.8));
+  }
+  const type = String(row.type ?? "").toLowerCase();
+  if (/(house|building|address)/.test(type)) return 12_000;
+  if (/(city|town|village|suburb)/.test(type)) return 120_000;
+  if (/(state|region)/.test(type)) return 900_000;
+  return 350_000;
+}
+
+export const onRequestGet = async ({ request }: { request: Request }) => {
+  const url = new URL(request.url);
+  const query = String(url.searchParams.get("q") ?? "").trim().slice(0, 180);
+  if (!query) return json({ results: [] });
+
+  const coordinate = parseCoordinates(query);
+  if (coordinate) {
+    return json({ results: [{
+      id: `coord:${coordinate.latitude.toFixed(6)}:${coordinate.longitude.toFixed(6)}`,
+      label: `${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}`,
+      latitude: coordinate.latitude,
+      longitude: coordinate.longitude,
+      kind: "coordinates",
+      heightMeters: 50_000,
+    }] });
+  }
+
+  const upstream = new URL("https://nominatim.openstreetmap.org/search");
+  upstream.searchParams.set("q", query);
+  upstream.searchParams.set("format", "jsonv2");
+  upstream.searchParams.set("limit", "5");
+  upstream.searchParams.set("addressdetails", "1");
+
+  try {
+    const response = await fetch(upstream.toString(), {
+      headers: {
+        Accept: "application/json",
+        "Accept-Language": "en",
+        "User-Agent": "WorldSelect/0.7 (+https://world-select.pages.dev)",
+      },
+      cf: { cacheTtl: 900, cacheEverything: true },
+    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+    if (!response.ok) return json({ error: `Nominatim returned HTTP ${response.status}`, results: [] }, 502);
+    const rows = await response.json() as NominatimRow[];
+    const results = (Array.isArray(rows) ? rows : []).flatMap((row) => {
+      const latitude = Number(row.lat);
+      const longitude = Number(row.lon);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+      return [{
+        id: String(row.place_id ?? `${latitude}:${longitude}`),
+        label: String(row.display_name ?? query),
+        latitude,
+        longitude,
+        kind: String(row.type ?? row.class ?? "place"),
+        heightMeters: heightFor(row),
+      }];
+    });
+    return json({ results });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Place search unavailable", results: [] }, 502);
+  }
+};
