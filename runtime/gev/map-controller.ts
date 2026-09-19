@@ -34,6 +34,8 @@ export function createMapController(input: {
   let groundLayer: any = null;
   let nasaLayer: any = null;
   let google3d: any = null;
+  let google3dLoad: Promise<boolean> | null = null;
+  let google3dGeneration = 0;
   let destroyed = false;
 
   const apply = () => {
@@ -131,7 +133,10 @@ export function createMapController(input: {
 
     async setPhotorealistic3D(enabled: boolean) {
       if (destroyed || viewer.isDestroyed?.()) return false;
+
       if (!enabled) {
+        google3dGeneration += 1;
+        google3dLoad = null;
         if (google3d) {
           try { viewer.scene.primitives.remove(google3d); } catch { /* already gone */ }
           google3d = null;
@@ -139,32 +144,54 @@ export function createMapController(input: {
         apply();
         return true;
       }
+
       if (!googleMapsApiKey) return false;
       if (google3d) return true;
-      try {
-        const resource = new Cesium.Resource({
-          url: "https://tile.googleapis.com/v1/3dtiles/root.json",
-          queryParameters: { key: googleMapsApiKey },
-        });
-        const tileset = await Cesium.Cesium3DTileset.fromUrl(resource);
-        if (destroyed || viewer.isDestroyed?.()) {
-          try { tileset.destroy?.(); } catch { /* no-op */ }
+      if (google3dLoad) return google3dLoad;
+
+      const generation = ++google3dGeneration;
+      const load = (async () => {
+        try {
+          // Donor path: let Cesium own Google's Photorealistic 3D Tiles
+          // contract instead of maintaining a second Google 3D viewer.
+          const tileset = await Cesium.createGooglePhotorealistic3DTileset({
+            key: googleMapsApiKey,
+            onlyUsingWithGoogleGeocoder: true,
+          });
+
+          if (
+            destroyed ||
+            viewer.isDestroyed?.() ||
+            generation !== google3dGeneration
+          ) {
+            try { tileset.destroy?.(); } catch { /* no-op */ }
+            return false;
+          }
+
+          google3d = tileset;
+          viewer.scene.primitives.add(google3d);
+          apply();
+          return true;
+        } catch {
+          if (generation === google3dGeneration) {
+            google3d = null;
+            apply();
+          }
           return false;
         }
-        google3d = tileset;
-        viewer.scene.primitives.add(google3d);
-        apply();
-        return true;
-      } catch {
-        google3d = null;
-        apply();
-        return false;
-      }
+      })();
+
+      google3dLoad = load;
+      const ok = await load;
+      if (google3dLoad === load) google3dLoad = null;
+      return ok;
     },
 
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      google3dGeneration += 1;
+      google3dLoad = null;
       if (google3d) {
         try { viewer.scene.primitives.remove(google3d); } catch { /* no-op */ }
         google3d = null;

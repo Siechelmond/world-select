@@ -359,22 +359,37 @@ export default function WorldSelectApp() {
     }
   }, [viewMode, selected?.kind, selected?.id]);
 
-  const switchMapMode = useCallback((mode: WorldMapMode) => {
-    setMapMode(mode);
-    setPhotorealistic3D(false);
+  const switchMapMode = useCallback(async (mode: WorldMapMode) => {
     setThreeDError(null);
+    if (photorealistic3D) {
+      await viewerLifecycleRef.current?.setPhotorealistic3D(false);
+      setPhotorealistic3D(false);
+    }
+    setMapMode(mode);
     viewerLifecycleRef.current?.setMapMode(mode);
-  }, []);
+  }, [photorealistic3D]);
 
-  const toggle3D = useCallback(() => {
+  const toggle3D = useCallback(async () => {
     if (!GOOGLE_MAPS_API_KEY) {
       setThreeDError("Google Maps JavaScript API is not configured for this preview");
       return;
     }
+
+    const next = !photorealistic3D;
     setStreetOpen(false);
     setThreeDError(null);
-    setPhotorealistic3D((current) => !current);
-  }, []);
+
+    const ok = await viewerLifecycleRef.current?.setPhotorealistic3D(next);
+    if (ok === false || ok == null) {
+      setPhotorealistic3D(false);
+      if (next) {
+        setThreeDError("Google Photorealistic 3D could not be loaded in this preview");
+      }
+      return;
+    }
+
+    setPhotorealistic3D(next);
+  }, [photorealistic3D]);
 
 
 
@@ -571,9 +586,12 @@ export default function WorldSelectApp() {
       });
   }, [streetPoint.latitude, streetPoint.longitude, setLayerError]);
 
-  const openStreet = useCallback(() => {
+  const openStreet = useCallback(async () => {
     if (viewMode !== "earth") return;
-    setPhotorealistic3D(false);
+    if (photorealistic3D) {
+      await viewerLifecycleRef.current?.setPhotorealistic3D(false);
+      setPhotorealistic3D(false);
+    }
     setStreetTarget(streetPoint);
     setStreetOpen(true);
     setMobilePanel("street");
@@ -588,7 +606,7 @@ export default function WorldSelectApp() {
     } else {
       loadKartaViewStreet("Google Street View is not configured · using KartaView fallback");
     }
-  }, [viewMode, loadKartaViewStreet, setLayerError, streetPoint.latitude, streetPoint.longitude]);
+  }, [photorealistic3D, viewMode, loadKartaViewStreet, setLayerError, streetPoint.latitude, streetPoint.longitude]);
 
   const handleGoogleStreetReady = useCallback(() => {
     setStreetState("ready");
@@ -738,15 +756,6 @@ export default function WorldSelectApp() {
 
       {!streetOpen && issPreview && <IssLiveHoverCard entity={issPreview.entity} screen={issPreview.screen} onClose={() => setIssPreview(null)} />}
 
-      {photorealistic3D && <Google3DSurface
-        apiKey={GOOGLE_MAPS_API_KEY}
-        center={viewCenter}
-        cameraHeight={cameraHeight}
-        error={threeDError}
-        onError={setThreeDError}
-        onClose={() => { setPhotorealistic3D(false); setThreeDError(null); }}
-      />}
-
       {streetOpen && <StreetViewer
         provider={streetProvider} googleApiKey={GOOGLE_MAPS_API_KEY} notice={streetNotice}
         state={streetState} photo={currentStreet} index={streetIndex} total={streetPhotos.length}
@@ -872,118 +881,6 @@ function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; 
   </aside>;
 }
 
-function Google3DSurface({ apiKey, center, cameraHeight, error, onError, onClose }: {
-  apiKey: string;
-  center: { latitude: number; longitude: number };
-  cameraHeight: number;
-  error: string | null;
-  onError: (message: string | null) => void;
-  onClose: () => void;
-}) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    let disposed = false;
-    let ready = false;
-    let map3d: any = null;
-    let watchdog: number | undefined;
-    const host = hostRef.current;
-    if (!host) return;
-
-    host.replaceChildren();
-    const priorAuthFailure = window.gm_authFailure;
-
-    const fail = (message: string) => {
-      if (disposed || ready) return;
-      if (watchdog != null) window.clearTimeout(watchdog);
-      onError(message);
-    };
-
-    const authFailure = () => {
-      try { priorAuthFailure?.(); } catch {}
-      fail("Google Maps authentication failed for this preview");
-    };
-    window.gm_authFailure = authFailure;
-
-    watchdog = window.setTimeout(() => {
-      if (!ready) fail("Google Maps 3D did not become ready within 12 seconds");
-    }, 12_000);
-
-    loadGoogleMaps(apiKey)
-      .then(async (google) => {
-        if (disposed || !host) return;
-        if (typeof google.maps?.importLibrary !== "function") {
-          throw new Error("Google Maps 3D requires dynamic library support");
-        }
-
-        const library = await google.maps.importLibrary("maps3d");
-        const Map3DElement = library?.Map3DElement;
-        if (typeof Map3DElement !== "function") {
-          throw new Error("Google Maps 3D library is unavailable");
-        }
-
-        map3d = new Map3DElement({
-          center: {
-            lat: center.latitude,
-            lng: center.longitude,
-            altitude: 0,
-          },
-          range: Math.max(700, Math.min(2_000_000, cameraHeight * 0.7)),
-          tilt: 65,
-          heading: 0,
-          mode: "HYBRID",
-          defaultUIHidden: false,
-        });
-
-        const markReady = () => {
-          if (disposed || ready) return;
-          ready = true;
-          if (watchdog != null) window.clearTimeout(watchdog);
-          onError(null);
-        };
-        const mapError = () => fail("Google Maps 3D failed to initialize on this preview");
-
-        map3d.addEventListener?.("gmp-error", mapError);
-        map3d.addEventListener?.("gmp-steadychange", markReady, { once: true });
-        map3d.addEventListener?.("gmp-steadystate", markReady, { once: true });
-
-        map3d.style.width = "100%";
-        map3d.style.height = "100%";
-        map3d.style.display = "block";
-        host.append(map3d);
-      })
-      .catch((reason: unknown) => {
-        fail(reason instanceof Error ? reason.message : "Google Maps 3D failed to initialize");
-      });
-
-    return () => {
-      disposed = true;
-      if (watchdog != null) window.clearTimeout(watchdog);
-      if (window.gm_authFailure === authFailure) window.gm_authFailure = priorAuthFailure;
-      try { map3d?.remove?.(); } catch {}
-      host.replaceChildren();
-    };
-  }, [apiKey, center.latitude, center.longitude, cameraHeight, onError]);
-
-  return <aside className="google3dSurface glass" role="dialog" aria-modal="false" aria-label="Google 3D map">
-    <div className="google3dSurfaceHead">
-      <div>
-        <p className="panelLabel">EARTH / 3D</p>
-        <strong>{center.latitude.toFixed(4)}, {center.longitude.toFixed(4)}</strong>
-      </div>
-      <button type="button" onClick={onClose} aria-label="Close 3D map">×</button>
-    </div>
-    <div className="google3dSurfaceFrame">
-      <div ref={hostRef} className="google3dHost" />
-      {error && <div className="google3dError"><strong>3D unavailable</strong><span>{error}</span></div>}
-    </div>
-    <div className="google3dSurfaceMeta">
-      <span>Google Maps JavaScript API · 3D · HYBRID</span>
-      <button type="button" onClick={onClose}>BACK TO WORLD</button>
-    </div>
-  </aside>;
-}
-
 function StreetViewer({ provider, googleApiKey, notice, state, photo, index, total, error, point, onClose, onEarth, onGround, onSpace, onPrevious, onNext, onUseGoogle, onUseKartaView, onGoogleReady, onGoogleFallback, onGooglePositionChange }: { provider: StreetProvider; googleApiKey: string; notice: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onEarth: () => void; onGround: () => void; onSpace: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void; onGoogleReady: () => void; onGoogleFallback: (message: string) => void; onGooglePositionChange: (point: EarthPoint) => void }) {
   const surfaceRef = useRef<HTMLElement | null>(null);
 
@@ -1064,17 +961,26 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
 
   useEffect(() => {
     let disposed = false;
-    let completed = false;
+    let failed = false;
+    let ready = false;
     let panorama: any = null;
     let positionListener: any = null;
+    let statusListener: any = null;
     let watchdog: number | undefined;
     const priorAuthFailure = window.gm_authFailure;
 
     const fail = (message: string) => {
-      if (disposed || completed) return;
-      completed = true;
+      if (disposed || failed) return;
+      failed = true;
       if (watchdog != null) window.clearTimeout(watchdog);
       onFallback(message);
+    };
+
+    const markReady = () => {
+      if (disposed || failed || ready) return;
+      ready = true;
+      if (watchdog != null) window.clearTimeout(watchdog);
+      onReady();
     };
 
     const authFailure = () => {
@@ -1096,83 +1002,105 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
     }, 12_000);
 
     loadGoogleMaps(apiKey)
-      .then((google) => {
-        if (disposed || completed || !panoRef.current) return;
+      .then(async (google) => {
+        if (disposed || failed || !panoRef.current) return null;
 
-        const service = new google.maps.StreetViewService();
+        const streetView = typeof google.maps?.importLibrary === "function"
+          ? await google.maps.importLibrary("streetView")
+          : google.maps;
+        const StreetViewService = streetView?.StreetViewService ?? google.maps?.StreetViewService;
+        const StreetViewPanorama = streetView?.StreetViewPanorama ?? google.maps?.StreetViewPanorama;
+        const StreetViewStatus = streetView?.StreetViewStatus ?? google.maps?.StreetViewStatus;
+
+        if (typeof StreetViewService !== "function" || typeof StreetViewPanorama !== "function") {
+          throw new Error("Google Street View library is unavailable");
+        }
+
+        const service = new StreetViewService();
         const origin = initialPointRef.current;
         const request = {
           location: { lat: origin.latitude, lng: origin.longitude },
           radius: 120,
         };
 
-        const lookup = new Promise<any>((resolve, reject) => {
+        const data = await new Promise<any>((resolve, reject) => {
           let settled = false;
-          const callback = (data: any, status: any) => {
+          const accept = (value: any, status?: any) => {
             if (settled) return;
-            const ok = status == null || status === "OK" || status === google.maps.StreetViewStatus?.OK;
+            const payload = value?.data ?? value;
+            const ok = status == null || status === StreetViewStatus?.OK || status === "OK";
             settled = true;
-            if (ok && data) resolve({ data });
-            else reject(new Error(`Google Street View status: ${String(status ?? "UNKNOWN")}`));
+            if (ok && payload?.location?.pano) resolve(payload);
+            else reject(new Error(`Google Street View status: ${String(status ?? "NO_PANORAMA")}`));
+          };
+          const rejectOnce = (reason: unknown) => {
+            if (settled) return;
+            settled = true;
+            reject(reason);
           };
 
           try {
-            const maybePromise = service.getPanorama(request, callback);
+            const maybePromise = service.getPanorama(request, (value: any, status: any) => accept(value, status));
             if (maybePromise && typeof maybePromise.then === "function") {
               maybePromise.then(
-                (value: any) => {
-                  if (settled) return;
-                  settled = true;
-                  resolve(value);
-                },
-                (reason: unknown) => {
-                  if (settled) return;
-                  settled = true;
-                  reject(reason);
-                },
+                (value: any) => accept(value),
+                rejectOnce,
               );
             }
           } catch (reason) {
-            if (!settled) {
-              settled = true;
-              reject(reason);
-            }
+            rejectOnce(reason);
           }
         });
 
-        return lookup.then(({ data }: any) => {
-          if (disposed || completed || !panoRef.current) return;
-          const location = data?.location;
-          if (!location?.pano) throw new Error("Google Street View returned no panorama data");
+        return { StreetViewPanorama, StreetViewStatus, data };
+      })
+      .then((result: any) => {
+        if (!result || disposed || failed || !panoRef.current) return;
+        const { StreetViewPanorama, StreetViewStatus, data } = result;
+        const location = data.location;
 
-          panorama = new google.maps.StreetViewPanorama(panoRef.current, {
-            pano: location.pano,
-            position: location.latLng,
-            pov: { heading: 0, pitch: 0 },
-            zoom: 1,
-            addressControl: true,
-            fullscreenControl: !window.matchMedia("(max-width: 780px)").matches,
-            motionTracking: false,
-            linksControl: true,
-            panControl: true,
-            zoomControl: true,
-          });
-
-          const publishPosition = () => {
-            const current = panorama?.getPosition?.();
-            const latitude = typeof current?.lat === "function" ? current.lat() : NaN;
-            const longitude = typeof current?.lng === "function" ? current.lng() : NaN;
-            if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-              onPositionChange({ latitude, longitude });
-            }
-          };
-
-          publishPosition();
-          positionListener = panorama.addListener?.("position_changed", publishPosition);
-          completed = true;
-          if (watchdog != null) window.clearTimeout(watchdog);
-          onReady();
+        panorama = new StreetViewPanorama(panoRef.current, {
+          pano: location.pano,
+          position: location.latLng,
+          pov: { heading: 0, pitch: 0 },
+          zoom: 1,
+          addressControl: true,
+          fullscreenControl: !window.matchMedia("(max-width: 780px)").matches,
+          motionTracking: false,
+          linksControl: true,
+          panControl: true,
+          zoomControl: true,
+          visible: true,
         });
+
+        const publishPosition = () => {
+          const current = panorama?.getPosition?.();
+          const latitude = typeof current?.lat === "function" ? current.lat() : NaN;
+          const longitude = typeof current?.lng === "function" ? current.lng() : NaN;
+          if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+            onPositionChange({ latitude, longitude });
+          }
+        };
+
+        positionListener = panorama.addListener?.("position_changed", publishPosition);
+        statusListener = panorama.addListener?.("status_changed", () => {
+          const status = panorama?.getStatus?.();
+          if (status === StreetViewStatus?.OK || status === "OK") {
+            publishPosition();
+            markReady();
+          } else if (status != null) {
+            fail(`Google Street View render status: ${String(status)} · using KartaView fallback`);
+          }
+        });
+
+        publishPosition();
+
+        // Some Maps JS builds do not emit status_changed after construction
+        // when a validated pano id is supplied. Construction is then the
+        // readiness signal while gm_authFailure remains active afterwards.
+        window.setTimeout(() => {
+          if (!disposed && !failed) markReady();
+        }, 250);
       })
       .catch((error: unknown) => {
         const raw =
@@ -1190,6 +1118,7 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       disposed = true;
       if (watchdog != null) window.clearTimeout(watchdog);
       if (positionListener?.remove) positionListener.remove();
+      if (statusListener?.remove) statusListener.remove();
       if (window.gm_authFailure === authFailure) window.gm_authFailure = priorAuthFailure;
       panorama = null;
     };
@@ -1219,7 +1148,7 @@ function loadGoogleMaps(apiKey: string): Promise<any> {
     }
 
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&libraries=streetView`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async`;
     script.async = true;
     script.defer = true;
     script.dataset.worldSelectGoogleMaps = "1";
