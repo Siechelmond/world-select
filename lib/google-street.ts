@@ -118,7 +118,7 @@ export function loadGoogleMaps(apiKey: string): Promise<any> {
   return window.__worldSelectGoogleMapsPromise;
 }
 
-export function loadGoogleStreetView(apiKey: string): Promise<GoogleStreetViewLibrary> {export function loadGoogleStreetView(apiKey: string): Promise<GoogleStreetViewLibrary> {
+export function loadGoogleStreetView(apiKey: string): Promise<GoogleStreetViewLibrary> {
   if (window.__worldSelectGoogleStreetPromise) return window.__worldSelectGoogleStreetPromise;
 
   window.__worldSelectGoogleStreetPromise = loadGoogleMaps(apiKey)

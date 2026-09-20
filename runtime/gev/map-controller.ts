@@ -367,7 +367,7 @@ export function createMapController(input: {
     };
   };
 
-  const result = (ok: boolean, route: MapSwitchResult["route"], error: string | null): MapSwitchResult =>  const result = (ok: boolean, route: MapSwitchResult["route"], error: string | null): MapSwitchResult =>
+  const result = (ok: boolean, route: MapSwitchResult["route"], error: string | null): MapSwitchResult =>
     Object.freeze({ requestedMode, activeMode, ok, route, error });
 
   return Object.freeze({
