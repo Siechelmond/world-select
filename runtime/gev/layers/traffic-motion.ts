@@ -4,7 +4,6 @@ type PreparedRoad = {
   id: number;
   waypoints: any[];
   segmentDist: number[];
-  segmentHeadingDeg: number[];
   cumulativeDist: number[];
   totalDist: number;
 };
@@ -25,41 +24,26 @@ export function createTrafficMotionModel(input: {
   Cesium: any;
   roads: RoadSegment[];
   vehicles: ModeledVehicle[];
-  heightForPoint: (roadId: number, longitude: number, latitude: number) => number;
+  heightForRoad: (roadId: number) => number;
 }) {
-  const { Cesium, roads, vehicles, heightForPoint } = input;
+  const { Cesium, roads, vehicles, heightForRoad } = input;
   const prepared = new Map<number, PreparedRoad>();
   const scratch = new Cesium.Cartesian3();
-  const activeRoadIds = new Set(vehicles.map((vehicle) => vehicle.roadId));
-
-  const bearingDeg = (a: [number, number], b: [number, number]) => {
-    const toRad = (value: number) => value * Math.PI / 180;
-    const toDeg = (value: number) => value * 180 / Math.PI;
-    const lat1 = toRad(a[1]);
-    const lat2 = toRad(b[1]);
-    const dLon = toRad(b[0] - a[0]);
-    const y = Math.sin(dLon) * Math.cos(lat2);
-    const x = Math.cos(lat1) * Math.sin(lat2) -
-      Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-    return (toDeg(Math.atan2(y, x)) + 360) % 360;
-  };
 
   for (const road of roads) {
-    if (!activeRoadIds.has(road.id) || road.coordinates.length < 2) continue;
-    const waypoints = road.coordinates.map(([lon, lat]) =>
-      Cesium.Cartesian3.fromDegrees(lon, lat, heightForPoint(road.id, lon, lat)));
+    if (road.coordinates.length < 2) continue;
+    const height = heightForRoad(road.id);
+    const waypoints = road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, height));
     const segmentDist: number[] = [];
-    const segmentHeadingDeg: number[] = [];
     const cumulativeDist: number[] = [0];
     let totalDist = 0;
     for (let index = 0; index < waypoints.length - 1; index += 1) {
       const distance = Math.max(0.01, Cesium.Cartesian3.distance(waypoints[index], waypoints[index + 1]));
       segmentDist.push(distance);
-      segmentHeadingDeg.push(bearingDeg(road.coordinates[index], road.coordinates[index + 1]));
       totalDist += distance;
       cumulativeDist.push(totalDist);
     }
-    prepared.set(road.id, { id: road.id, waypoints, segmentDist, segmentHeadingDeg, cumulativeDist, totalDist });
+    prepared.set(road.id, { id: road.id, waypoints, segmentDist, cumulativeDist, totalDist });
   }
 
   const locate = (road: PreparedRoad, progress: number) => {
@@ -82,7 +66,6 @@ export function createTrafficMotionModel(input: {
     const road = prepared.get(vehicle.roadId);
     if (!road || road.segmentDist.length < 1) continue;
     const location = locate(road, vehicle.progress);
-    vehicle.headingDeg = road.segmentHeadingDeg[location.segIdx] ?? vehicle.headingDeg;
     motions.push({ vehicle, road, segIdx: location.segIdx, t: location.t });
   }
 
@@ -97,7 +80,6 @@ export function createTrafficMotionModel(input: {
     if (!point) return;
     const position = interpolate(record, scratch);
     if (position) point.position = position;
-    point.rotation = Cesium.Math.toRadians(-(record.vehicle.headingDeg ?? 0));
   };
 
   return Object.freeze({
@@ -129,7 +111,6 @@ export function createTrafficMotionModel(input: {
         const start = record.road.cumulativeDist[record.segIdx] ?? 0;
         const segLen = record.road.segmentDist[record.segIdx] ?? 1;
         record.vehicle.segmentIndex = record.segIdx;
-        record.vehicle.headingDeg = record.road.segmentHeadingDeg[record.segIdx] ?? record.vehicle.headingDeg;
         record.vehicle.progress = record.road.totalDist > 0
           ? (start + record.t * segLen) / record.road.totalDist
           : 0;
