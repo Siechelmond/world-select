@@ -16,7 +16,7 @@ import { SATELLITE_FILTERS, tallySatelliteClasses, type SatelliteFilter } from "
 import type { AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
-import { findGoogleStreetCoverage, loadGoogleStreetView, onGoogleMapsAuthFailure } from "@/lib/google-street";
+import { loadGoogleStreetView, onGoogleMapsAuthFailure } from "@/lib/google-street";
 import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
 import { fetchRecentLaunches, type SpaceLaunch } from "@/lib/launches";
 import SpaceExplorer from "@/components/SpaceExplorer";
@@ -221,7 +221,9 @@ export default function WorldSelectApp() {
   const streetPoint = streetTarget ?? (
     selected && selected.kind !== "celestial-body"
       ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
-      : viewCenter
+      : searchTarget
+        ? { latitude: searchTarget.latitude, longitude: searchTarget.longitude }
+        : viewCenter
   );
   useEffect(() => {
     streetPointRef.current = streetPoint;
@@ -899,10 +901,13 @@ export default function WorldSelectApp() {
   }, [viewCenter.latitude, viewCenter.longitude]);
 
   const goToPlace = useCallback((place: PlaceSearchResult, keepAlternatives = false) => {
+    const point = { latitude: place.latitude, longitude: place.longitude };
     setSearchQuery(place.label);
     if (!keepAlternatives) setSearchResults([]);
     setSearchMessage(keepAlternatives ? "Showing best match · choose another result if needed" : "");
     setSearchTarget(place);
+    streetPointRef.current = point;
+    setStreetTarget(point);
     setViewMode("earth");
     setSelected(null);
     setFollowAircraft(false);
@@ -979,17 +984,23 @@ export default function WorldSelectApp() {
         if (controller.signal.aborted) return;
         setStreetPhotos(photos);
         setStreetState(photos.length ? "ready" : "error");
-        setStreetNotice(photos.length
-          ? `KartaView · ${photos.length} nearby image${photos.length === 1 ? "" : "s"}`
-          : "No KartaView imagery found near this point");
-        setLayerError("street", photos.length ? undefined : "No KartaView coverage near this point");
+        if (photos.length) {
+          setStreetNotice(`KartaView · ${photos.length} nearby image${photos.length === 1 ? "" : "s"}`);
+          setLayerError("street", fallbackReason);
+        } else {
+          const noCoverage = "No KartaView imagery found near this point";
+          const detail = fallbackReason ? `${fallbackReason} · ${noCoverage}` : noCoverage;
+          setStreetNotice(detail);
+          setLayerError("street", detail);
+        }
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
         const message = reason instanceof Error ? reason.message : "Street imagery error";
+        const detail = fallbackReason ? `${fallbackReason} · ${message}` : message;
         setStreetState("error");
-        setStreetNotice(message);
-        setLayerError("street", message);
+        setStreetNotice(detail);
+        setLayerError("street", detail);
       })
       .finally(() => {
         if (streetFallbackAbortRef.current === controller) streetFallbackAbortRef.current = null;
@@ -1036,7 +1047,6 @@ export default function WorldSelectApp() {
     streetFallbackAbortRef.current?.abort();
     streetFallbackAbortRef.current = null;
     setStreetOpen(false);
-    setStreetTarget(null);
     setStreetPhotos([]);
     setStreetIndex(0);
     setStreetState("idle");
@@ -1478,12 +1488,11 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
 
   useEffect(() => {
     let disposed = false;
+    let failed = false;
     let panorama: any = null;
     let positionListener: any = null;
-    let statusListener: any = null;
     let watchdog: number | undefined;
     let removeAuthFailureListener: (() => void) | null = null;
-    let failed = false;
 
     const fail = (message: string) => {
       if (disposed || failed) return;
@@ -1498,29 +1507,68 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       return;
     }
 
-    removeAuthFailureListener = onGoogleMapsAuthFailure((message) => {
-      fail(message);
-    });
-
+    removeAuthFailureListener = onGoogleMapsAuthFailure((message) => fail(message));
     watchdog = window.setTimeout(() => {
       fail("Google Street View did not become ready within 15 seconds");
     }, 15_000);
 
     const origin = initialPointRef.current;
-    Promise.all([
-      loadGoogleStreetView(apiKey),
-      findGoogleStreetCoverage(apiKey, origin, 120),
-    ])
-      .then(([streetView, coverage]) => {
-        if (disposed || !panoRef.current) return;
-        if (!coverage) {
-          fail("No Google Street View coverage near the current focus");
-          return;
+
+    loadGoogleStreetView(apiKey)
+      .then(async (streetView) => {
+        if (disposed || failed) return;
+        const service = new streetView.StreetViewService();
+        const radii = [120, 250, 500];
+        let coverage: { panoId: string; latitude: number; longitude: number } | null = null;
+
+        for (const radius of radii) {
+          if (disposed || failed) return;
+          coverage = await new Promise((resolve, reject) => {
+            try {
+              service.getPanorama(
+                {
+                  location: { lat: origin.latitude, lng: origin.longitude },
+                  radius,
+                },
+                (data: any, status: any) => {
+                  const ok = status === streetView.StreetViewStatus?.OK || String(status) === "OK";
+                  const zero = status === streetView.StreetViewStatus?.ZERO_RESULTS || String(status) === "ZERO_RESULTS";
+                  if (zero) {
+                    resolve(null);
+                    return;
+                  }
+                  if (!ok) {
+                    reject(new Error(`Google Street View lookup failed (${String(status || "UNKNOWN_STATUS")})`));
+                    return;
+                  }
+                  const panoId = data?.location?.pano;
+                  const latLng = data?.location?.latLng;
+                  if (!panoId) {
+                    resolve(null);
+                    return;
+                  }
+                  resolve({
+                    panoId,
+                    latitude: typeof latLng?.lat === "function" ? latLng.lat() : origin.latitude,
+                    longitude: typeof latLng?.lng === "function" ? latLng.lng() : origin.longitude,
+                  });
+                },
+              );
+            } catch (error) {
+              reject(error);
+            }
+          });
+          if (coverage) break;
         }
 
-        const { StreetViewPanorama, StreetViewStatus } = streetView;
+        if (!coverage) {
+          fail("No Google Street View coverage within 500 m of the current focus");
+          return;
+        }
+        if (disposed || failed || !panoRef.current) return;
+
         panoRef.current.replaceChildren();
-        panorama = new StreetViewPanorama(panoRef.current, {
+        panorama = new streetView.StreetViewPanorama(panoRef.current, {
           pano: coverage.panoId,
           position: { lat: coverage.latitude, lng: coverage.longitude },
           pov: { heading: 0, pitch: 0 },
@@ -1543,21 +1591,10 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
           }
         };
 
-        const markReady = () => {
-          if (disposed) return;
-          if (watchdog != null) window.clearTimeout(watchdog);
-          publishPosition();
-          onReady();
-        };
-
         positionListener = panorama.addListener?.("position_changed", publishPosition);
-        statusListener = panorama.addListener?.("status_changed", () => {
-          const status = panorama?.getStatus?.();
-          if (status === StreetViewStatus?.OK || status === "OK") markReady();
-          else if (status != null) fail(`Google Street View render status: ${String(status)}`);
-        });
-        const currentStatus = panorama?.getStatus?.();
-        if (currentStatus === StreetViewStatus?.OK || currentStatus === "OK") markReady();
+        if (watchdog != null) window.clearTimeout(watchdog);
+        publishPosition();
+        onReady();
       })
       .catch((error: unknown) => {
         fail(`Google Street View failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1568,7 +1605,6 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       if (watchdog != null) window.clearTimeout(watchdog);
       removeAuthFailureListener?.();
       if (positionListener?.remove) positionListener.remove();
-      if (statusListener?.remove) statusListener.remove();
       panorama?.setVisible?.(false);
       panorama = null;
       if (panoRef.current) panoRef.current.replaceChildren();
@@ -1578,7 +1614,7 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
   return <div ref={panoRef} className="googleStreetPano"><div className="streetMessage">Loading Google Street View…</div></div>;
 }
 
-function SolarSystemView({ planets, sun, onSelect }: { planets: PlanetPosition[]; sun: SpatialEntity; onSelect: (entity: SpatialEntity) => void }) {
+function SolarSystemView(function SolarSystemView({ planets, sun, onSelect }: { planets: PlanetPosition[]; sun: SpatialEntity; onSelect: (entity: SpatialEntity) => void }) {
   const size = 1000, center = size / 2, maxRadius = 420;
   const radiusForAu = (au: number) => au <= 0 ? 0 : 42 + (Math.log10(au + 0.28) / Math.log10(30.5 + 0.28)) * (maxRadius - 42);
   const points = planets.map((p) => { const orbitRadius = radiusForAu(p.radiusAu); const angle = Math.atan2(p.yAu, p.xAu); return { ...p, px: center + Math.cos(angle) * orbitRadius, py: center + Math.sin(angle) * orbitRadius }; });

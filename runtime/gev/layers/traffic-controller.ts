@@ -161,7 +161,7 @@ export function createTrafficController(input: {
   };
 
   const mountLive = () => {
-    if (flowLayer || destroyed || !context.enabled || !context.earthVisible || context.mapMode === "photoreal") return;
+    if (flowLayer || destroyed || !context.enabled || !context.earthVisible) return;
     flowProvider = new Cesium.UrlTemplateImageryProvider({
       url: '/api/traffic?z={z}&x={x}&y={y}',
       minimumLevel: 0,
@@ -211,7 +211,7 @@ export function createTrafficController(input: {
   const fallbackVisible = () =>
     context.enabled &&
     context.earthVisible &&
-    context.cameraHeight < 180_000 &&
+    context.cameraHeight < (context.mapMode === "photoreal" ? 600_000 : 180_000) &&
     fallbackSourceNeeded();
 
   const renderFallback = () => {
@@ -283,7 +283,7 @@ export function createTrafficController(input: {
           color: Cesium.Color.WHITE,
           scaleByDistance: new Cesium.NearFarScalar(100, 1.6, 120_000, 0.28),
           translucencyByDistance: new Cesium.NearFarScalar(100, 1.0, 160_000, 0.12),
-          disableDepthTestDistance: photoreal ? 20_000 : 2_000,
+          disableDepthTestDistance: photoreal ? Number.POSITIVE_INFINITY : 2_000,
         });
       }
       while (vehicleCollection.length > visibleCount) {
@@ -488,11 +488,9 @@ export function createTrafficController(input: {
         return;
       }
 
-      if (context.mapMode === "photoreal") {
-        unmountLive();
-      } else {
-        mountLive();
-        if (status?.configured && status.available && !liveFailed) clearRenderedFallback();
+      mountLive();
+      if (context.mapMode !== "photoreal" && status?.configured && status.available && !liveFailed) {
+        clearRenderedFallback();
       }
       if (!wasActive || (!status && !statusController)) void refreshStatus();
       // Pre-warm the same OSM road/vehicle state while SAT/MAP/NASA are active.
