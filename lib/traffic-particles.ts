@@ -6,6 +6,7 @@ export type TrafficParticle = {
   progress: number;
   segmentIndex: number;
   direction: 1 | -1;
+  laneOffsetM: number;
   mps: number;
   baseMps: number;
   bucket: 'free' | 'slow' | 'jam' | null;
@@ -97,23 +98,55 @@ function flowDensityMult(level: number | null, jamBoost: boolean) {
     : Math.min(2.5, 1 / Math.max(level as number, 0.4));
 }
 
-function queueProgresses(totalLength: number, count: number, seed: number) {
-  const out: number[] = [];
+type QueuePlacement = {
+  progress: number;
+  direction: 1 | -1;
+};
+
+function queuePlacements(
+  totalLength: number,
+  count: number,
+  seed: number,
+  oneway: boolean,
+): QueuePlacement[] {
+  const out: QueuePlacement[] = [];
   let placed = 0;
   let cursor = 0;
   while (placed < count) {
     const platoonSize = Math.min(count - placed, 4 + Math.floor(stableUnit(seed + cursor * 17) * 5));
     const anchor = stableUnit(seed + cursor * 31) * totalLength;
+    const direction: 1 | -1 = oneway ? 1 : cursor % 2 === 0 ? 1 : -1;
     let trail = 0;
     for (let j = 0; j < platoonSize; j += 1) {
       if (j > 0) trail += 6 + stableUnit(seed + cursor * 53 + j * 7) * 6;
       const distance = ((anchor - trail) % totalLength + totalLength) % totalLength;
-      out.push(distance / totalLength);
+      out.push({ progress: distance / totalLength, direction });
     }
     placed += platoonSize;
     cursor += 1;
   }
   return out;
+}
+
+function laneOffsetMeters(
+  road: RoadSegment,
+  direction: 1 | -1,
+  ordinal: number,
+) {
+  const laneWidthM = 3.2;
+  const rawLanes = Number.isFinite(road.lanes) ? Math.round(road.lanes as number) : 0;
+  const totalLanes = Math.min(6, Math.max(1, rawLanes || (road.oneway ? 1 : 2)));
+
+  if (road.oneway) {
+    if (totalLanes <= 1) return 0;
+    const laneIndex = ordinal % totalLanes;
+    return (laneIndex - (totalLanes - 1) / 2) * laneWidthM;
+  }
+
+  const lanesPerDirection = Math.max(1, Math.floor(totalLanes / 2));
+  const laneIndex = ordinal % lanesPerDirection;
+  const centerFromRoadCenterM = laneWidthM * (0.5 + laneIndex);
+  return direction * centerFromRoadCenterM;
 }
 
 export function particlePixelSize(particle: TrafficParticle) {
@@ -196,17 +229,22 @@ export function generateTrafficParticles(
     const level = flow?.source === 'tomtom-live' ? flow.level ?? null : null;
     const bucket = flowBucket(flow);
     const totalLength = roadLength(road);
-    const queued = bucket === 'jam' ? queueProgresses(totalLength, count, road.id) : null;
+    const queued = bucket === 'jam'
+      ? queuePlacements(totalLength, count, road.id, road.oneway)
+      : null;
 
     for (let i = 0; i < count && particles.length < cap; i += 1) {
-      const progress = queued?.[i] ?? ((i + stableUnit(road.id * 997 + i * 37)) / count) % 1;
+      const direction: 1 | -1 = queued?.[i]?.direction ?? (road.oneway ? 1 : i % 2 === 0 ? 1 : -1);
+      const progress = queued?.[i]?.progress ?? ((i + stableUnit(road.id * 997 + i * 37)) / count) % 1;
+      const laneOrdinal = road.oneway ? i : Math.floor(i / 2);
       const baseMps = (SPEED_MPS[road.highway] ?? 5) * (0.7 + stableUnit(road.id * 173 + i * 29) * 0.6);
       particles.push({
         roadId: road.id,
         highway: road.highway,
         progress,
         segmentIndex: 0,
-        direction: road.oneway ? 1 : i % 2 === 0 ? 1 : -1,
+        direction,
+        laneOffsetM: laneOffsetMeters(road, direction, laneOrdinal),
         mps: baseMps * flowSpeedScale(level),
         baseMps,
         bucket,

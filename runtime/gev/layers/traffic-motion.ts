@@ -3,7 +3,8 @@ import type { TrafficParticle } from '@/lib/traffic-particles';
 
 type PreparedRoad = {
   id: number;
-  waypoints: any[];
+  baseWaypoints: any[];
+  laneWaypoints: Map<string, any[]>;
   segmentDist: number[];
   cumulativeDist: number[];
   totalDist: number;
@@ -12,6 +13,7 @@ type PreparedRoad = {
 type MotionRecord = {
   particle: TrafficParticle;
   road: PreparedRoad;
+  waypoints: any[];
   segIdx: number;
   t: number;
 };
@@ -29,18 +31,50 @@ export function createTrafficMotionModel(input: {
   for (const road of roads) {
     if (road.coordinates.length < 2) continue;
     const height = heightForRoad(road.id);
-    const waypoints = road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, height));
+    const baseWaypoints = road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, height));
     const segmentDist: number[] = [];
     const cumulativeDist: number[] = [0];
     let totalDist = 0;
-    for (let index = 0; index < waypoints.length - 1; index += 1) {
-      const distance = Math.max(0.01, Cesium.Cartesian3.distance(waypoints[index], waypoints[index + 1]));
+    for (let index = 0; index < baseWaypoints.length - 1; index += 1) {
+      const distance = Math.max(0.01, Cesium.Cartesian3.distance(baseWaypoints[index], baseWaypoints[index + 1]));
       segmentDist.push(distance);
       totalDist += distance;
       cumulativeDist.push(totalDist);
     }
-    prepared.set(road.id, { id: road.id, waypoints, segmentDist, cumulativeDist, totalDist });
+    prepared.set(road.id, {
+      id: road.id,
+      baseWaypoints,
+      laneWaypoints: new Map(),
+      segmentDist,
+      cumulativeDist,
+      totalDist,
+    });
   }
+
+  const lanePathFor = (road: PreparedRoad, offsetM: number) => {
+    if (!Number.isFinite(offsetM) || Math.abs(offsetM) < 0.05) return road.baseWaypoints;
+    const key = offsetM.toFixed(2);
+    const cached = road.laneWaypoints.get(key);
+    if (cached) return cached;
+
+    const waypoints = road.baseWaypoints.map((point: any, index: number) => {
+      const prev = road.baseWaypoints[Math.max(0, index - 1)];
+      const next = road.baseWaypoints[Math.min(road.baseWaypoints.length - 1, index + 1)];
+      const tangent = Cesium.Cartesian3.subtract(next, prev, new Cesium.Cartesian3());
+      if (Cesium.Cartesian3.magnitudeSquared(tangent) < 1e-6) return Cesium.Cartesian3.clone(point);
+      Cesium.Cartesian3.normalize(tangent, tangent);
+
+      const up = Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(point, new Cesium.Cartesian3());
+      const lateral = Cesium.Cartesian3.cross(up, tangent, new Cesium.Cartesian3());
+      if (Cesium.Cartesian3.magnitudeSquared(lateral) < 1e-6) return Cesium.Cartesian3.clone(point);
+      Cesium.Cartesian3.normalize(lateral, lateral);
+      Cesium.Cartesian3.multiplyByScalar(lateral, offsetM, lateral);
+      return Cesium.Cartesian3.add(point, lateral, new Cesium.Cartesian3());
+    });
+
+    road.laneWaypoints.set(key, waypoints);
+    return waypoints;
+  };
 
   const locate = (road: PreparedRoad, progress: number) => {
     const normalized = ((Number.isFinite(progress) ? progress : 0) % 1 + 1) % 1;
@@ -63,12 +97,18 @@ export function createTrafficMotionModel(input: {
     if (!road || !road.segmentDist.length) continue;
     const location = locate(road, particle.progress);
     particle.segmentIndex = location.segIdx;
-    records.push({ particle, road, segIdx: location.segIdx, t: location.t });
+    records.push({
+      particle,
+      road,
+      waypoints: lanePathFor(road, particle.laneOffsetM),
+      segIdx: location.segIdx,
+      t: location.t,
+    });
   }
 
   const interpolate = (record: MotionRecord, result: any) => {
-    const a = record.road.waypoints[record.segIdx];
-    const b = record.road.waypoints[record.segIdx + 1];
+    const a = record.waypoints[record.segIdx];
+    const b = record.waypoints[record.segIdx + 1];
     if (!a || !b) return null;
     return Cesium.Cartesian3.lerp(a, b, record.t, result);
   };
