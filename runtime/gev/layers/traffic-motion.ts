@@ -27,11 +27,29 @@ export function createTrafficMotionModel(input: {
   const { Cesium, roads, particles, heightForRoad } = input;
   const prepared = new Map<number, PreparedRoad>();
   const scratch = new Cesium.Cartesian3();
+  const MAX_WAYPOINTS_PER_ROAD = 80;
+
+  const simplifiedCoordinates = (coordinates: Array<[number, number]>) => {
+    if (coordinates.length <= MAX_WAYPOINTS_PER_ROAD) return coordinates;
+    const out: Array<[number, number]> = [];
+    const step = (coordinates.length - 1) / (MAX_WAYPOINTS_PER_ROAD - 1);
+    let lastIndex = -1;
+    for (let slot = 0; slot < MAX_WAYPOINTS_PER_ROAD; slot += 1) {
+      const index = slot === MAX_WAYPOINTS_PER_ROAD - 1
+        ? coordinates.length - 1
+        : Math.round(slot * step);
+      if (index === lastIndex) continue;
+      out.push(coordinates[index]);
+      lastIndex = index;
+    }
+    return out;
+  };
 
   for (const road of roads) {
     if (road.coordinates.length < 2) continue;
     const height = heightForRoad(road.id);
-    const baseWaypoints = road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, height));
+    const coordinates = simplifiedCoordinates(road.coordinates);
+    const baseWaypoints = coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, height));
     const segmentDist: number[] = [];
     const cumulativeDist: number[] = [0];
     let totalDist = 0;

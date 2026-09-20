@@ -80,7 +80,15 @@ export function createTrafficController(input: {
   let liveFlowController: AbortController | null = null;
   let roadCollection: any = null;
   let groundRoadPrimitives: any[] = [];
-  let particleCollection: any = null;
+  // Donor lifecycle invariant: keep one PointPrimitiveCollection in the
+  // Cesium scene graph and only clear/show it between traffic refreshes.
+  // Re-adding the collection during Google 3D refinement causes avoidable
+  // scene-graph churn.
+  let particleCollection: any = new Cesium.PointPrimitiveCollection({
+    blendOption: Cesium.BlendOption.TRANSLUCENT,
+  });
+  particleCollection.show = false;
+  viewer.scene.primitives.add(particleCollection);
   let particleMotion: ReturnType<typeof createTrafficMotionModel> | null = null;
   let particlePreRenderRemover: (() => void) | null = null;
   let lastParticleFrameMs = 0;
@@ -108,7 +116,8 @@ export function createTrafficController(input: {
     lastParticleFrameMs = 0;
     releaseContinuousRender('traffic');
     if (particleCollection) {
-      try { viewer.scene.primitives.remove(particleCollection); } catch {}
+      try { particleCollection.removeAll(); } catch {}
+      particleCollection.show = false;
     }
     if (roadCollection) {
       try { viewer.scene.primitives.remove(roadCollection); } catch {}
@@ -117,7 +126,6 @@ export function createTrafficController(input: {
       try { viewer.scene.groundPrimitives.remove(primitive); } catch {}
     }
     groundRoadPrimitives = [];
-    particleCollection = null;
     particleMotion = null;
     roadCollection = null;
     renderedMode = null;
@@ -299,7 +307,7 @@ export function createTrafficController(input: {
   const fallbackVisible = () =>
     context.enabled &&
     context.earthVisible &&
-    context.cameraHeight < (context.mapMode === 'photoreal' ? 600_000 : 180_000) &&
+    context.cameraHeight < 8_000 &&
     fallbackSourceNeeded();
 
   const renderFallback = () => {
@@ -307,7 +315,11 @@ export function createTrafficController(input: {
       clearRenderedFallback();
       return;
     }
-    if (renderedMode === context.mapMode && particleCollection) return;
+    if (
+      renderedMode === context.mapMode &&
+      particleCollection?.show &&
+      Number(particleCollection.length ?? 0) > 0
+    ) return;
 
     clearRenderedFallback();
     renderedMode = context.mapMode;
@@ -326,11 +338,8 @@ export function createTrafficController(input: {
     roadCollection = (!photoreal || (!groundPolylineSupported && !liveTomTomDrape))
       ? new Cesium.PolylineCollection()
       : null;
-    particleCollection = new Cesium.PointPrimitiveCollection({
-      blendOption: Cesium.BlendOption.TRANSLUCENT,
-    });
     if (roadCollection) viewer.scene.primitives.add(roadCollection);
-    viewer.scene.primitives.add(particleCollection);
+    particleCollection.show = true;
 
     const roadHeight = (roadId: number) => {
       if (!photoreal) return 8;
@@ -491,6 +500,12 @@ export function createTrafficController(input: {
       clearRenderedFallback();
       return;
     }
+    // Match ws-donor: do not fetch or animate road particles above 8 km.
+    // The TomTom overview raster may remain visible independently.
+    if (context.cameraHeight >= 8_000) {
+      clearRenderedFallback();
+      return;
+    }
     if (!prefetchOnly && !fallbackSourceNeeded()) {
       clearRenderedFallback();
       return;
@@ -641,7 +656,9 @@ export function createTrafficController(input: {
         clearRenderedFallback();
       }
       if (!wasActive || (!status && !statusController)) void refreshStatus();
-      if (!dataCenter || !roads.length) void ensureFallback(true);
+      if (context.cameraHeight < 8_000 && (!dataCenter || !roads.length)) {
+        void ensureFallback(true);
+      }
 
       const modeChanged = previous.mapMode !== context.mapMode;
       const movedKm = distanceKm(
@@ -684,6 +701,10 @@ export function createTrafficController(input: {
       statusController = null;
       unmountLive();
       clearVector();
+      if (particleCollection) {
+        try { viewer.scene.primitives.remove(particleCollection); } catch {}
+        particleCollection = null;
+      }
     },
   });
 }

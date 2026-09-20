@@ -54,8 +54,11 @@ type ModelRecord = {
 
 const MODEL_HEADING_OFFSET_DEG = 180;
 const MODEL_MAX = 40;
+const PHOTOREAL_MODEL_MAX = 12;
 const MODEL_ADD_DISTANCE_M = 220_000;
 const MODEL_CAMERA_HEIGHT_M = 350_000;
+const PHOTOREAL_MODEL_CAMERA_HEIGHT_M = 12_000;
+const PHOTOREAL_AIRCRAFT_RADIUS_M = 300_000;
 
 const MODEL_SPECS: Record<AircraftClassKey, ModelSpec> = {
   helicopter: { url: '/models/bell206.glb', scale: 1, bellyM: 1.66 },
@@ -307,7 +310,12 @@ export function createAircraftRenderer(input: {
         return;
       }
 
-      const modelRegime = cameraHeight <= MODEL_CAMERA_HEIGHT_M;
+      const modelLimit = mapMode === 'photoreal' ? PHOTOREAL_MODEL_MAX : MODEL_MAX;
+      const modelRegime = cameraHeight <= (
+        mapMode === 'photoreal'
+          ? PHOTOREAL_MODEL_CAMERA_HEIGHT_M
+          : MODEL_CAMERA_HEIGHT_M
+      );
       if (!modelRegime) releaseAllModels();
 
       const live = new Set<string>();
@@ -321,7 +329,6 @@ export function createAircraftRenderer(input: {
         : null;
 
       for (const spatial of items) {
-        live.add(spatial.id);
         const isSelected = spatial.id === selectedId;
         const canProject = spatial.dataState !== 'STALE';
         const projected = canProject ? projectAircraftPosition(spatial, nowMs) : spatial.position;
@@ -345,6 +352,19 @@ export function createAircraftRenderer(input: {
           projected.latitude,
           projected.altitudeMeters,
         );
+        const cameraDistance = cameraPosition
+          ? Cesium.Cartesian3.distance(cameraPosition, position)
+          : 0;
+        const photorealVisible =
+          mapMode !== 'photoreal' ||
+          !cameraPosition ||
+          isSelected ||
+          cameraDistance <= PHOTOREAL_AIRCRAFT_RADIUS_M;
+        if (!photorealVisible) {
+          entityRegistry.delete(spatial.id);
+          continue;
+        }
+        live.add(spatial.id);
         const speed = Number(spatial.properties.groundSpeedKt ?? 0);
         const pixelSize = speed > 250 ? 7 : 6;
         const headingDeg = Number(spatial.properties.trackDeg ?? 0);
@@ -388,9 +408,8 @@ export function createAircraftRenderer(input: {
         }
 
         if (modelRegime && cameraPosition && horizonVisible) {
-          const distance = Cesium.Cartesian3.distance(cameraPosition, position);
-          if (distance <= MODEL_ADD_DISTANCE_M) {
-            modelCandidates.push({ spatial: displayEntity, position, heading: headingDeg, distance });
+          if (cameraDistance <= MODEL_ADD_DISTANCE_M) {
+            modelCandidates.push({ spatial: displayEntity, position, heading: headingDeg, distance: cameraDistance });
           }
         }
 
@@ -409,14 +428,14 @@ export function createAircraftRenderer(input: {
       const modelWanted = new Set(
         modelCandidates
           .sort((a, b) => a.distance - b.distance)
-          .slice(0, MODEL_MAX)
+          .slice(0, modelLimit)
           .map((entry) => entry.spatial.id),
       );
 
       for (const id of [...models.keys()]) {
         if (!live.has(id) || !modelWanted.has(id)) releaseModel(id);
       }
-      for (const entry of modelCandidates.slice(0, MODEL_MAX)) {
+      for (const entry of modelCandidates.slice(0, modelLimit)) {
         void ensureModel(entry.spatial);
         updateModel(entry.spatial, entry.position, entry.heading);
       }

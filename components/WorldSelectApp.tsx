@@ -218,7 +218,9 @@ export default function WorldSelectApp() {
   // Render every unique contact already held by the data layer. Camera zoom is
   // a pure LOD/view concern and must never decide which contacts are fetched.
   const renderedAircraft = visibleAircraft;
-  const animateAircraft = cameraHeight < 900_000;
+  const animateAircraft = activeMapMode === "photoreal"
+    ? cameraHeight < 20_000
+    : cameraHeight < 900_000;
   const streetPoint = streetTarget ?? (
     selected && selected.kind !== "celestial-body"
       ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
@@ -296,7 +298,7 @@ export default function WorldSelectApp() {
         followSelected: followAircraft,
         nowMs,
         cameraHeight,
-        mapMode,
+        mapMode: activeMapMode,
       });
       const viewer = viewerRef.current;
       const Cesium = window.Cesium;
@@ -321,7 +323,7 @@ export default function WorldSelectApp() {
     followAircraft,
     isMobile,
     cameraHeight,
-    mapMode,
+    activeMapMode,
   ]);
 
   useEffect(() => {
@@ -736,10 +738,13 @@ export default function WorldSelectApp() {
       isMobile,
       cameraHeight,
       time: selectedTime,
-      continuous: timeOffsetDays === 0 && spacePlaybackDays === 0,
+      continuous:
+        timeOffsetDays === 0 &&
+        spacePlaybackDays === 0 &&
+        activeMapMode !== "photoreal",
       filter: satelliteFilter,
     });
-  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays]);
+  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays, activeMapMode]);
 
 
 
@@ -751,9 +756,9 @@ export default function WorldSelectApp() {
       followSelected: followAircraft,
       nowMs: nowTick,
       cameraHeight,
-      mapMode,
+      mapMode: activeMapMode,
     });
-  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, cesiumReady, nowTick, cameraHeight, mapMode, selected?.id, selected?.kind, followAircraft]);
+  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, cesiumReady, nowTick, cameraHeight, activeMapMode, selected?.id, selected?.kind, followAircraft]);
 
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
