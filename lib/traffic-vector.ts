@@ -15,6 +15,9 @@ export type FlowSegment = {
   currentSpeedKmh: number;
   freeFlowSpeedKmh: number;
   delaySeconds: number;
+  level?: number;
+  closure?: boolean;
+  source?: 'simulated' | 'tomtom-live';
 };
 
 export type ModeledVehicle = {
@@ -146,7 +149,7 @@ function interpolateAlongRoad(
   };
 }
 
-function inferFreeFlowSpeed(road: RoadSegment): number {
+export function inferFreeFlowSpeed(road: RoadSegment): number {
   if (road.maxspeed) return road.maxspeed;
   const limits: Record<string, number> = {
     motorway: 120, trunk: 100, primary: 80, secondary: 70,
@@ -204,6 +207,9 @@ export function buildModeledFlows(roads: RoadSegment[]): FlowSegment[] {
       currentSpeedKmh: current,
       freeFlowSpeedKmh: freeFlow,
       delaySeconds: 0,
+      level: ratio,
+      closure: false,
+      source: 'simulated',
     };
   });
 }

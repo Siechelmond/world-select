@@ -1,4 +1,5 @@
-import type { ModeledVehicle, RoadSegment } from '@/lib/traffic-vector';
+import type { RoadSegment } from '@/lib/traffic-vector';
+import type { TrafficParticle } from '@/lib/traffic-particles';
 
 type PreparedRoad = {
   id: number;
@@ -9,24 +10,19 @@ type PreparedRoad = {
 };
 
 type MotionRecord = {
-  vehicle: ModeledVehicle;
+  particle: TrafficParticle;
   road: PreparedRoad;
   segIdx: number;
   t: number;
 };
 
-/**
- * Direct ws-donor traffic hot-path port adapted to injected Cesium.
- * All lon/lat -> Cartesian conversion and segment distances are built once.
- * Per frame is bounded segment advance + Cartesian3.lerp only.
- */
 export function createTrafficMotionModel(input: {
   Cesium: any;
   roads: RoadSegment[];
-  vehicles: ModeledVehicle[];
+  particles: TrafficParticle[];
   heightForRoad: (roadId: number) => number;
 }) {
-  const { Cesium, roads, vehicles, heightForRoad } = input;
+  const { Cesium, roads, particles, heightForRoad } = input;
   const prepared = new Map<number, PreparedRoad>();
   const scratch = new Cesium.Cartesian3();
 
@@ -61,12 +57,13 @@ export function createTrafficMotionModel(input: {
     return { segIdx, t: Math.max(0, Math.min(1, (target - start) / length)) };
   };
 
-  const motions: MotionRecord[] = [];
-  for (const vehicle of vehicles) {
-    const road = prepared.get(vehicle.roadId);
-    if (!road || road.segmentDist.length < 1) continue;
-    const location = locate(road, vehicle.progress);
-    motions.push({ vehicle, road, segIdx: location.segIdx, t: location.t });
+  const records: MotionRecord[] = [];
+  for (const particle of particles) {
+    const road = prepared.get(particle.roadId);
+    if (!road || !road.segmentDist.length) continue;
+    const location = locate(road, particle.progress);
+    particle.segmentIndex = location.segIdx;
+    records.push({ particle, road, segIdx: location.segIdx, t: location.t });
   }
 
   const interpolate = (record: MotionRecord, result: any) => {
@@ -76,50 +73,79 @@ export function createTrafficMotionModel(input: {
     return Cesium.Cartesian3.lerp(a, b, record.t, result);
   };
 
-  const writeOne = (record: MotionRecord, point: any) => {
-    if (!point) return;
-    const position = interpolate(record, scratch);
-    if (position) point.position = position;
-  };
-
   return Object.freeze({
-    count: motions.length,
+    count: records.length,
     positionFor(index: number) {
-      const record = motions[index];
+      const record = records[index];
       if (!record) return null;
-      const result = new Cesium.Cartesian3();
-      return interpolate(record, result);
+      return interpolate(record, new Cesium.Cartesian3());
     },
     advance(deltaSeconds: number) {
       const dt = Math.min(Math.max(Number(deltaSeconds) || 0, 0), 0.1);
       if (dt <= 0) return;
-      for (const record of motions) {
-        const speedMps = Math.max(0, Number(record.vehicle.speedKmh) || 0) / 3.6;
-        let remaining = speedMps * dt;
+      const now = Date.now();
+
+      for (const record of records) {
+        const particle = record.particle;
+        if (now < particle.stoppedUntil) continue;
+
+        let burst = 1;
+        if (particle.creep) {
+          if (now >= particle.creep.until) {
+            particle.creep.moving = !particle.creep.moving;
+            const lo = particle.creep.moving ? 1200 : 1500;
+            const hi = particle.creep.moving ? 3000 : 5000;
+            particle.creep.until = now + lo + Math.random() * (hi - lo);
+          }
+          if (!particle.creep.moving) continue;
+          burst = 2.2;
+        }
+
+        let remaining = Math.max(0, particle.mps) * burst * dt;
         while (remaining > 0) {
           const segLen = record.road.segmentDist[record.segIdx] || 1;
-          const available = (1 - record.t) * segLen;
-          if (remaining < available) {
-            record.t += remaining / segLen;
-            remaining = 0;
+          if (particle.direction > 0) {
+            const available = (1 - record.t) * segLen;
+            if (remaining < available) {
+              record.t += remaining / segLen;
+              remaining = 0;
+            } else {
+              remaining -= available;
+              record.segIdx += 1;
+              record.t = 0;
+              if (record.segIdx >= record.road.segmentDist.length) record.segIdx = 0;
+              if (Math.random() < 0.008) particle.stoppedUntil = now + 2000 + Math.random() * 4000;
+            }
           } else {
-            remaining -= available;
-            record.segIdx = (record.segIdx + 1) % record.road.segmentDist.length;
-            record.t = 0;
+            const available = record.t * segLen;
+            if (remaining < available) {
+              record.t -= remaining / segLen;
+              remaining = 0;
+            } else {
+              remaining -= available;
+              record.segIdx -= 1;
+              record.t = 1;
+              if (record.segIdx < 0) record.segIdx = record.road.segmentDist.length - 1;
+              if (Math.random() < 0.008) particle.stoppedUntil = now + 2000 + Math.random() * 4000;
+            }
           }
         }
+
         const start = record.road.cumulativeDist[record.segIdx] ?? 0;
         const segLen = record.road.segmentDist[record.segIdx] ?? 1;
-        record.vehicle.segmentIndex = record.segIdx;
-        record.vehicle.progress = record.road.totalDist > 0
+        particle.segmentIndex = record.segIdx;
+        particle.progress = record.road.totalDist > 0
           ? (start + record.t * segLen) / record.road.totalDist
           : 0;
       }
     },
-    writePositions(collection: any, maxCount = motions.length) {
-      const count = Math.min(maxCount, motions.length, Number(collection?.length ?? 0));
+    writePositions(collection: any, maxCount = records.length) {
+      const count = Math.min(maxCount, records.length, Number(collection?.length ?? 0));
       for (let index = 0; index < count; index += 1) {
-        writeOne(motions[index], collection.get(index));
+        const point = collection.get(index);
+        if (!point) continue;
+        const position = interpolate(records[index], scratch);
+        if (position) point.position = position;
       }
     },
   });

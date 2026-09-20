@@ -35,13 +35,61 @@ async function fetchTomTomTile(apiKey: string, z: number, x: number, y: number, 
   }
 }
 
+
+async function fetchTomTomVectorTile(apiKey: string, z: number, x: number, y: number) {
+  const upstream = new URL('https://api.tomtom.com/traffic/map/4/tile/flow/relative/' + z + '/' + x + '/' + y + '.pbf');
+  upstream.searchParams.set('key', apiKey);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    return await fetch(upstream.toString(), {
+      headers: { Accept: 'application/x-protobuf' },
+      signal: controller.signal,
+      cf: { cacheTtl: 90, cacheEverything: true },
+    } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export const onRequestGet = async (context: { request: Request; env: Env }) => {
   const requestUrl = new URL(context.request.url);
   const mode = requestUrl.searchParams.get('mode');
   const apiKey = context.env?.TOMTOM_API_KEY;
 
   if (!apiKey) {
-    if (mode === 'status') {
+    if (mode === 'vector') {
+    const z = Number(requestUrl.searchParams.get('z'));
+    const x = Number(requestUrl.searchParams.get('x'));
+    const y = Number(requestUrl.searchParams.get('y'));
+    const maxTile = Number.isInteger(z) && z >= 8 && z <= 16 ? (2 ** z) - 1 : -1;
+    if (
+      ![z, x, y].every(Number.isInteger) ||
+      z < 8 || z > 16 ||
+      x < 0 || y < 0 ||
+      x > maxTile || y > maxTile
+    ) {
+      return json({ error: 'invalid vector tile coordinates' }, 400);
+    }
+    try {
+      const response = await fetchTomTomVectorTile(apiKey, z, x, y);
+      if (!response.ok) {
+        return json({ error: 'TomTom vector flow unavailable', upstreamStatus: response.status }, 502);
+      }
+      return new Response(response.body, {
+        status: 200,
+        headers: {
+          'Content-Type': response.headers.get('Content-Type') || 'application/x-protobuf',
+          'Cache-Control': 'public, max-age=60, s-maxage=90, stale-while-revalidate=180',
+          'X-World-Select-Source': 'TomTom Traffic Flow vector tile',
+        },
+      });
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : 'TomTom vector upstream error' }, 502);
+    }
+  }
+
+  if (mode === 'status') {
       return json({
         configured: false,
         available: false,
