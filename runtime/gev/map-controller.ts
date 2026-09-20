@@ -17,6 +17,7 @@ export type MapSwitchResult = Readonly<{
 export type MapController = {
   setStyle: (style: GroundMapStyle) => void;
   setMode: (mode: WorldMapMode) => Promise<MapSwitchResult>;
+  getPhotorealisticTileset: () => any | null;
   destroy: () => void;
   getState: () => Readonly<{
     style: GroundMapStyle;
@@ -267,6 +268,10 @@ export function createMapController(input: {
         apply();
         return result(false, "globe", lastError);
       }
+    },
+
+    getPhotorealisticTileset() {
+      return google3d;
     },
 
     destroy() {

@@ -538,6 +538,7 @@ export default function WorldSelectApp() {
     trafficControllerRef.current = createTrafficController({
       viewer: lifecycle.viewer,
       Cesium: window.Cesium,
+      getPhotorealisticTileset: lifecycle.getPhotorealisticTileset,
       onState: ({ state, error, vehicleCount }) => {
         setTrafficState(state);
         setTrafficVehicleCount(vehicleCount);

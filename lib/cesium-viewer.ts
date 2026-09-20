@@ -13,6 +13,7 @@ export type ViewerLifecycle = {
   viewer: any;
   setMapStyle: (style: GroundMapStyle) => void;
   setMapMode: (mode: WorldMapMode) => Promise<MapSwitchResult>;
+  getPhotorealisticTileset: () => any | null;
   home: () => void;
   toggleTilt: () => void;
   northUp: () => void;
@@ -278,6 +279,7 @@ export function createWorldViewer(input: {
       }
       return result;
     },
+    getPhotorealisticTileset: () => mapController.getPhotorealisticTileset(),
     home: () => {
       viewer.camera.flyTo({
         destination: Cesium.Cartesian3.fromDegrees(lastGroundCenter.longitude, lastGroundCenter.latitude, 6_500_000),

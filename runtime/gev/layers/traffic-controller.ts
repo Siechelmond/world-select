@@ -59,9 +59,10 @@ type RuntimeState = {
 export function createTrafficController(input: {
   viewer: any;
   Cesium: any;
+  getPhotorealisticTileset?: () => any | null;
   onState: (value: RuntimeState) => void;
 }) {
-  const { viewer, Cesium, onState } = input;
+  const { viewer, Cesium, getPhotorealisticTileset = () => null, onState } = input;
   let context: Context = {
     enabled: false,
     earthVisible: true,
@@ -75,6 +76,7 @@ export function createTrafficController(input: {
   let incidentLayer: any = null;
   let flowProvider: any = null;
   let incidentProvider: any = null;
+  let liveLayerCollection: any = null;
   let statusController: AbortController | null = null;
   let vectorController: AbortController | null = null;
   let roadCollection: any = null;
@@ -160,8 +162,37 @@ export function createTrafficController(input: {
     void ensureFallback();
   };
 
+  const liveImageryCollection = () => {
+    if (context.mapMode !== "photoreal") return viewer.imageryLayers;
+    const tileset = getPhotorealisticTileset();
+    const collection = tileset?.imageryLayers;
+    return collection?.addImageryProvider && collection?.remove ? collection : null;
+  };
+
+  const unmountLive = () => {
+    flowProvider?.errorEvent?.removeEventListener(onTileError);
+    incidentProvider?.errorEvent?.removeEventListener(onTileError);
+    const collection = liveLayerCollection;
+    if (flowLayer) {
+      try { collection?.remove(flowLayer, true); } catch {}
+    }
+    if (incidentLayer) {
+      try { collection?.remove(incidentLayer, true); } catch {}
+    }
+    flowProvider = null;
+    incidentProvider = null;
+    flowLayer = null;
+    incidentLayer = null;
+    liveLayerCollection = null;
+  };
+
   const mountLive = () => {
-    if (flowLayer || destroyed || !context.enabled || !context.earthVisible || context.mapMode === "photoreal") return;
+    if (destroyed || !context.enabled || !context.earthVisible) return false;
+    const collection = liveImageryCollection();
+    if (!collection) return false;
+    if (flowLayer && liveLayerCollection === collection) return true;
+    if (flowLayer || incidentLayer || liveLayerCollection) unmountLive();
+
     flowProvider = new Cesium.UrlTemplateImageryProvider({
       url: '/api/traffic?z={z}&x={x}&y={y}',
       minimumLevel: 0,
@@ -170,7 +201,7 @@ export function createTrafficController(input: {
       credit: 'Traffic © TomTom',
     });
     flowProvider.errorEvent?.addEventListener(onTileError);
-    flowLayer = viewer.imageryLayers.addImageryProvider(flowProvider);
+    flowLayer = collection.addImageryProvider(flowProvider);
     flowLayer.alpha = 1;
     flowLayer.brightness = 1.08;
     flowLayer.contrast = 1.12;
@@ -183,24 +214,11 @@ export function createTrafficController(input: {
       credit: 'Traffic incidents © TomTom',
     });
     incidentProvider.errorEvent?.addEventListener(onTileError);
-    incidentLayer = viewer.imageryLayers.addImageryProvider(incidentProvider);
+    incidentLayer = collection.addImageryProvider(incidentProvider);
     incidentLayer.alpha = 0.7;
+    liveLayerCollection = collection;
     viewer.scene?.requestRender?.();
-  };
-
-  const unmountLive = () => {
-    flowProvider?.errorEvent?.removeEventListener(onTileError);
-    incidentProvider?.errorEvent?.removeEventListener(onTileError);
-    flowProvider = null;
-    incidentProvider = null;
-    if (flowLayer) {
-      try { viewer.imageryLayers.remove(flowLayer, true); } catch {}
-    }
-    if (incidentLayer) {
-      try { viewer.imageryLayers.remove(incidentLayer, true); } catch {}
-    }
-    flowLayer = null;
-    incidentLayer = null;
+    return true;
   };
 
   const fallbackSourceNeeded = () =>
@@ -279,7 +297,7 @@ export function createTrafficController(input: {
           image: VEHICLE_ICONS[kind],
           width: kind === "truck" ? 18 : kind === "van" ? 16 : 14,
           height: kind === "truck" ? 12 : 11,
-          rotation: Number(viewer.camera?.heading ?? 0) + Cesium.Math.PI_OVER_TWO - Cesium.Math.toRadians(vehicle?.headingDeg ?? 0),
+          rotation: Cesium.Math.toRadians(-(vehicle?.headingDeg ?? 0)),
           color: Cesium.Color.WHITE,
           scaleByDistance: new Cesium.NearFarScalar(100, 1.6, 120_000, 0.28),
           translucencyByDistance: new Cesium.NearFarScalar(100, 1.0, 160_000, 0.12),
@@ -298,7 +316,7 @@ export function createTrafficController(input: {
         billboard.image = VEHICLE_ICONS[kind];
         billboard.width = (kind === "truck" ? 18 : kind === "van" ? 16 : 14) * (context.cameraHeight < 8_000 ? 1.25 : 1);
         billboard.height = (kind === "truck" ? 12 : 11) * (context.cameraHeight < 8_000 ? 1.25 : 1);
-        billboard.rotation = Number(viewer.camera?.heading ?? 0) + Cesium.Math.PI_OVER_TWO - Cesium.Math.toRadians(vehicle.headingDeg ?? 0);
+        billboard.rotation = Cesium.Math.toRadians(-(vehicle.headingDeg ?? 0));
         billboard.color = Cesium.Color.fromCssColorString(
           getCongestionColor(vehicle.congestion ?? 'free-flow'),
         ).withAlpha(photoreal ? 0.9 : 0.94);
@@ -366,22 +384,17 @@ export function createTrafficController(input: {
         if (dt <= 0) return;
         vehicleMotion?.advance(dt);
         vehicleMotion?.writePositions(vehicleCollection, maxVehicles);
-        const visibleCount = Math.min(maxVehicles, vehicles.length, Number(vehicleCollection.length ?? 0));
-        const cameraHeading = Number(viewer.camera?.heading ?? 0);
-        for (let index = 0; index < visibleCount; index += 1) {
-          const billboard = vehicleCollection.get(index);
-          const vehicle = vehicles[index];
-          if (!billboard || !vehicle) continue;
-          billboard.rotation = cameraHeading + Cesium.Math.PI_OVER_TWO - Cesium.Math.toRadians(vehicle.headingDeg ?? 0);
-        }
       });
     }
 
+    const liveTomTomDrape = photoreal && Boolean(flowLayer && liveLayerCollection);
     publish(
-      'degraded',
-      photoreal
-        ? `3D traffic · cached OSM roads + ${Math.min(100, vehicles.length)} modeled vehicles · cached road heights`
-        : 'Cached OSM road geometry + locally modeled vehicles · live TomTom unavailable',
+      liveTomTomDrape ? 'ready' : 'degraded',
+      liveTomTomDrape
+        ? undefined
+        : photoreal
+          ? `3D traffic · cached OSM roads + ${Math.min(100, vehicles.length)} modeled vehicles · TomTom 3D drape unavailable`
+          : 'Cached OSM road geometry + locally modeled vehicles · live TomTom unavailable',
     );
   };
 
@@ -451,14 +464,22 @@ export function createTrafficController(input: {
       const next = await fetchTrafficStatus(controller.signal);
       if (controller.signal.aborted || destroyed) return;
       status = next;
-      if (next.configured && next.available && !liveFailed && context.mapMode !== 'photoreal') {
-        clearRenderedFallback();
-        publish('ready');
+      if (next.configured && next.available && !liveFailed) {
+        const mounted = mountLive();
+        if (context.mapMode === 'photoreal') {
+          if (!mounted) {
+            publish('degraded', 'TomTom live flow is available but Cesium 3D imagery drape is unavailable · modeled vehicles remain');
+          }
+          void ensureFallback();
+        } else {
+          clearRenderedFallback();
+          publish('ready');
+        }
       } else {
         publish(
           'degraded',
           context.mapMode === 'photoreal'
-            ? '3D traffic uses OSM road geometry + modeled vehicles over Google 3D tiles'
+            ? '3D traffic uses OSM road geometry + modeled vehicles · TomTom live flow unavailable'
             : 'Live TomTom flow unavailable · OSM road geometry + modeled vehicles available as city fallback',
         );
         void ensureFallback();
@@ -496,14 +517,15 @@ export function createTrafficController(input: {
         return;
       }
 
-      if (context.mapMode === "photoreal") {
-        // TomTom is a globe imagery raster; draping it under Google 3D creates
-        // competing Earth surfaces. Keep traffic in 3D through the dedicated
-        // classified-road + vehicle overlay instead.
-        unmountLive();
-      } else {
-        mountLive();
-        if (status?.configured && status.available && !liveFailed) clearRenderedFallback();
+      const liveMounted = mountLive();
+      if (
+        context.mapMode !== "photoreal" &&
+        liveMounted &&
+        status?.configured &&
+        status.available &&
+        !liveFailed
+      ) {
+        clearRenderedFallback();
       }
       if (!wasActive || (!status && !statusController)) void refreshStatus();
       // Pre-warm the same OSM road/vehicle state while SAT/MAP/NASA are active.
