@@ -34,23 +34,25 @@ export function createInfrastructureRenderer(input: {
   let destroyed = false;
 
   let cableGeneration = 0;
-  let landingGeneration = 0;
   let cablePendingSignature = '';
-  let landingPendingSignature = '';
   let pointIds = new Set<string>();
   const pointCache = new Map<string, PointRecord>();
   let cableDataSource: any = null;
-  let landingDataSource: any = null;
   let cableSignature = '';
-  let landingSignature = '';
   const cableRegistryIds = new Set<string>();
   const landingRegistryIds = new Set<string>();
+  const landingPoints = viewer.scene.primitives.add(new Cesium.PointPrimitiveCollection({
+    blendOption: Cesium.BlendOption.TRANSLUCENT,
+  }));
+  const landingById = new Map<string, { item: InfrastructureFeature; primitive: any; position: any }>();
 
   const colorFor = (category: InfrastructureCategory) => {
-    if (category === 'cable') return '#22d3ee';
-    if (category === 'landing') return '#facc15';
+    // High-contrast palette: submarine cables must not disappear into pale
+    // blue ocean/map tiles. Landing points remain a distinct warm marker.
+    if (category === 'cable') return '#ff4f87';
+    if (category === 'landing') return '#ffbf3f';
     if (category === 'datacenter') return '#a78bfa';
-    return '#38bdf8';
+    return '#2563eb';
   };
 
   const classificationType = () =>
@@ -69,7 +71,7 @@ export function createInfrastructureRenderer(input: {
       position: { longitude: first.longitude, latitude: first.latitude, altitudeMeters: 0 },
       observedAt: new Date().toISOString(),
       dataState: 'OBSERVED',
-      source: item.source ?? { id: 'ws-donor-infrastructure', label: 'ws-donor bundled baseline' },
+      source: item.source ?? { id: 'bundled-infrastructure', label: 'Bundled infrastructure baseline' },
       properties: { category: item.category, operator: item.operator ?? '' },
     };
   };
@@ -97,12 +99,9 @@ export function createInfrastructureRenderer(input: {
     cableRegistryIds.clear();
   };
 
-  const clearLandingDataSource = () => {
-    landingGeneration += 1;
-    landingPendingSignature = '';
-    removeDataSource(landingDataSource);
-    landingDataSource = null;
-    landingSignature = '';
+  const clearLandingPoints = () => {
+    landingPoints.removeAll();
+    landingById.clear();
     for (const id of landingRegistryIds) entityRegistry.delete(id);
     landingRegistryIds.clear();
   };
@@ -110,7 +109,7 @@ export function createInfrastructureRenderer(input: {
   const clear = () => {
     clearPointEntities();
     clearCableDataSource();
-    clearLandingDataSource();
+    clearLandingPoints();
     viewer.scene?.requestRender?.();
   };
 
@@ -119,6 +118,65 @@ export function createInfrastructureRenderer(input: {
 
   const landingItems = () =>
     items.filter((item) => item.category === 'landing' && item.point);
+
+  const landingVisible = (position: any, occluder: any) =>
+    !occluder || occluder.isPointVisible(position);
+
+  const reconcileLandingPoints = () => {
+    if (!visible || !categories.has('landing') || destroyed) {
+      clearLandingPoints();
+      return;
+    }
+
+    const wanted = landingItems();
+    const wantedIds = new Set(wanted.map((item) => item.id));
+
+    for (const [id, record] of [...landingById]) {
+      if (wantedIds.has(id)) continue;
+      landingPoints.remove(record.primitive);
+      landingById.delete(id);
+      landingRegistryIds.delete(id);
+      entityRegistry.delete(id);
+    }
+
+    for (const item of wanted) {
+      const point = item.point!;
+      if (!Number.isFinite(point.longitude) || !Number.isFinite(point.latitude) ||
+          point.longitude < -180 || point.longitude > 180 ||
+          point.latitude < -90 || point.latitude > 90) continue;
+
+      let record = landingById.get(item.id);
+      if (!record) {
+        const position = Cesium.Cartesian3.fromDegrees(point.longitude, point.latitude, 30);
+        const primitive = landingPoints.add({
+          id: item.id,
+          position,
+          pixelSize: 7,
+          color: Cesium.Color.fromCssColorString(colorFor('landing')).withAlpha(0.96),
+          outlineColor: Cesium.Color.fromCssColorString('#111827'),
+          outlineWidth: 1.2,
+          scaleByDistance: new Cesium.NearFarScalar(50_000, 1.15, 12_000_000, 0.55),
+          translucencyByDistance: new Cesium.NearFarScalar(100_000, 1.0, 20_000_000, 0.45),
+          disableDepthTestDistance: 0,
+        });
+        record = { item, primitive, position };
+        landingById.set(item.id, record);
+      }
+
+      // The registry stores the exact same source record represented by the
+      // primitive id, so a pick cannot resolve to a different landing point.
+      entityRegistry.set(item.id, toSpatial(item));
+      landingRegistryIds.add(item.id);
+    }
+
+    const camera = viewer.camera?.positionWC;
+    const occluder = camera
+      ? new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84, camera)
+      : null;
+    for (const record of landingById.values()) {
+      record.primitive.show = landingVisible(record.position, occluder);
+    }
+  };
 
   const applyCableClassification = () => {
     if (!cableDataSource) return;
@@ -169,7 +227,7 @@ export function createInfrastructureRenderer(input: {
         try { source.destroy?.(); } catch {}
         return;
       }
-      source.name = 'ws-donor Submarine Cables';
+      source.name = 'TeleGeography Submarine Cables';
       await viewer.dataSources.add(source);
       if (destroyed || generation !== cableGeneration || !visible || !categories.has('cable')) {
         removeDataSource(source);
@@ -198,70 +256,6 @@ export function createInfrastructureRenderer(input: {
     }
   };
 
-  const ensureLandingDataSource = async () => {
-    if (!visible || !categories.has('landing') || destroyed) {
-      clearLandingDataSource();
-      return;
-    }
-    const sourceItems = landingItems();
-    const signature = sourceItems.length
-      ? `${sourceItems.length}:${sourceItems[0]?.id}:${sourceItems[sourceItems.length - 1]?.id}`
-      : '';
-    if (!signature) {
-      clearLandingDataSource();
-      return;
-    }
-    if ((landingDataSource && signature === landingSignature) || signature === landingPendingSignature) return;
-
-    clearLandingDataSource();
-    const generation = landingGeneration;
-    landingPendingSignature = signature;
-
-    const geo = featureCollection(sourceItems.map((item) => ({
-      type: 'Feature',
-      id: item.id,
-      properties: { id: item.id, name: item.name },
-      geometry: { type: 'Point', coordinates: [item.point!.longitude, item.point!.latitude] },
-    })));
-
-    try {
-      const source = await Cesium.GeoJsonDataSource.load(geo, {
-        clampToGround: true,
-        markerColor: Cesium.Color.fromCssColorString(colorFor('landing')),
-        markerSize: 7,
-      });
-      if (destroyed || generation !== landingGeneration || !visible || !categories.has('landing')) {
-        try { source.destroy?.(); } catch {}
-        return;
-      }
-      source.name = 'ws-donor Cable Landing Points';
-      await viewer.dataSources.add(source);
-      if (destroyed || generation !== landingGeneration || !visible || !categories.has('landing')) {
-        removeDataSource(source);
-        return;
-      }
-      landingDataSource = source;
-      landingSignature = signature;
-      landingPendingSignature = '';
-      const byId = new Map(sourceItems.map((item) => [item.id, item]));
-      for (const entity of source.entities.values) {
-        const item = byId.get(String(entity.id));
-        if (!item) continue;
-        if (entity.point) {
-          entity.point.pixelSize = new Cesium.ConstantProperty(7);
-          entity.point.color = new Cesium.ConstantProperty(Cesium.Color.fromCssColorString(colorFor('landing')));
-          entity.point.outlineColor = new Cesium.ConstantProperty(Cesium.Color.fromCssColorString('#020617'));
-          entity.point.outlineWidth = new Cesium.ConstantProperty(1);
-          entity.point.disableDepthTestDistance = new Cesium.ConstantProperty(0);
-        }
-        entityRegistry.set(item.id, toSpatial(item));
-        landingRegistryIds.add(item.id);
-      }
-      viewer.scene?.requestRender?.();
-    } catch {
-      if (generation === landingGeneration) clearLandingDataSource();
-    }
-  };
 
   const reconcilePoints = () => {
     if (!visible) {
@@ -326,7 +320,7 @@ export function createInfrastructureRenderer(input: {
       return;
     }
     reconcilePoints();
-    void ensureLandingDataSource();
+    reconcileLandingPoints();
     void ensureCableDataSource();
     viewer.scene?.requestRender?.();
   };
@@ -334,6 +328,7 @@ export function createInfrastructureRenderer(input: {
   const moveEndRemover = viewer.camera?.moveEnd?.addEventListener?.(() => {
     if (!visible) return;
     reconcilePoints();
+    reconcileLandingPoints();
     viewer.scene?.requestRender?.();
   });
 
@@ -354,6 +349,7 @@ export function createInfrastructureRenderer(input: {
       if (typeof moveEndRemover === 'function') moveEndRemover();
       clear();
       pointCache.clear();
+      try { viewer.scene.primitives.remove(landingPoints); } catch {}
     },
   });
 }

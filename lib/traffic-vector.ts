@@ -163,6 +163,17 @@ function classifyCongestion(ratio: number): FlowSegment['congestion'] {
   return 'jam';
 }
 
+function validLonLat(value: [number, number]) {
+  const [lon, lat] = value;
+  return Number.isFinite(lon) && Number.isFinite(lat) &&
+    lon >= -180 && lon <= 180 && lat >= -90 && lat <= 90;
+}
+
+function stableUnit(value: number) {
+  const x = Math.sin(value * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
+
 export async function fetchRoads(
   lat: number,
   lon: number,
@@ -173,13 +184,18 @@ export async function fetchRoads(
   const response = await fetch(url, { signal });
   if (!response.ok) throw new Error(`Roads endpoint returned HTTP ${response.status}`);
   const data = await response.json() as { roads: RoadSegment[] };
-  return data.roads ?? [];
+  return (data.roads ?? [])
+    .map((road) => ({
+      ...road,
+      coordinates: road.coordinates.filter(validLonLat),
+    }))
+    .filter((road) => road.coordinates.length >= 2);
 }
 
 export function buildModeledFlows(roads: RoadSegment[]): FlowSegment[] {
   return roads.map((road) => {
     const freeFlow = inferFreeFlowSpeed(road);
-    const variance = 0.7 + Math.random() * 0.35;
+    const variance = 0.7 + stableUnit(road.id) * 0.35;
     const current = Math.round(freeFlow * variance);
     const ratio = current / freeFlow;
     return {
@@ -209,7 +225,7 @@ export function generateModeledVehicles(
     const speed = flow?.currentSpeedKmh ?? 50;
     const count = Math.min(perRoad, budget - vehicles.length);
     for (let i = 0; i < count; i++) {
-      const progress = (i + Math.random()) / count;
+      const progress = (i + stableUnit(road.id * 997 + i * 37)) / count;
       const { position, heading, segmentIndex } = interpolateAlongRoad(road.coordinates, progress);
       vehicles.push({
         id: `veh-${road.id}-${i}`,

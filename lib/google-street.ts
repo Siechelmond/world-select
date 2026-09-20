@@ -26,6 +26,27 @@ declare global {
 const GOOGLE_MAPS_LOAD_TIMEOUT_MS = 8_000;
 const STREET_COVERAGE_TIMEOUT_MS = 5_000;
 const STREET_SEARCH_RADII_M = [120, 250, 500];
+const authFailureListeners = new Set<(message: string) => void>();
+let authDispatcherInstalled = false;
+
+function installGoogleAuthDispatcher() {
+  if (authDispatcherInstalled) return;
+  authDispatcherInstalled = true;
+  const previous = window.gm_authFailure;
+  window.gm_authFailure = () => {
+    try { previous?.(); } catch {}
+    const message = 'Google Maps authentication/referrer check failed';
+    for (const listener of [...authFailureListeners]) {
+      try { listener(message); } catch {}
+    }
+  };
+}
+
+export function onGoogleMapsAuthFailure(listener: (message: string) => void) {
+  installGoogleAuthDispatcher();
+  authFailureListeners.add(listener);
+  return () => authFailureListeners.delete(listener);
+}
 
 function timeoutError(label: string, timeoutMs: number) {
   return new Error(`${label} timed out after ${timeoutMs} ms`);
@@ -47,21 +68,17 @@ export function loadGoogleMaps(apiKey: string): Promise<any> {
   if (window.google?.maps) return Promise.resolve(window.google);
   if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
 
+  installGoogleAuthDispatcher();
   const promise = new Promise<any>((resolve, reject) => {
-    const previousAuthFailure = window.gm_authFailure;
-    const finishAuthFailure = () => {
-      try { previousAuthFailure?.(); } catch {}
-      reject(new Error('Google Maps authentication/referrer check failed'));
-    };
-    window.gm_authFailure = finishAuthFailure;
+    const removeAuthListener = onGoogleMapsAuthFailure((message) => reject(new Error(message)));
 
     const loaded = () => {
-      if (window.gm_authFailure === finishAuthFailure) window.gm_authFailure = previousAuthFailure;
+      removeAuthListener();
       if (window.google?.maps) resolve(window.google);
       else reject(new Error('Google Maps loaded without maps library'));
     };
     const failed = () => {
-      if (window.gm_authFailure === finishAuthFailure) window.gm_authFailure = previousAuthFailure;
+      removeAuthListener();
       reject(new Error('Google Maps JavaScript API could not be loaded'));
     };
 

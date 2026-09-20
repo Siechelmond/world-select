@@ -1,4 +1,5 @@
 import type { SpatialEntity } from "@/lib/spatial";
+import { classifyAircraft } from "@/lib/aircraft-class";
 
 type AdsbAircraft = {
   hex?: string;
@@ -76,19 +77,10 @@ function responseTimeMs(payload: AircraftApiResponse) {
   return payload.now < 10_000_000_000 ? payload.now * 1000 : payload.now;
 }
 
-function normalizeClass(aircraft: AdsbAircraft) {
-  const category = Number(aircraft.category);
-  const type = String(aircraft.t ?? "").toUpperCase();
-  if (/^(H|HELI)|H60|UH60|CH47|AH64|EC\d|AS\d|B06|R22|R44|S76/.test(type)) return "helicopter";
-  if (/F16|F18|F35|F22|EUFI|T38|HAWK|L39|M346|FA50/.test(type)) return "fastjet";
-  if (/A388|B748|A35|B77|B78|A33|A34/.test(type)) return "widebody";
-  if (/AT7|DH8|SF3|BE20|C130/.test(type)) return "turboprop";
-  // OpenSky extended category 7 is high-performance / fast aircraft; categories
-  // 4-6 cover progressively heavier fixed-wing aircraft.
-  if (category === 7) return "fastjet";
-  if (category === 6) return "widebody";
-  if (category === 2 || category === 3) return "light";
-  return "airliner";
+function validPosition(latitude: number, longitude: number) {
+  return Number.isFinite(latitude) && Number.isFinite(longitude) &&
+    latitude >= -90 && latitude <= 90 &&
+    longitude >= -180 && longitude <= 180;
 }
 
 function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialEntity[] {
@@ -99,7 +91,7 @@ function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialE
   const stale = Boolean(payload.stale);
 
   return (payload.ac ?? []).flatMap((aircraft, index) => {
-    if (typeof aircraft.lat !== "number" || typeof aircraft.lon !== "number") return [];
+    if (typeof aircraft.lat !== "number" || typeof aircraft.lon !== "number" || !validPosition(aircraft.lat, aircraft.lon)) return [];
     const baroFeet = typeof aircraft.alt_baro === "number" ? aircraft.alt_baro : null;
     const geomFeet = typeof aircraft.alt_geom === "number" ? aircraft.alt_geom : null;
     const altitudeFeet = geomFeet ?? baroFeet ?? 0;
@@ -122,7 +114,7 @@ function buildEntities(payload: AircraftApiResponse, radiusNm: number): SpatialE
         hex,
         registration: aircraft.r ?? null,
         aircraftType: aircraft.t ?? null,
-        aircraftClass: normalizeClass(aircraft),
+        aircraftClass: classifyAircraft({ typeCode: aircraft.t, category: aircraft.category }),
         military,
         altitudeFt: Math.round(altitudeFeet),
         groundSpeedKt: typeof aircraft.gs === "number" ? Number(aircraft.gs.toFixed(1)) : null,

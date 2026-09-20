@@ -16,7 +16,7 @@ import { SATELLITE_FILTERS, tallySatelliteClasses, type SatelliteFilter } from "
 import type { AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
-import { findGoogleStreetCoverage, loadGoogleStreetView } from "@/lib/google-street";
+import { findGoogleStreetCoverage, loadGoogleStreetView, onGoogleMapsAuthFailure } from "@/lib/google-street";
 import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
 import { fetchRecentLaunches, type SpaceLaunch } from "@/lib/launches";
 import SpaceExplorer from "@/components/SpaceExplorer";
@@ -1455,6 +1455,7 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
     let positionListener: any = null;
     let statusListener: any = null;
     let watchdog: number | undefined;
+    let removeAuthFailureListener: (() => void) | null = null;
 
     const fail = (message: string) => {
       if (disposed) return;
@@ -1466,6 +1467,10 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       fail("Google Street View is not configured for this preview");
       return;
     }
+
+    removeAuthFailureListener = onGoogleMapsAuthFailure((message) => {
+      fail(message);
+    });
 
     watchdog = window.setTimeout(() => {
       fail("Google Street View did not become ready within 15 seconds");
@@ -1521,9 +1526,8 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
           if (status === StreetViewStatus?.OK || status === "OK") markReady();
           else if (status != null) fail(`Google Street View render status: ${String(status)}`);
         });
-        window.setTimeout(() => {
-          if (!disposed) markReady();
-        }, 350);
+        const currentStatus = panorama?.getStatus?.();
+        if (currentStatus === StreetViewStatus?.OK || currentStatus === "OK") markReady();
       })
       .catch((error: unknown) => {
         fail(`Google Street View failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1532,6 +1536,7 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
     return () => {
       disposed = true;
       if (watchdog != null) window.clearTimeout(watchdog);
+      removeAuthFailureListener?.();
       if (positionListener?.remove) positionListener.remove();
       if (statusListener?.remove) statusListener.remove();
       panorama?.setVisible?.(false);

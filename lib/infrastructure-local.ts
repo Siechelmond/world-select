@@ -34,6 +34,7 @@ function finiteLonLat(value: unknown): [number, number] | null {
   const lon = Number(value[0]);
   const lat = Number(value[1]);
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  if (lon < -180 || lon > 180 || lat < -90 || lat > 90) return null;
   return [lon, lat];
 }
 
@@ -126,7 +127,7 @@ function normalizePointDataset(
       point: { longitude: point[0], latitude: point[1] },
       source: {
         id: category === 'dam' ? 'ws-donor-dams' : 'ws-donor-datacenters',
-        label: category === 'dam' ? 'ws-donor bundled dams' : 'ws-donor bundled datacenters',
+        label: category === 'dam' ? 'OpenStreetMap bundled dams' : 'OpenStreetMap bundled datacenters',
         url: 'https://www.openstreetmap.org/',
       },
     });
@@ -165,7 +166,7 @@ function normalizeCableDataset(collection: GeoJsonCollection): InfrastructureFea
         coordinates,
         source: {
           id: 'telegeography-submarine-cables',
-          label: 'TeleGeography bundled via ws-donor',
+          label: 'TeleGeography submarine cables',
           url: 'https://www.submarinecablemap.com/',
         },
       });
@@ -190,7 +191,7 @@ function normalizeLandingDataset(collection: GeoJsonCollection): InfrastructureF
       point: { longitude: point[0], latitude: point[1] },
       source: {
         id: 'telegeography-submarine-cables',
-        label: 'TeleGeography bundled via ws-donor',
+        label: 'TeleGeography submarine cables',
         url: 'https://www.submarinecablemap.com/',
       },
     });

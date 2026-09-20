@@ -1,4 +1,5 @@
 import { projectAircraftPosition } from '@/lib/aircraft';
+import { CLASS_SCALE_2D, type AircraftClassKey } from '@/lib/aircraft-class';
 import type { SpatialEntity } from '@/lib/spatial';
 
 function svgIcon(path: string) {
@@ -12,6 +13,10 @@ const AIRCRAFT_ICONS: Record<string, string> = {
   turboprop: svgIcon("M32 5c3 0 5 4 5 9v12l17 8v7l-17-4v12l8 7v4l-13-3-13 3v-4l8-7V37l-17 4v-7l17-8V14c0-5 2-9 5-9Z"),
   light: svgIcon("M32 7c3 0 4 4 4 8v13l15 7v6l-15-3v10l7 6v4l-11-3-11 3v-4l7-6V38l-15 3v-6l15-7V15c0-4 1-8 4-8Z"),
   airliner: svgIcon("M32 3c3 0 5 4 5 9v12l20 12v6L37 36v13l8 7v5l-13-4-13 4v-5l8-7V36L7 42v-6l20-12V12c0-5 2-9 5-9Z"),
+  quadjet: svgIcon("M32 2c4 0 6 5 6 12v10l21 11v8L38 38v10l9 8v5l-15-4-15 4v-5l9-8V38L5 43v-8l21-11V14c0-7 2-12 6-12Z"),
+  bizjet: svgIcon("M32 5c3 0 5 4 5 9v11l18 9v6l-18-4v12l8 7v5l-13-4-13 4v-5l8-7V36L9 40v-6l18-9V14c0-5 2-9 5-9Z"),
+  uav: svgIcon("M32 11l5 13 20 8v5l-20-3v11l7 6v4l-12-3-12 3v-4l7-6V34L7 37v-5l20-8 5-13Z"),
+  glider: svgIcon("M32 10c2 0 3 3 3 7v9l25 7v4l-25-2v11l7 6v4l-10-3-10 3v-4l7-6V35L4 37v-4l25-7v-9c0-4 1-7 3-7Z"),
 };
 
 function aircraftIcon(spatial: SpatialEntity) {
@@ -52,18 +57,26 @@ const MODEL_MAX = 40;
 const MODEL_ADD_DISTANCE_M = 220_000;
 const MODEL_CAMERA_HEIGHT_M = 350_000;
 
-const MODEL_SPECS: Record<string, ModelSpec> = {
+const MODEL_SPECS: Record<AircraftClassKey, ModelSpec> = {
   helicopter: { url: '/models/bell206.glb', scale: 1, bellyM: 1.66 },
   light: { url: '/models/c172.glb', scale: 1, bellyM: 1.36 },
   turboprop: { url: '/models/atr72.glb', scale: 1, bellyM: 3.81 },
   widebody: { url: '/models/b789.glb', scale: 1, bellyM: 7.81 },
+  bizjet: { url: '/models/citation2.glb', scale: 1, bellyM: 2.86 },
+  uav: { url: '/models/mq9.glb', scale: 1, bellyM: 2.02 },
   fastjet: { url: '/models/jet.glb', scale: 1, bellyM: 2.4 },
   airliner: { url: '/models/airplane.glb', scale: 1, bellyM: 6.719 },
+  quadjet: { url: '/models/airplane.glb', scale: 1, bellyM: 6.719 },
+  glider: { url: '/models/airplane.glb', scale: 1, bellyM: 2.0 },
 };
 
+function aircraftClass(spatial: SpatialEntity): AircraftClassKey {
+  const value = String(spatial.properties.aircraftClass ?? 'airliner').toLowerCase() as AircraftClassKey;
+  return MODEL_SPECS[value] ? value : 'airliner';
+}
+
 function modelSpec(spatial: SpatialEntity): ModelSpec {
-  const klass = String(spatial.properties.aircraftClass ?? 'airliner').toLowerCase();
-  return MODEL_SPECS[klass] ?? MODEL_SPECS.airliner;
+  return MODEL_SPECS[aircraftClass(spatial)];
 }
 
 export function createAircraftRenderer(input: {
@@ -336,8 +349,8 @@ export function createAircraftRenderer(input: {
         const pixelSize = speed > 250 ? 7 : 6;
         const headingDeg = Number(spatial.properties.trackDeg ?? 0);
         const horizonVisible = !occluder || occluder.isPointVisible(position);
-        const klass = String(spatial.properties.aircraftClass ?? "airliner").toLowerCase();
-        const classScale = klass === "widebody" ? 1.18 : klass === "helicopter" ? 0.9 : klass === "light" ? 0.82 : 1;
+        const klass = aircraftClass(spatial);
+        const classScale = CLASS_SCALE_2D[klass];
         const minIconSize = cameraHeight > 3_000_000 ? 12 : 14;
         const iconSize = Math.max(minIconSize, pixelSize * (isSelected ? 4.1 : 3.2) * classScale);
         const distanceScale = new Cesium.NearFarScalar(5_000, 1.15, 20_000_000, 0.08);

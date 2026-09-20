@@ -69,7 +69,10 @@ export function createMapController(input: {
     if (destroyed || viewer.isDestroyed?.()) return;
     const in3d = activeMode === "photoreal" && Boolean(google3d);
     if (google3d) google3d.show = in3d;
-    if (earthLayer) earthLayer.show = !in3d && (activeMode === "satellite" || activeMode === "nasa");
+    // Satellite imagery remains underneath photoreal 3D as an immediate,
+    // geographically correct fallback while Google tiles refine. This avoids
+    // the multi-minute "holes over a dark globe" failure mode.
+    if (earthLayer) earthLayer.show = activeMode === "photoreal" || activeMode === "satellite" || activeMode === "nasa";
     if (groundLayer) groundLayer.show = !in3d && activeMode === "map";
     if (nasaLayer) nasaLayer.show = !in3d && activeMode === "nasa";
     // Keep globe + terrain beneath Google photoreal tiles. Coverage quality is
@@ -207,6 +210,14 @@ export function createMapController(input: {
         throw new Error("Viewer was destroyed while Google 3D was loading");
       }
       if (!google3d) {
+        // Favor usable first paint over maximum photogrammetry detail.
+        // These are display/streaming controls only; geographic positions are
+        // not altered.
+        loaded.tileset.maximumScreenSpaceError = 24;
+        if ("dynamicScreenSpaceError" in loaded.tileset) loaded.tileset.dynamicScreenSpaceError = true;
+        if ("preloadWhenHidden" in loaded.tileset) loaded.tileset.preloadWhenHidden = false;
+        if ("preloadFlightDestinations" in loaded.tileset) loaded.tileset.preloadFlightDestinations = false;
+        if ("cullRequestsWhileMoving" in loaded.tileset) loaded.tileset.cullRequestsWhileMoving = true;
         loaded.tileset.show = false;
         viewer.scene.primitives.add(loaded.tileset);
         google3d = loaded.tileset;
