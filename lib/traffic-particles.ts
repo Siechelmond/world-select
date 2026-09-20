@@ -7,6 +7,7 @@ export type TrafficParticle = {
   segmentIndex: number;
   direction: 1 | -1;
   laneOffsetM: number;
+  queueGroup: number | null;
   mps: number;
   baseMps: number;
   bucket: 'free' | 'slow' | 'jam' | null;
@@ -101,6 +102,7 @@ function flowDensityMult(level: number | null, jamBoost: boolean) {
 type QueuePlacement = {
   progress: number;
   direction: 1 | -1;
+  group: number;
 };
 
 function queuePlacements(
@@ -120,7 +122,7 @@ function queuePlacements(
     for (let j = 0; j < platoonSize; j += 1) {
       if (j > 0) trail += 6 + stableUnit(seed + cursor * 53 + j * 7) * 6;
       const distance = ((anchor - trail) % totalLength + totalLength) % totalLength;
-      out.push({ progress: distance / totalLength, direction });
+      out.push({ progress: distance / totalLength, direction, group: cursor });
     }
     placed += platoonSize;
     cursor += 1;
@@ -236,8 +238,12 @@ export function generateTrafficParticles(
     for (let i = 0; i < count && particles.length < cap; i += 1) {
       const direction: 1 | -1 = queued?.[i]?.direction ?? (road.oneway ? 1 : i % 2 === 0 ? 1 : -1);
       const progress = queued?.[i]?.progress ?? ((i + stableUnit(road.id * 997 + i * 37)) / count) % 1;
+      const queueGroup = queued?.[i]?.group ?? null;
       const laneOrdinal = road.oneway ? i : Math.floor(i / 2);
-      const baseMps = (SPEED_MPS[road.highway] ?? 5) * (0.7 + stableUnit(road.id * 173 + i * 29) * 0.6);
+      // Queue members share one noised base speed so a jam platoon does not
+      // collapse into itself or visually overtake while creeping.
+      const speedOrdinal = queueGroup ?? i;
+      const baseMps = (SPEED_MPS[road.highway] ?? 5) * (0.7 + stableUnit(road.id * 173 + speedOrdinal * 29) * 0.6);
       particles.push({
         roadId: road.id,
         highway: road.highway,
@@ -245,13 +251,17 @@ export function generateTrafficParticles(
         segmentIndex: 0,
         direction,
         laneOffsetM: laneOffsetMeters(road, direction, laneOrdinal),
+        queueGroup,
         mps: baseMps * flowSpeedScale(level),
         baseMps,
         bucket,
         flowLevel: Number.isFinite(level) ? level : null,
         stoppedUntil: 0,
         creep: bucket === 'jam'
-          ? { moving: stableUnit(road.id + i * 11) < 0.4, until: Date.now() + stableUnit(road.id + i * 19) * 2000 }
+          ? {
+              moving: stableUnit(road.id + (queueGroup ?? i) * 11) < 0.4,
+              until: Date.now() + stableUnit(road.id + (queueGroup ?? i) * 19) * 2000,
+            }
           : null,
       });
     }

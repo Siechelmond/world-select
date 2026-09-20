@@ -92,6 +92,12 @@ export function createTrafficMotionModel(input: {
   };
 
   const records: MotionRecord[] = [];
+  const jamGroups = new Map<string, { moving: boolean; until: number }>();
+  const jamGroupKey = (particle: TrafficParticle) =>
+    particle.queueGroup == null
+      ? null
+      : particle.roadId + ':' + particle.direction + ':' + particle.queueGroup;
+
   for (const particle of particles) {
     const road = prepared.get(particle.roadId);
     if (!road || !road.segmentDist.length) continue;
@@ -104,6 +110,13 @@ export function createTrafficMotionModel(input: {
       segIdx: location.segIdx,
       t: location.t,
     });
+    const groupKey = particle.creep ? jamGroupKey(particle) : null;
+    if (groupKey && !jamGroups.has(groupKey)) {
+      jamGroups.set(groupKey, {
+        moving: particle.creep?.moving ?? false,
+        until: particle.creep?.until ?? Date.now(),
+      });
+    }
   }
 
   const interpolate = (record: MotionRecord, result: any) => {
@@ -131,14 +144,24 @@ export function createTrafficMotionModel(input: {
 
         let burst = 1;
         if (particle.creep) {
-          if (now >= particle.creep.until) {
-            particle.creep.moving = !particle.creep.moving;
-            const lo = particle.creep.moving ? 1200 : 1500;
-            const hi = particle.creep.moving ? 3000 : 5000;
-            particle.creep.until = now + lo + Math.random() * (hi - lo);
+          const groupKey = jamGroupKey(particle);
+          const creepState = groupKey ? jamGroups.get(groupKey) ?? particle.creep : particle.creep;
+          if (groupKey && !jamGroups.has(groupKey)) jamGroups.set(groupKey, creepState);
+
+          if (now >= creepState.until) {
+            creepState.moving = !creepState.moving;
+            const lo = creepState.moving ? 1200 : 1500;
+            const hi = creepState.moving ? 3000 : 5000;
+            creepState.until = now + lo + Math.random() * (hi - lo);
           }
-          if (!particle.creep.moving) continue;
-          burst = 2.2;
+          if (!creepState.moving) continue;
+
+          // Donor stop/go uses a 2.2x catch-up burst. At close 3D range that
+          // can make a near-threshold jam briefly look like free-flow traffic.
+          // Keep the donor ceiling, but cap visible jam motion to ~35% of the
+          // particle's pre-flow road speed.
+          const maxJamMovingMps = Math.max(1.2, particle.baseMps * 0.35);
+          burst = Math.min(2.2, maxJamMovingMps / Math.max(0.01, particle.mps));
         }
 
         let remaining = Math.max(0, particle.mps) * burst * dt;
@@ -154,7 +177,9 @@ export function createTrafficMotionModel(input: {
               record.segIdx += 1;
               record.t = 0;
               if (record.segIdx >= record.road.segmentDist.length) record.segIdx = 0;
-              if (Math.random() < 0.008) particle.stoppedUntil = now + 2000 + Math.random() * 4000;
+              if (!particle.creep && Math.random() < 0.008) {
+                particle.stoppedUntil = now + 2000 + Math.random() * 4000;
+              }
             }
           } else {
             const available = record.t * segLen;
@@ -166,7 +191,9 @@ export function createTrafficMotionModel(input: {
               record.segIdx -= 1;
               record.t = 1;
               if (record.segIdx < 0) record.segIdx = record.road.segmentDist.length - 1;
-              if (Math.random() < 0.008) particle.stoppedUntil = now + 2000 + Math.random() * 4000;
+              if (!particle.creep && Math.random() < 0.008) {
+                particle.stoppedUntil = now + 2000 + Math.random() * 4000;
+              }
             }
           }
         }
