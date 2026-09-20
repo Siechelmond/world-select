@@ -76,9 +76,9 @@ export function createMapController(input: {
     if (earthLayer) earthLayer.show = !in3d && (activeMode === "satellite" || activeMode === "nasa");
     if (groundLayer) groundLayer.show = !in3d && activeMode === "map";
     if (nasaLayer) nasaLayer.show = !in3d && activeMode === "nasa";
-    // Keep globe + terrain beneath Google photoreal tiles. Coverage quality is
-    // not uniform worldwide, and ground-classified layers need a stable surface.
-    if (viewer.scene?.globe) viewer.scene.globe.show = true;
+    // ws-donor invariant: a 3D tileset is a map stack, not an overlay on the
+    // Cesium globe. Terrain stays configured but the globe is hidden in 3D.
+    if (viewer.scene?.globe) viewer.scene.globe.show = !in3d;
     viewer.scene?.requestRender?.();
   };
 
@@ -163,18 +163,16 @@ export function createMapController(input: {
       throw new Error("NEXT_PUBLIC_CESIUM_ION_TOKEN is not configured");
     }
 
-    // CesiumJS >=1.110 routes Google Photorealistic 3D Tiles through
-    // Cesium ion when no Google Maps API key is supplied and
-    // Ion.defaultAccessToken is configured.
-    const previousToken = Cesium.Ion.defaultAccessToken;
-    Cesium.Ion.defaultAccessToken = token;
-    try {
-      return await Cesium.createGooglePhotorealistic3DTileset({
-        onlyUsingWithGoogleGeocoder: true,
-      });
-    } finally {
-      Cesium.Ion.defaultAccessToken = previousToken;
-    }
+    // Direct ws-donor recovery route: explicit ion asset, no SDK-wide token
+    // mutation and the same cache/collision defaults as the donor runtime.
+    const resource = await Cesium.IonResource.fromAssetId(2275207, {
+      accessToken: token,
+    });
+    return Cesium.Cesium3DTileset.fromUrl(resource, {
+      cacheBytes: 1536 * 1024 * 1024,
+      maximumCacheOverflowBytes: 1024 * 1024 * 1024,
+      enableCollision: true,
+    });
   };
 
   const ensurePhotorealistic = async () => {
@@ -211,14 +209,7 @@ export function createMapController(input: {
         throw new Error("Viewer was destroyed while Google 3D was loading");
       }
       if (!google3d) {
-        // Favor usable first paint over maximum photogrammetry detail.
-        // These are display/streaming controls only; geographic positions are
-        // not altered.
-        loaded.tileset.maximumScreenSpaceError = 24;
-        if ("dynamicScreenSpaceError" in loaded.tileset) loaded.tileset.dynamicScreenSpaceError = true;
-        if ("preloadWhenHidden" in loaded.tileset) loaded.tileset.preloadWhenHidden = false;
-        if ("preloadFlightDestinations" in loaded.tileset) loaded.tileset.preloadFlightDestinations = false;
-        if ("cullRequestsWhileMoving" in loaded.tileset) loaded.tileset.cullRequestsWhileMoving = true;
+        // ws-donor leaves Google/Cesium streaming and LOD defaults intact.
         loaded.tileset.show = false;
         viewer.scene.primitives.add(loaded.tileset);
         google3d = loaded.tileset;

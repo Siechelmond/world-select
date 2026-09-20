@@ -29,6 +29,21 @@ const STREET_COVERAGE_TIMEOUT_MS = 5_000;
 const STREET_SEARCH_RADII_M = [120, 250, 500];
 const authFailureListeners = new Set<(message: string) => void>();
 let authDispatcherInstalled = false;
+let googleMapsAuthFailed = false;
+
+function resetOwnedGoogleMapsLoader(clearGoogleGlobal = false) {
+  window.__worldSelectGoogleMapsPromise = undefined;
+  window.__worldSelectGoogleStreetPromise = undefined;
+  window.__worldSelectGoogleMapsReady = () => {};
+  document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]')?.remove();
+  if (clearGoogleGlobal) {
+    try {
+      delete window.google;
+    } catch {
+      window.google = undefined;
+    }
+  }
+}
 
 function installGoogleAuthDispatcher() {
   if (authDispatcherInstalled) return;
@@ -36,6 +51,8 @@ function installGoogleAuthDispatcher() {
   const previous = window.gm_authFailure;
   window.gm_authFailure = () => {
     try { previous?.(); } catch {}
+    googleMapsAuthFailed = true;
+    resetOwnedGoogleMapsLoader(true);
     const message = 'Google Maps authentication/referrer check failed';
     for (const listener of [...authFailureListeners]) {
       try { listener(message); } catch {}
@@ -66,13 +83,17 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
 export function loadGoogleMaps(apiKey: string): Promise<any> {
   const key = String(apiKey || '').trim();
   if (!key) return Promise.reject(new Error('Google Maps API key is not configured'));
-  if (window.google?.maps) return Promise.resolve(window.google);
-  if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
+  if (window.google?.maps && !googleMapsAuthFailed) return Promise.resolve(window.google);
+  if (window.__worldSelectGoogleMapsPromise && !googleMapsAuthFailed) return window.__worldSelectGoogleMapsPromise;
 
   installGoogleAuthDispatcher();
 
-  const staleScript = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
-  if (staleScript && !window.google?.maps) staleScript.remove();
+  if (googleMapsAuthFailed) {
+    resetOwnedGoogleMapsLoader(true);
+    googleMapsAuthFailed = false;
+  } else {
+    document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]')?.remove();
+  }
 
   const promise = new Promise<any>((resolve, reject) => {
     let settled = false;
@@ -90,11 +111,14 @@ export function loadGoogleMaps(apiKey: string): Promise<any> {
       if (timer != null) window.clearTimeout(timer);
       removeAuthListener?.();
       if (error) {
-        if (!window.google?.maps) script.remove();
+        script.remove();
+        window.__worldSelectGoogleMapsPromise = undefined;
+        window.__worldSelectGoogleStreetPromise = undefined;
         window.__worldSelectGoogleMapsReady = () => {};
         reject(error);
         return;
       }
+      googleMapsAuthFailed = false;
       window.__worldSelectGoogleMapsReady = () => {};
       if (window.google?.maps) resolve(window.google);
       else reject(new Error('Google Maps callback fired without maps library'));
