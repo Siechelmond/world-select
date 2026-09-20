@@ -366,9 +366,11 @@ export function createTrafficController(input: {
         color: Cesium.Color.fromCssColorString(particleColorCss(particle)).withAlpha(particle.bucket ? 0.92 : 0.85),
         scaleByDistance: new Cesium.NearFarScalar(100, 1.5, 120_000, particle.bucket === 'jam' ? 0.55 : 0.3),
         translucencyByDistance: new Cesium.NearFarScalar(100, 1.0, 160_000, 0.08),
-        // Preserve the owner-observed visible 3D baseline while switching the
-        // primitive type. We can tighten occlusion only after UAT proves height.
-        disableDepthTestDistance: photoreal ? Number.POSITIVE_INFINITY : 2_000,
+        // In photoreal 3D, buildings and bridge structures must occlude traffic.
+        // Cesium 0 means depth testing is always applied; Infinity made particles
+        // visible through towers and high-rises. Non-photoreal keeps the prior
+        // near-ground tolerance.
+        disableDepthTestDistance: photoreal ? 0 : 2_000,
       });
     }
 
