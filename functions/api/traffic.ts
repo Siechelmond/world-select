@@ -58,7 +58,18 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
   const apiKey = context.env?.TOMTOM_API_KEY;
 
   if (!apiKey) {
-    if (mode === 'vector') {
+    if (mode === 'status') {
+      return json({
+        configured: false,
+        available: false,
+        provider: 'TomTom Orbis Traffic Flow v2',
+        message: 'TOMTOM_API_KEY not configured',
+      });
+    }
+    return json({ error: 'traffic provider not configured' }, 503);
+  }
+
+  if (mode === 'vector') {
     const z = Number(requestUrl.searchParams.get('z'));
     const x = Number(requestUrl.searchParams.get('x'));
     const y = Number(requestUrl.searchParams.get('y'));
@@ -87,17 +98,6 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : 'TomTom vector upstream error' }, 502);
     }
-  }
-
-  if (mode === 'status') {
-      return json({
-        configured: false,
-        available: false,
-        provider: 'TomTom Orbis Traffic Flow v2',
-        message: 'TOMTOM_API_KEY not configured',
-      });
-    }
-    return json({ error: 'traffic provider not configured' }, 503);
   }
 
   if (mode === 'status') {
