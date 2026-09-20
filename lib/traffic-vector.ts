@@ -195,6 +195,29 @@ export async function fetchRoads(
     .filter((road) => road.coordinates.length >= 2);
 }
 
+export async function fetchRoadsForBounds(
+  bounds: { south: number; west: number; north: number; east: number },
+  majorOnly: boolean,
+  signal?: AbortSignal,
+): Promise<RoadSegment[]> {
+  const params = new URLSearchParams({
+    south: String(bounds.south),
+    west: String(bounds.west),
+    north: String(bounds.north),
+    east: String(bounds.east),
+    majorOnly: majorOnly ? "1" : "0",
+  });
+  const response = await fetch("/api/roads?" + params.toString(), { signal });
+  if (!response.ok) throw new Error(`Roads endpoint returned HTTP ${response.status}`);
+  const data = await response.json() as { roads: RoadSegment[] };
+  return (data.roads ?? [])
+    .map((road) => ({
+      ...road,
+      coordinates: road.coordinates.filter(validLonLat),
+    }))
+    .filter((road) => road.coordinates.length >= 2);
+}
+
 export function buildModeledFlows(roads: RoadSegment[]): FlowSegment[] {
   return roads.map((road) => {
     const freeFlow = inferFreeFlowSpeed(road);

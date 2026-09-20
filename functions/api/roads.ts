@@ -21,8 +21,10 @@ type RoadSegment = {
   lanes: number | null;
 };
 
-const OVERPASS_TIMEOUT_MS = 6500;
+const MAJOR_TIMEOUT_MS = 12_000;
+const FULL_TIMEOUT_MS = 20_000;
 const MAX_ELEMENTS = 30000;
+const MAX_BBOX_SPAN_DEG = 0.05;
 const OVERPASS_UPSTREAMS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
@@ -36,9 +38,16 @@ function bboxAround(lat: number, lon: number, radiusKm: number) {
   return { south: lat - latDeg, west: lon - lonDeg, north: lat + latDeg, east: lon + lonDeg };
 }
 
-function buildOverpassQuery(bbox: { south: number; west: number; north: number; east: number }) {
+function buildOverpassQuery(
+  bbox: { south: number; west: number; north: number; east: number },
+  majorOnly: boolean,
+) {
   const bb = `(${bbox.south},${bbox.west},${bbox.north},${bbox.east})`;
-  return `[out:json][timeout:20];(way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link)$"]${bb};);out geom ${MAX_ELEMENTS};`;
+  const highwayRegex = majorOnly
+    ? "^(motorway|trunk|primary|secondary)$"
+    : "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link)$";
+  const timeoutSec = majorOnly ? 12 : 20;
+  return `[out:json][timeout:${timeoutSec}];(way["highway"~"${highwayRegex}"]${bb};);out geom qt ${MAX_ELEMENTS};`;
 }
 
 function normalizeRoads(data: OverpassResponse): RoadSegment[] {
@@ -64,9 +73,9 @@ function normalizeRoads(data: OverpassResponse): RoadSegment[] {
   return roads;
 }
 
-async function fetchMirror(endpoint: string, body: string) {
+async function fetchMirror(endpoint: string, body: string, timeoutMs: number) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -89,24 +98,54 @@ async function fetchMirror(endpoint: string, body: string) {
 
 export const onRequestGet = async ({ request }: { request: Request }) => {
   const url = new URL(request.url);
-  const lat = Number(url.searchParams.get("lat"));
-  const lon = Number(url.searchParams.get("lon"));
-  const radius = Math.min(12, Math.max(2, Number(url.searchParams.get("radius") ?? 6)));
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return Response.json({ error: "invalid coordinates", roads: [] }, { status: 400 });
+  const majorOnly = url.searchParams.get("majorOnly") === "1";
 
-  const query = buildOverpassQuery(bboxAround(lat, lon, radius));
+  const south = Number(url.searchParams.get("south"));
+  const west = Number(url.searchParams.get("west"));
+  const north = Number(url.searchParams.get("north"));
+  const east = Number(url.searchParams.get("east"));
+  const hasBounds = [south, west, north, east].every(Number.isFinite);
+
+  let bbox: { south: number; west: number; north: number; east: number };
+  let responseMeta: Record<string, unknown>;
+
+  if (hasBounds) {
+    if (
+      south < -90 || north > 90 || west < -180 || east > 180 ||
+      north <= south || east <= west ||
+      north - south > MAX_BBOX_SPAN_DEG + 1e-9 ||
+      east - west > MAX_BBOX_SPAN_DEG + 1e-9
+    ) {
+      return Response.json({ error: "invalid or oversized bounds", roads: [] }, { status: 400 });
+    }
+    bbox = { south, west, north, east };
+    responseMeta = { bounds: bbox, majorOnly };
+  } else {
+    const lat = Number(url.searchParams.get("lat"));
+    const lon = Number(url.searchParams.get("lon"));
+    const radius = Math.min(12, Math.max(2, Number(url.searchParams.get("radius") ?? 6)));
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return Response.json({ error: "invalid coordinates", roads: [] }, { status: 400 });
+    }
+    bbox = bboxAround(lat, lon, radius);
+    responseMeta = { center: { lat, lon }, radius, majorOnly };
+  }
+
+  const query = buildOverpassQuery(bbox, majorOnly);
   const body = `data=${encodeURIComponent(query)}`;
+  const timeoutMs = majorOnly ? MAJOR_TIMEOUT_MS : FULL_TIMEOUT_MS;
   let lastError = "Overpass unavailable";
 
   for (const endpoint of OVERPASS_UPSTREAMS) {
     try {
-      const data = await fetchMirror(endpoint, body);
-      const roads = normalizeRoads(data);
+      const data = await fetchMirror(endpoint, body, timeoutMs);
+      const resultRoads = normalizeRoads(data);
       return Response.json(
-        { roads, count: roads.length, center: { lat, lon }, radius },
+        { roads: resultRoads, count: resultRoads.length, ...responseMeta },
         { headers: {
           "Cache-Control": "public, max-age=300, s-maxage=900, stale-while-revalidate=3600",
           "X-World-Select-Source": endpoint,
+          "X-World-Select-Road-Pass": majorOnly ? "major" : "full",
         } },
       );
     } catch (error) {

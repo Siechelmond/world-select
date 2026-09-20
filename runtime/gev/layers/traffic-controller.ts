@@ -1,7 +1,7 @@
 import { fetchTrafficStatus, type TrafficStatus } from '@/lib/traffic';
 import {
   buildModeledFlows,
-  fetchRoads,
+  fetchRoadsForBounds,
   getCongestionColor,
   type FlowSegment,
   type RoadSegment,
@@ -95,6 +95,8 @@ export function createTrafficController(input: {
   let vehicleCount = 0;
   let flowCoveragePct = 0;
   let dataGeneration = 0;
+  let roadDetail: "none" | "major" | "full" = "none";
+  let particleDensityBand = -1;
 
   const publish = (state: LayerLoadState, error?: string) => {
     onState({ state, status, error, vehicleCount });
@@ -135,6 +137,8 @@ export function createTrafficController(input: {
     particles = [];
     vehicleCount = 0;
     flowCoveragePct = 0;
+    roadDetail = "none";
+    particleDensityBand = -1;
   };
 
   const distanceKm = (
@@ -149,6 +153,70 @@ export function createTrafficController(input: {
     const h = Math.sin(dLat / 2) ** 2 +
       Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
     return 6371.0088 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
+  };
+
+  const densityBandFor = (height: number) =>
+    height < 1_000 ? 0 :
+    height < 3_000 ? 1 :
+    height < 5_000 ? 2 : 3;
+
+  const trafficFetchBounds = () => {
+    const maxSpan = 0.05;
+    let latSpan = maxSpan;
+    let lonSpan = maxSpan;
+
+    try {
+      const rect = viewer.camera.computeViewRectangle?.();
+      if (rect) {
+        const south = Cesium.Math.toDegrees(rect.south);
+        const west = Cesium.Math.toDegrees(rect.west);
+        const north = Cesium.Math.toDegrees(rect.north);
+        const east = Cesium.Math.toDegrees(rect.east);
+        if ([south, west, north, east].every(Number.isFinite)) {
+          latSpan = Math.min(maxSpan, Math.max(0.005, north - south));
+          lonSpan = Math.min(maxSpan, Math.max(0.005, east - west));
+        }
+      }
+    } catch {}
+
+    let latitude = context.latitude;
+    let longitude = context.longitude;
+    try {
+      const canvas = viewer.scene.canvas;
+      const width = canvas.clientWidth || canvas.width;
+      const height = canvas.clientHeight || canvas.height;
+      if (width > 0 && height > 0) {
+        const hit = viewer.camera.pickEllipsoid(
+          new Cesium.Cartesian2(width / 2, height / 2),
+          Cesium.Ellipsoid.WGS84,
+        );
+        if (hit) {
+          const cartographic = Cesium.Cartographic.fromCartesian(hit);
+          const hitLat = Cesium.Math.toDegrees(cartographic.latitude);
+          const hitLon = Cesium.Math.toDegrees(cartographic.longitude);
+          if (Number.isFinite(hitLat) && Number.isFinite(hitLon)) {
+            latitude = hitLat;
+            longitude = hitLon;
+          }
+        }
+      }
+    } catch {}
+
+    return {
+      center: { latitude, longitude },
+      bounds: {
+        south: latitude - latSpan / 2,
+        west: longitude - lonSpan / 2,
+        north: latitude + latSpan / 2,
+        east: longitude + lonSpan / 2,
+      },
+    };
+  };
+
+  const rebuildParticles = () => {
+    particles = generateTrafficParticles(roads, flows, context.cameraHeight, 1200);
+    vehicleCount = particles.length;
+    particleDensityBand = densityBandFor(context.cameraHeight);
   };
 
   const onTileError = (error: any) => {
@@ -403,8 +471,7 @@ export function createTrafficController(input: {
 
       flows = result.flows;
       flowCoveragePct = result.coveragePct;
-      particles = generateTrafficParticles(roads, flows, context.cameraHeight, 1200);
-      vehicleCount = particles.length;
+      rebuildParticles();
       clearRenderedFallback();
       if (fallbackVisible()) renderFallback();
     } catch (error) {
@@ -427,47 +494,76 @@ export function createTrafficController(input: {
       return;
     }
 
-    const nextCenter = { latitude: context.latitude, longitude: context.longitude };
-    const needsRebase = !dataCenter || distanceKm(dataCenter, nextCenter) >= 3.5;
+    const target = trafficFetchBounds();
+    const nextCenter = target.center;
+    const needsRebase = !dataCenter || distanceKm(dataCenter, nextCenter) >= 0.35;
+    const wantsFull = context.cameraHeight < 4_500;
 
-    if (!needsRebase && roads.length) {
+    if (!needsRebase && roads.length && (!wantsFull || roadDetail === "full")) {
+      const nextBand = densityBandFor(context.cameraHeight);
+      if (nextBand !== particleDensityBand) {
+        rebuildParticles();
+        clearRenderedFallback();
+      }
       if (fallbackSourceNeeded()) renderFallback();
-      if (context.mapMode === 'photoreal') void refreshLiveParticleFlow();
+      if (context.mapMode === "photoreal") void refreshLiveParticleFlow();
       return;
     }
     if (vectorController) return;
 
-    const controller = new AbortController();
-    vectorController = controller;
+    const request = new AbortController();
+    vectorController = request;
     const generation = ++dataGeneration;
-    if (!prefetchOnly || fallbackSourceNeeded()) publish('loading');
+    if (!prefetchOnly || fallbackSourceNeeded()) publish("loading");
 
+    let majorRoads: RoadSegment[] = [];
     try {
-      const nextRoads = await fetchRoads(nextCenter.latitude, nextCenter.longitude, 8, controller.signal);
-      if (controller.signal.aborted || destroyed || generation !== dataGeneration) return;
+      majorRoads = await fetchRoadsForBounds(target.bounds, true, request.signal);
+      if (request.signal.aborted || destroyed || generation !== dataGeneration) return;
 
       dataCenter = nextCenter;
-      roads = nextRoads.slice(0, 500);
+      roads = majorRoads.slice(0, 500);
+      roadDetail = "major";
       flows = buildModeledFlows(roads);
       flowCoveragePct = 0;
-      particles = generateTrafficParticles(roads, flows, context.cameraHeight, 1200);
-      vehicleCount = particles.length;
+      rebuildParticles();
 
       clearRenderedFallback();
+      if (roads.length && fallbackSourceNeeded()) renderFallback();
+
+      if (wantsFull) {
+        try {
+          const fullRoads = await fetchRoadsForBounds(target.bounds, false, request.signal);
+          if (request.signal.aborted || destroyed || generation !== dataGeneration) return;
+          if (fullRoads.length) {
+            roads = fullRoads.slice(0, 500);
+            roadDetail = "full";
+            flows = buildModeledFlows(roads);
+            flowCoveragePct = 0;
+            rebuildParticles();
+            clearRenderedFallback();
+            if (fallbackSourceNeeded()) renderFallback();
+          }
+        } catch (detailError) {
+          if (request.signal.aborted || destroyed || generation !== dataGeneration) return;
+          if (!majorRoads.length) throw detailError;
+        }
+      }
+
       if (!roads.length) {
-        publish('error', 'No OSM road geometry returned for this traffic coverage');
+        publish("error", "No OSM road geometry returned for this traffic coverage");
         return;
       }
-      if (fallbackSourceNeeded()) {
-        renderFallback();
-        if (!fallbackVisible()) publish('degraded', 'Traffic data cached for this area · zoom in to render');
+      if (fallbackSourceNeeded() && !fallbackVisible()) {
+        publish("degraded", "Traffic data cached for this area · zoom in to render");
       }
-      if (context.mapMode === 'photoreal') void refreshLiveParticleFlow();
+      if (context.mapMode === "photoreal") void refreshLiveParticleFlow();
     } catch (error) {
-      if (controller.signal.aborted || destroyed) return;
-      publish('error', error instanceof Error ? error.message : 'OSM road geometry unavailable');
+      if (request.signal.aborted || destroyed || generation !== dataGeneration) return;
+      if (majorRoads.length) return;
+      publish("error", error instanceof Error ? error.message : "OSM road geometry unavailable");
     } finally {
-      if (vectorController === controller) vectorController = null;
+      if (vectorController === request) vectorController = null;
     }
   }
 
@@ -550,15 +646,14 @@ export function createTrafficController(input: {
         { latitude: previous.latitude, longitude: previous.longitude },
         { latitude: context.latitude, longitude: context.longitude },
       );
-      const geographicMove = !wasActive || movedKm >= 3.5;
+      const geographicMove = !wasActive || movedKm >= 0.35;
+      const densityBandChanged = densityBandFor(context.cameraHeight) !== particleDensityBand;
 
       if (fallbackSourceNeeded()) {
         if (geographicMove || !dataCenter || !roads.length) {
           void ensureFallback();
-        } else if (modeChanged) {
-          clearRenderedFallback();
-          renderFallback();
-          if (context.mapMode === 'photoreal') void refreshLiveParticleFlow();
+        } else if (modeChanged || densityBandChanged || (context.cameraHeight < 4_500 && roadDetail !== "full")) {
+          void ensureFallback();
         } else if (fallbackVisible()) {
           renderFallback();
         } else {
