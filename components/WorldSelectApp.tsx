@@ -93,6 +93,8 @@ export default function WorldSelectApp() {
   const radioRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
   const infrastructureRendererRef = useRef<ReturnType<typeof createInfrastructureRenderer> | null>(null);
   const coreRuntimeRef = useRef<ReturnType<typeof createCoreLiveWorld> | null>(null);
+  const streetFallbackAbortRef = useRef<AbortController | null>(null);
+  const streetPointRef = useRef<EarthPoint>(INITIAL_CENTER);
 
   const [cesiumReady, setCesiumReady] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -221,6 +223,9 @@ export default function WorldSelectApp() {
       ? { latitude: selected.position.latitude, longitude: selected.position.longitude }
       : viewCenter
   );
+  useEffect(() => {
+    streetPointRef.current = streetPoint;
+  }, [streetPoint.latitude, streetPoint.longitude]);
   const filteredEvents = useMemo(
     () => eventFilter === "all" ? naturalEvents : naturalEvents.filter((item) => item.properties.category === eventFilter),
     [naturalEvents, eventFilter],
@@ -498,9 +503,14 @@ export default function WorldSelectApp() {
         setSelected(null);
         setFollowAircraft(false);
         if (point) {
+          streetPointRef.current = point;
           setStreetTarget(point);
           setStreetNotice(`Street target set · ${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`);
         }
+      },
+      onMapModeFallback: (error) => {
+        setThreeDError(error);
+        setMapMode("satellite");
       },
       googleMapsApiKey: GOOGLE_MAPS_API_KEY,
       cesiumIonToken: CESIUM_ION_TOKEN,
@@ -599,6 +609,7 @@ export default function WorldSelectApp() {
     let cancelled = false;
     void viewerLifecycleRef.current?.setMapMode(mapMode).then((result) => {
       if (cancelled || !result) return;
+      if (mapMode === "photoreal" && result.ok) setThreeDError(null);
       if (!result.ok) {
         if (mapMode === "photoreal") {
           setThreeDError(result.error ?? "Google Photorealistic 3D is unavailable");
@@ -695,7 +706,9 @@ export default function WorldSelectApp() {
 
   const switchMapMode = useCallback((mode: WorldMapMode) => {
     setStreetOpen(false);
-    setThreeDError(null);
+    setThreeDError(mode === "photoreal"
+      ? "Google Photorealistic 3D · loading and verifying live tiles…"
+      : null);
     setMapMode(mode);
   }, []);
 
@@ -951,15 +964,19 @@ export default function WorldSelectApp() {
   }, [selected]);
 
   const loadKartaViewStreet = useCallback((fallbackReason?: string) => {
+    const point = streetPointRef.current;
+    streetFallbackAbortRef.current?.abort();
+    const controller = new AbortController();
+    streetFallbackAbortRef.current = controller;
     setStreetProvider("kartaview");
     setStreetState("loading");
     setStreetIndex(0);
     setStreetPhotos([]);
     setStreetNotice(fallbackReason ?? "Searching KartaView nearby imagery…");
     setLayerError("street", fallbackReason);
-    const controller = new AbortController();
-    fetchStreetPhotos(streetPoint.latitude, streetPoint.longitude, controller.signal)
+    fetchStreetPhotos(point.latitude, point.longitude, controller.signal)
       .then((photos) => {
+        if (controller.signal.aborted) return;
         setStreetPhotos(photos);
         setStreetState(photos.length ? "ready" : "error");
         setStreetNotice(photos.length
@@ -968,15 +985,22 @@ export default function WorldSelectApp() {
         setLayerError("street", photos.length ? undefined : "No KartaView coverage near this point");
       })
       .catch((reason: unknown) => {
+        if (controller.signal.aborted) return;
         const message = reason instanceof Error ? reason.message : "Street imagery error";
         setStreetState("error");
         setStreetNotice(message);
         setLayerError("street", message);
+      })
+      .finally(() => {
+        if (streetFallbackAbortRef.current === controller) streetFallbackAbortRef.current = null;
       });
-  }, [streetPoint.latitude, streetPoint.longitude, setLayerError]);
+  }, [setLayerError]);
 
   const openStreet = useCallback(() => {
     if (viewMode !== "earth") return;
+    streetPointRef.current = streetPoint;
+    streetFallbackAbortRef.current?.abort();
+    streetFallbackAbortRef.current = null;
     setStreetTarget(streetPoint);
     setStreetOpen(true);
     setMobilePanel("street");
@@ -1004,10 +1028,13 @@ export default function WorldSelectApp() {
   }, [loadKartaViewStreet]);
 
   const handleGoogleStreetPosition = useCallback((point: EarthPoint) => {
+    streetPointRef.current = point;
     setStreetTarget(point);
   }, []);
 
   const closeStreet = useCallback(() => {
+    streetFallbackAbortRef.current?.abort();
+    streetFallbackAbortRef.current = null;
     setStreetOpen(false);
     setStreetTarget(null);
     setStreetPhotos([]);
@@ -1456,10 +1483,13 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
     let statusListener: any = null;
     let watchdog: number | undefined;
     let removeAuthFailureListener: (() => void) | null = null;
+    let failed = false;
 
     const fail = (message: string) => {
-      if (disposed) return;
+      if (disposed || failed) return;
+      failed = true;
       if (watchdog != null) window.clearTimeout(watchdog);
+      removeAuthFailureListener?.();
       onFallback(message);
     };
 

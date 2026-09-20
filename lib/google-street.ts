@@ -19,6 +19,7 @@ declare global {
     google?: any;
     __worldSelectGoogleMapsPromise?: Promise<any>;
     __worldSelectGoogleStreetPromise?: Promise<GoogleStreetViewLibrary>;
+    __worldSelectGoogleMapsReady?: () => void;
     gm_authFailure?: () => void;
   }
 }
@@ -69,52 +70,55 @@ export function loadGoogleMaps(apiKey: string): Promise<any> {
   if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
 
   installGoogleAuthDispatcher();
+
+  const staleScript = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
+  if (staleScript && !window.google?.maps) staleScript.remove();
+
   const promise = new Promise<any>((resolve, reject) => {
-    const removeAuthListener = onGoogleMapsAuthFailure((message) => reject(new Error(message)));
-
-    const loaded = () => {
-      removeAuthListener();
-      if (window.google?.maps) resolve(window.google);
-      else reject(new Error('Google Maps loaded without maps library'));
-    };
-    const failed = () => {
-      removeAuthListener();
-      reject(new Error('Google Maps JavaScript API could not be loaded'));
-    };
-
-    const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
-    if (existing) {
-      if (window.google?.maps) {
-        loaded();
-        return;
-      }
-      existing.addEventListener('load', loaded, { once: true });
-      existing.addEventListener('error', failed, { once: true });
-      return;
-    }
+    let settled = false;
+    let timer: number | undefined;
+    let removeAuthListener: (() => void) | null = null;
 
     const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async`;
     script.async = true;
     script.defer = true;
     script.dataset.worldSelectGoogleMaps = '1';
-    script.addEventListener('load', loaded, { once: true });
-    script.addEventListener('error', failed, { once: true });
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timer != null) window.clearTimeout(timer);
+      removeAuthListener?.();
+      if (error) {
+        if (!window.google?.maps) script.remove();
+        window.__worldSelectGoogleMapsReady = () => {};
+        reject(error);
+        return;
+      }
+      window.__worldSelectGoogleMapsReady = () => {};
+      if (window.google?.maps) resolve(window.google);
+      else reject(new Error('Google Maps callback fired without maps library'));
+    };
+
+    window.__worldSelectGoogleMapsReady = () => finish();
+    removeAuthListener = onGoogleMapsAuthFailure((message) => finish(new Error(message)));
+    script.addEventListener('error', () => finish(new Error('Google Maps JavaScript API could not be loaded')), { once: true });
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async&callback=__worldSelectGoogleMapsReady`;
+    timer = window.setTimeout(
+      () => finish(timeoutError('Google Maps JavaScript API', GOOGLE_MAPS_LOAD_TIMEOUT_MS)),
+      GOOGLE_MAPS_LOAD_TIMEOUT_MS,
+    );
     document.head.appendChild(script);
   });
 
-  window.__worldSelectGoogleMapsPromise = withTimeout(
-    promise,
-    GOOGLE_MAPS_LOAD_TIMEOUT_MS,
-    'Google Maps JavaScript API',
-  ).catch((error) => {
+  window.__worldSelectGoogleMapsPromise = promise.catch((error) => {
     window.__worldSelectGoogleMapsPromise = undefined;
     throw error;
   });
   return window.__worldSelectGoogleMapsPromise;
 }
 
-export function loadGoogleStreetView(apiKey: string): Promise<GoogleStreetViewLibrary> {
+export function loadGoogleStreetView(apiKey: string): Promise<GoogleStreetViewLibrary> {export function loadGoogleStreetView(apiKey: string): Promise<GoogleStreetViewLibrary> {
   if (window.__worldSelectGoogleStreetPromise) return window.__worldSelectGoogleStreetPromise;
 
   window.__worldSelectGoogleStreetPromise = loadGoogleMaps(apiKey)

@@ -27,6 +27,7 @@ export function createWorldViewer(input: {
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
   onEmptyClick?: (point: { latitude: number; longitude: number } | null) => void;
+  onMapModeFallback?: (error: string) => void;
   googleMapsApiKey?: string;
   cesiumIonToken?: string;
 }): ViewerLifecycle {
@@ -37,6 +38,7 @@ export function createWorldViewer(input: {
     onEntityClick,
     onEntityHover,
     onEmptyClick,
+    onMapModeFallback = () => {},
     googleMapsApiKey = '',
     cesiumIonToken = '',
   } = input;
@@ -74,7 +76,13 @@ export function createWorldViewer(input: {
     destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000),
   });
 
-  const mapController = createMapController({ viewer, Cesium, googleMapsApiKey, cesiumIonToken });
+  const mapController = createMapController({
+    viewer,
+    Cesium,
+    googleMapsApiKey,
+    cesiumIonToken,
+    onRuntimeFallback: onMapModeFallback,
+  });
   installRenderGovernor(viewer);
 
   for (const label of GEO_LABELS_DE) {
