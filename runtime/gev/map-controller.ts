@@ -70,10 +70,10 @@ export function createMapController(input: {
     if (destroyed || viewer.isDestroyed?.()) return;
     const in3d = activeMode === "photoreal" && Boolean(google3d);
     if (google3d) google3d.show = in3d;
-    // Satellite imagery remains underneath photoreal 3D as an immediate,
-    // geographically correct fallback while Google tiles refine. This avoids
-    // the multi-minute "holes over a dark globe" failure mode.
-    if (earthLayer) earthLayer.show = activeMode === "photoreal" || activeMode === "satellite" || activeMode === "nasa";
+    // Google Photorealistic 3D owns the visual Earth surface while active.
+    // Keeping the satellite raster visible underneath produces coarse patchwork
+    // at orbital LOD boundaries as the Google mesh refines.
+    if (earthLayer) earthLayer.show = !in3d && (activeMode === "satellite" || activeMode === "nasa");
     if (groundLayer) groundLayer.show = !in3d && activeMode === "map";
     if (nasaLayer) nasaLayer.show = !in3d && activeMode === "nasa";
     // Keep globe + terrain beneath Google photoreal tiles. Coverage quality is

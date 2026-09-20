@@ -161,7 +161,7 @@ export function createTrafficController(input: {
   };
 
   const mountLive = () => {
-    if (flowLayer || destroyed || !context.enabled || !context.earthVisible) return;
+    if (flowLayer || destroyed || !context.enabled || !context.earthVisible || context.mapMode === "photoreal") return;
     flowProvider = new Cesium.UrlTemplateImageryProvider({
       url: '/api/traffic?z={z}&x={x}&y={y}',
       minimumLevel: 0,
@@ -488,9 +488,14 @@ export function createTrafficController(input: {
         return;
       }
 
-      mountLive();
-      if (context.mapMode !== "photoreal" && status?.configured && status.available && !liveFailed) {
-        clearRenderedFallback();
+      if (context.mapMode === "photoreal") {
+        // TomTom is a globe imagery raster; draping it under Google 3D creates
+        // competing Earth surfaces. Keep traffic in 3D through the dedicated
+        // classified-road + vehicle overlay instead.
+        unmountLive();
+      } else {
+        mountLive();
+        if (status?.configured && status.available && !liveFailed) clearRenderedFallback();
       }
       if (!wasActive || (!status && !statusController)) void refreshStatus();
       // Pre-warm the same OSM road/vehicle state while SAT/MAP/NASA are active.
