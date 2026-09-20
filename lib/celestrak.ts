@@ -3,6 +3,17 @@ import type { SpatialEntity } from "@/lib/spatial";
 
 export type TleRecord = { name: string; line1: string; line2: string };
 
+type Satrec = ReturnType<typeof satellite.twoline2satrec>;
+const SATREC_CACHE = new WeakMap<TleRecord, Satrec>();
+
+function satrecFor(record: TleRecord): Satrec {
+  const cached = SATREC_CACHE.get(record);
+  if (cached) return cached;
+  const satrec = satellite.twoline2satrec(record.line1, record.line2);
+  SATREC_CACHE.set(record, satrec);
+  return satrec;
+}
+
 function parseTle(text: string): TleRecord[] {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const out: TleRecord[] = [];
@@ -25,7 +36,7 @@ export function propagateTles(records: TleRecord[], at: Date): SpatialEntity[] {
   const gmst = satellite.gstime(at);
   return records.flatMap((record) => {
     try {
-      const satrec = satellite.twoline2satrec(record.line1, record.line2);
+      const satrec = satrecFor(record);
       const propagated = satellite.propagate(satrec, at);
       if (!propagated || !propagated.position || typeof propagated.position === "boolean") return [];
       const gd = satellite.eciToGeodetic(propagated.position, gmst);
@@ -57,7 +68,7 @@ export function propagateTles(records: TleRecord[], at: Date): SpatialEntity[] {
 
 export function propagateTleOrbit(record: TleRecord, at: Date, samples = 160): Array<{ longitude: number; latitude: number; altitudeMeters: number }> {
   try {
-    const satrec = satellite.twoline2satrec(record.line1, record.line2);
+    const satrec = satrecFor(record);
     const meanMotion = Number(record.line2.slice(52, 63).trim());
     const periodMinutes = Number.isFinite(meanMotion) && meanMotion > 0 ? Math.max(60, Math.min(1600, 1440 / meanMotion)) : 96;
     const periodMs = periodMinutes * 60_000;
@@ -80,7 +91,7 @@ export function propagateTleOrbit(record: TleRecord, at: Date, samples = 160): A
 
 export function propagateTleOrbitEcf(record: TleRecord, at: Date, samples = 180): Array<{ x: number; y: number; z: number }> {
   try {
-    const satrec = satellite.twoline2satrec(record.line1, record.line2);
+    const satrec = satrecFor(record);
     const meanMotion = Number(record.line2.slice(52, 63).trim());
     const periodMinutes = Number.isFinite(meanMotion) && meanMotion > 0 ? Math.max(60, Math.min(1600, 1440 / meanMotion)) : 96;
     const periodMs = periodMinutes * 60_000;

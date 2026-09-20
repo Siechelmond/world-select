@@ -8,6 +8,7 @@ export type InfrastructureFeature = {
   operator?: string;
   point?: { longitude: number; latitude: number };
   coordinates?: Array<[number, number]>;
+  source?: { id: string; label: string; url?: string };
 };
 
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {

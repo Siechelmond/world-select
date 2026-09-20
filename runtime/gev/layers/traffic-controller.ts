@@ -1,6 +1,5 @@
 import { fetchTrafficStatus, type TrafficStatus } from '@/lib/traffic';
 import {
-  advanceModeledVehicles,
   buildModeledFlows,
   fetchRoads,
   generateModeledVehicles,
@@ -11,6 +10,7 @@ import {
 } from '@/lib/traffic-vector';
 import type { LayerLoadState } from '@/lib/layer-runtime';
 import { holdContinuousRender, releaseContinuousRender } from '@/runtime/gev/render-governor';
+import { createTrafficMotionModel } from '@/runtime/gev/layers/traffic-motion';
 
 type Context = {
   enabled: boolean;
@@ -57,6 +57,7 @@ export function createTrafficController(input: {
   let roadCollection: any = null;
   let groundRoadPrimitives: any[] = [];
   let vehicleCollection: any = null;
+  let vehicleMotion: ReturnType<typeof createTrafficMotionModel> | null = null;
   let vehiclePreRenderRemover: (() => void) | null = null;
   let lastVehicleFrameMs = 0;
 
@@ -92,6 +93,7 @@ export function createTrafficController(input: {
     }
     groundRoadPrimitives = [];
     vehicleCollection = null;
+    vehicleMotion = null;
     roadCollection = null;
     renderedMode = null;
     viewer.scene?.requestRender?.();
@@ -229,6 +231,13 @@ export function createTrafficController(input: {
       return height;
     };
 
+    vehicleMotion = createTrafficMotionModel({
+      Cesium,
+      roads,
+      vehicles,
+      heightForRoad: (roadId) => photoreal ? roadHeight(roadId) + 3 : 8,
+    });
+
     const maxVehicles = photoreal ? 100 : vehicles.length;
     const renderVehicles = () => {
       if (!vehicleCollection || destroyed) return;
@@ -250,17 +259,12 @@ export function createTrafficController(input: {
       for (let index = 0; index < visibleCount; index += 1) {
         const vehicle = vehicles[index];
         const point = vehicleCollection.get(index);
-        const height = photoreal ? roadHeight(vehicle.roadId) + 3 : 8;
-        point.position = Cesium.Cartesian3.fromDegrees(
-          vehicle.position.longitude,
-          vehicle.position.latitude,
-          height,
-        );
         point.pixelSize = context.cameraHeight < 30_000 ? 4 : 3;
         point.color = Cesium.Color.fromCssColorString(
           getCongestionColor(vehicle.congestion ?? 'free-flow'),
         ).withAlpha(photoreal ? 0.82 : 0.9);
       }
+      vehicleMotion?.writePositions(vehicleCollection, visibleCount);
       viewer.scene?.requestRender?.();
     };
 
@@ -321,8 +325,8 @@ export function createTrafficController(input: {
         const dt = Math.min(Math.max((nowMs - lastVehicleFrameMs) / 1000, 0), 0.1);
         lastVehicleFrameMs = nowMs;
         if (dt <= 0) return;
-        vehicles = advanceModeledVehicles(vehicles, roads, flows, dt);
-        renderVehicles();
+        vehicleMotion?.advance(dt);
+        vehicleMotion?.writePositions(vehicleCollection, maxVehicles);
       });
     }
 

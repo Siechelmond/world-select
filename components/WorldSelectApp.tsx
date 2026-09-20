@@ -26,12 +26,12 @@ import {
   fetchAurora,
   fetchWeather,
   fetchRadioStations,
-  fetchInfrastructure,
   searchPlaces,
   type PlaceSearchResult,
   type InfrastructureFeature,
   type InfrastructureCategory,
 } from "@/lib/keyless";
+import { loadInfrastructureBaseline } from "@/lib/infrastructure-local";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
 
@@ -46,8 +46,8 @@ type LayerError = {
 };
 
 const DAY_MS = 86_400_000;
-const SATELLITE_TICK_MS = 1_000;
-const MOBILE_SATELLITE_TICK_MS = 2_000;
+const LIVE_MOTION_TICK_MS = 1_000;
+const MOBILE_LIVE_MOTION_TICK_MS = 2_000;
 const UI_CLOCK_TICK_MS = 10_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
@@ -208,7 +208,6 @@ export default function WorldSelectApp() {
     for (const item of infrastructure) counts[item.category] += 1;
     return counts;
   }, [infrastructure]);
-  const infrastructureRadiusKm = cameraHeight < 80_000 ? 25 : cameraHeight < 500_000 ? 70 : 180;
   const keylessCenter = useMemo(() => ({
     latitude: Math.round(viewCenter.latitude * 4) / 4,
     longitude: Math.round(viewCenter.longitude * 4) / 4,
@@ -250,61 +249,33 @@ export default function WorldSelectApp() {
       viewMode !== "earth" ||
       timeOffsetDays !== 0 ||
       spacePlaybackDays !== 0 ||
-      !cesiumReady
+      !cesiumReady ||
+      !((aircraftLayer || militaryLayer) && aircraftAvailable && animateAircraft)
     ) return;
-
-    const tickSatellites = satelliteLayer;
-    const tickAircraft = (aircraftLayer || militaryLayer) && aircraftAvailable && animateAircraft;
-    if (!tickSatellites && !tickAircraft) return;
 
     const tick = () => {
       const nowMs = Date.now();
-      const liveTime = new Date(nowMs);
-
-      if (tickSatellites) {
-        satelliteRendererRef.current?.sync({
-          satellites: propagateTles(tleRecords, liveTime),
-          tleRecords,
-          visible: true,
-          selectedId: selected?.kind === "satellite" ? selected.id : null,
-          isMobile,
-          cameraHeight,
-          time: liveTime,
-        });
-      }
-
-      if (tickAircraft) {
-        aircraftRendererRef.current?.sync({
-          items: renderedAircraft,
-          visible: true,
-          selectedId: selected?.kind === "aircraft" ? selected.id : null,
-          followSelected: followAircraft,
-          nowMs,
-          cameraHeight,
-        });
-      }
-
+      aircraftRendererRef.current?.sync({
+        items: renderedAircraft,
+        visible: true,
+        selectedId: selected?.kind === "aircraft" ? selected.id : null,
+        followSelected: followAircraft,
+        nowMs,
+        cameraHeight,
+      });
       const viewer = viewerRef.current;
       const Cesium = window.Cesium;
-      if (viewer && Cesium) {
-        viewer.clock.currentTime = Cesium.JulianDate.fromDate(liveTime);
-        viewer.scene?.requestRender?.();
-      }
+      if (viewer && Cesium) viewer.clock.currentTime = Cesium.JulianDate.fromDate(new Date(nowMs));
     };
 
     tick();
-    const timer = window.setInterval(
-      tick,
-      isMobile ? MOBILE_SATELLITE_TICK_MS : SATELLITE_TICK_MS,
-    );
+    const timer = window.setInterval(tick, isMobile ? MOBILE_LIVE_MOTION_TICK_MS : LIVE_MOTION_TICK_MS);
     return () => window.clearInterval(timer);
   }, [
     viewMode,
     timeOffsetDays,
     spacePlaybackDays,
     cesiumReady,
-    satelliteLayer,
-    tleRecords,
     aircraftLayer,
     militaryLayer,
     aircraftAvailable,
@@ -459,20 +430,20 @@ export default function WorldSelectApp() {
     if (!infrastructureLayer) { setInfrastructureState("idle"); return; }
     const controller = new AbortController();
     setInfrastructureState("loading");
-    fetchInfrastructure(keylessCenter.latitude, keylessCenter.longitude, infrastructureRadiusKm, controller.signal)
-      .then((items) => {
+    loadInfrastructureBaseline(controller.signal)
+      .then((baseline) => {
         if (controller.signal.aborted) return;
-        setInfrastructure(items);
-        setInfrastructureState("ready");
-        setLayerError("infrastructure", undefined);
+        setInfrastructure(baseline.features);
+        setInfrastructureState(baseline.errors.length ? "degraded" : "ready");
+        setLayerError("infrastructure", baseline.errors.length ? baseline.errors.join(" · ") : undefined);
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
         setInfrastructureState("error");
-        setLayerError("infrastructure", error instanceof Error ? error.message : "OSM infrastructure unavailable");
+        setLayerError("infrastructure", error instanceof Error ? error.message : "Bundled infrastructure baseline unavailable");
       });
     return () => controller.abort();
-  }, [infrastructureLayer, infrastructureRetry, keylessCenter.latitude, keylessCenter.longitude, infrastructureRadiusKm, setLayerError]);
+  }, [infrastructureLayer, infrastructureRetry, setLayerError]);
 
 
 
@@ -712,13 +683,15 @@ export default function WorldSelectApp() {
     satelliteRendererRef.current?.sync({
       satellites,
       tleRecords,
+      catalog: satelliteCatalog,
       visible: viewMode === "earth" && satelliteLayer,
       selectedId: selected?.kind === "satellite" ? selected.id : null,
       isMobile,
       cameraHeight,
       time: selectedTime,
+      continuous: timeOffsetDays === 0 && spacePlaybackDays === 0,
     });
-  }, [satellites, tleRecords, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime]);
+  }, [satellites, tleRecords, satelliteCatalog, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays]);
 
 
 
@@ -809,7 +782,6 @@ export default function WorldSelectApp() {
   useEffect(() => {
     if (viewMode === "earth") return;
     earthquakeRendererRef.current?.clear();
-    satelliteRendererRef.current?.clear();
     aircraftRendererRef.current?.clear();
   }, [viewMode]);
 
