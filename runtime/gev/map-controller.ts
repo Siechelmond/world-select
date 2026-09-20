@@ -72,7 +72,9 @@ export function createMapController(input: {
     if (earthLayer) earthLayer.show = !in3d && (activeMode === "satellite" || activeMode === "nasa");
     if (groundLayer) groundLayer.show = !in3d && activeMode === "map";
     if (nasaLayer) nasaLayer.show = !in3d && activeMode === "nasa";
-    if (viewer.scene?.globe) viewer.scene.globe.show = !in3d;
+    // Keep globe + terrain beneath Google photoreal tiles. Coverage quality is
+    // not uniform worldwide, and ground-classified layers need a stable surface.
+    if (viewer.scene?.globe) viewer.scene.globe.show = true;
     viewer.scene?.requestRender?.();
   };
 

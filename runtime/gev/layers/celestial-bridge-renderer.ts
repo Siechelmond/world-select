@@ -69,6 +69,11 @@ function physicalScenePosition(
   return inertialToFixed(Cesium, inertialMeters, date);
 }
 
+function isRenderableCartesian(Cesium: any, value: any) {
+  if (!value || ![value.x, value.y, value.z].every(Number.isFinite)) return false;
+  return Cesium.Cartesian3.magnitudeSquared(value) > 1;
+}
+
 function bodyColor(name: string) {
   return name === "Mercury" ? "#a8a29e"
     : name === "Venus" ? "#eab308"
@@ -134,7 +139,8 @@ export function createCelestialBridgeRenderer(input: {
       // Keep the selected-time Earth as origin. This yields the planet's
       // heliocentric orbit translated into the current Earth-relative frame.
       const vector = earthRelative(sample, earth);
-      positions.push(physicalScenePosition(Cesium, vector, epoch));
+      const position = physicalScenePosition(Cesium, vector, epoch);
+      if (isRenderableCartesian(Cesium, position)) positions.push(position);
     }
 
     orbitCache.set(key, positions);
@@ -162,6 +168,10 @@ export function createCelestialBridgeRenderer(input: {
 
     const epoch = new Date(earth.entity.observedAt);
     const nextBodyIds = new Set<string>();
+    const cameraPosition = viewer.camera?.positionWC;
+    const occluder = cameraPosition
+      ? new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84, cameraPosition)
+      : null;
 
     for (const planet of args.planets) {
       if (planet.entity.name === "Earth") continue;
@@ -173,6 +183,8 @@ export function createCelestialBridgeRenderer(input: {
 
       const id = `bridge:${planet.entity.id}`;
       const position = physicalScenePosition(Cesium, vector, epoch);
+      if (!isRenderableCartesian(Cesium, position)) continue;
+      const horizonVisible = !occluder || occluder.isPointVisible(position);
       const radiusMeters = radiusKm * 1000;
       const selected = id === args.selectedId;
 
@@ -206,6 +218,7 @@ export function createCelestialBridgeRenderer(input: {
           id,
           position,
           ellipsoid: {
+            show: horizonVisible,
             radii: new Cesium.Cartesian3(radiusMeters, radiusMeters, radiusMeters),
             material: Cesium.Color.fromCssColorString(bodyColor(planet.entity.name)).withAlpha(0.96),
             outline: selected,
@@ -213,13 +226,15 @@ export function createCelestialBridgeRenderer(input: {
             outlineWidth: selected ? 2 : 1,
           },
           point: {
+            show: horizonVisible,
             pixelSize: selected ? 7 : 4,
             color: Cesium.Color.fromCssColorString(bodyColor(planet.entity.name)).withAlpha(0.62),
             outlineColor: Cesium.Color.WHITE.withAlpha(0.78),
             outlineWidth: selected ? 2 : 1,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            disableDepthTestDistance: 0,
           },
           label: {
+            show: horizonVisible,
             text: `${planet.entity.name.toUpperCase()} · LOCATOR`,
             font: '700 10px "Segoe UI", Arial, sans-serif',
             fillColor: Cesium.Color.fromCssColorString("#e2e8f0"),
@@ -227,12 +242,13 @@ export function createCelestialBridgeRenderer(input: {
             outlineWidth: 3,
             style: Cesium.LabelStyle.FILL_AND_OUTLINE,
             pixelOffset: new Cesium.Cartesian2(9, -9),
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            disableDepthTestDistance: 0,
           },
         });
       } else {
         item.position = new Cesium.ConstantPositionProperty(position);
         if (item.ellipsoid) {
+          item.ellipsoid.show = new Cesium.ConstantProperty(horizonVisible);
           item.ellipsoid.radii = new Cesium.ConstantProperty(
             new Cesium.Cartesian3(radiusMeters, radiusMeters, radiusMeters),
           );
@@ -240,7 +256,11 @@ export function createCelestialBridgeRenderer(input: {
           item.ellipsoid.outlineWidth = new Cesium.ConstantProperty(selected ? 2 : 1);
         }
         if (item.point) {
+          item.point.show = new Cesium.ConstantProperty(horizonVisible);
           item.point.pixelSize = new Cesium.ConstantProperty(selected ? 7 : 4);
+        }
+        if (item.label) {
+          item.label.show = new Cesium.ConstantProperty(horizonVisible);
         }
       }
     }
@@ -252,12 +272,16 @@ export function createCelestialBridgeRenderer(input: {
     const wantedOrbitIds = new Set<string>();
     if (args.showOrbits) {
       for (const planet of args.planets) {
+        // Earth's translated heliocentric path crosses Cartesian3.ZERO in this
+        // Earth-relative bridge frame. It belongs in Space/Solar, not here.
+        if (planet.entity.name === "Earth") continue;
         const periodDays = ORBIT_PERIOD_DAYS[planet.entity.name];
         if (!periodDays) continue;
 
         const orbitId = `bridge-orbit:${planet.entity.name.toLowerCase()}`;
         wantedOrbitIds.add(orbitId);
         const positions = orbitPositions(planet.entity.name, periodDays, earth);
+        if (positions.length < 2) continue;
         const existing = viewer.entities.getById(orbitId);
 
         if (!existing) {

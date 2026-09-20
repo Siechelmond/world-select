@@ -2,6 +2,8 @@
 
 import { useMemo, useRef, useState, type WheelEvent } from "react";
 import type { SpatialEntity } from "@/lib/spatial";
+import type { SpaceLaunch } from "@/lib/launches";
+import { SATELLITE_CLASSES, satelliteClassForEntity } from "@/lib/satellite-style";
 import {
   getPlanetMoons,
   moonEntity,
@@ -17,6 +19,8 @@ type Props = {
   satellites: SpatialEntity[];
   sun: SpatialEntity;
   time: Date;
+  launches: SpaceLaunch[];
+  launchState: "idle" | "loading" | "ready" | "degraded" | "error";
   onSelect: (entity: SpatialEntity) => void;
   onReturnEarth: () => void;
   earthHandoff: { latitude: number; longitude: number; height: number } | null;
@@ -143,7 +147,7 @@ function deterministicGalaxyClouds() {
   return clouds;
 }
 
-export default function SpaceExplorer({ planets, satellites, sun, time, onSelect, onReturnEarth, earthHandoff }: Props) {
+export default function SpaceExplorer({ planets, satellites, sun, time, launches, launchState, onSelect, onReturnEarth, earthHandoff }: Props) {
   const [level, setLevel] = useState<SpaceLevel>("orbit");
   const [focusedPlanet, setFocusedPlanet] = useState<string>("Earth");
   const lastWheelAt = useRef(0);
@@ -218,7 +222,10 @@ export default function SpaceExplorer({ planets, satellites, sun, time, onSelect
       </div>
 
       {level === "orbit" && (
-        <OrbitView satellites={satellites} onSelect={onSelect} onReturnEarth={onReturnEarth} />
+        <>
+          <OrbitView satellites={satellites} onSelect={onSelect} onReturnEarth={onReturnEarth} />
+          <KeylessLaunchPanel launches={launches} state={launchState} />
+        </>
       )}
       {level === "planet" && planet && (
         <PlanetSystemView planet={planet} time={time} onSelect={onSelect} onBack={() => setLevel("solar")} />
@@ -226,6 +233,7 @@ export default function SpaceExplorer({ planets, satellites, sun, time, onSelect
       {level === "solar" && (
         <>
           <SolarSystemView planets={planets} sun={sun} onSelect={onSelect} onOpenPlanet={openPlanet} />
+          <KeylessLaunchPanel launches={launches} state={launchState} />
           <div className="spaceMissionFacts glass"><strong>SPACECRAFT</strong><span><b>JWST</b> — Sun–Earth L2 region, about 1.5 million km from Earth. Context position, not live telemetry.</span></div>
         </>
       )}
@@ -234,6 +242,33 @@ export default function SpaceExplorer({ planets, satellites, sun, time, onSelect
         <div className="spaceMissionFacts outerFacts glass"><strong>DEEP-SPACE PROBES</strong><span><b>New Horizons</b> — ~9.5 billion km from Earth in June 2026, beyond Pluto and the classical Kuiper Belt.</span><span><b>Voyager 1 / 2</b> — both in interstellar space; Voyager 1 is the most distant human-made object.</span></div>
       </>}
       {level === "galaxy" && <GalaxyView onSolar={() => setLevel("solar")} />}
+    </div>
+  );
+}
+
+function KeylessLaunchPanel({ launches, state }: {
+  launches: SpaceLaunch[];
+  state: "idle" | "loading" | "ready" | "degraded" | "error";
+}) {
+  const recent = [...launches]
+    .filter((item) => item.net)
+    .sort((a, b) => Date.parse(b.net ?? "") - Date.parse(a.net ?? ""))
+    .slice(0, 6);
+
+  return (
+    <div className="spaceMissionFacts keylessLaunches glass">
+      <strong>KEYLESS SPACE · LAUNCH LIBRARY 2</strong>
+      {state === "loading" && <span>Loading recent launches…</span>}
+      {state === "error" && <span>Launch feed unavailable · satellite and planetary views remain active</span>}
+      {state === "degraded" && !recent.length && <span>No recent launch records returned</span>}
+      {recent.map((launch) => (
+        <span key={launch.id}>
+          <b>{launch.name}</b>
+          {" · "}{launch.provider ?? "provider unknown"}
+          {launch.location ? ` · ${launch.location}` : ""}
+          {launch.net ? ` · ${new Date(launch.net).toLocaleString()}` : ""}
+        </span>
+      ))}
     </div>
   );
 }
@@ -285,8 +320,11 @@ function OrbitView({ satellites, onSelect, onReturnEarth }: {
           const x = cx + Math.cos(angle) * radius;
           const y = cy + Math.sin(angle) * radius * 0.62;
           const isIss = /ISS/i.test(item.name);
+          const klass = satelliteClassForEntity(item);
+          const spec = SATELLITE_CLASSES[klass];
+          const radius = isIss ? 5.5 : klass === "station" ? 4.5 : klass === "geo" ? 3.4 : klass === "nav" ? 3 : 2.4;
           return <g key={item.id} className="orbitObject" onClick={() => onSelect(item)}>
-            <circle cx={x} cy={y} r={isIss ? 5.5 : 2.4} className={isIss ? "orbitSatellite iss" : "orbitSatellite"} />
+            <circle cx={x} cy={y} r={radius} fill={spec.color} className={isIss ? "orbitSatellite iss" : "orbitSatellite"} />
             {isIss && <text x={x + 9} y={y - 8} className="orbitIssLabel">ISS</text>}
           </g>;
         })}
@@ -294,6 +332,7 @@ function OrbitView({ satellites, onSelect, onReturnEarth }: {
       <div className="orbitFrameLegend glass">
         <strong>LIVE ORBIT FRAME</strong>
         <span>{visible.length} of {satellites.length} propagated objects rendered</span>
+        <small>STATION warm white · NAV cyan · GEO violet · STARLINK green · ONEWEB pink · IRIDIUM orange</small>
         <small>CelesTrak TLE + SGP4 · display projection compressed for readability</small>
       </div>
     </div>

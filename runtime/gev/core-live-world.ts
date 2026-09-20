@@ -1,5 +1,5 @@
 import { fetchEarthquakes } from "@/lib/usgs";
-import { fetchStationTles, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
+import { fetchStationTles, type SatelliteCatalog, type SatelliteFeedMeta, type TleRecord } from "@/lib/celestrak";
 import { fetchAircraftSnapshot, type AircraftFeedMeta, type AircraftQuery } from "@/lib/aircraft";
 import { fetchMilitarySnapshot, type MilitaryFeedMeta } from "@/lib/military";
 import type { SpatialEntity } from "@/lib/spatial";
@@ -19,7 +19,7 @@ type LayerCell<T, M = never> = {
 
 export type CoreLiveWorldSnapshot = {
   earthquakes: LayerCell<SpatialEntity[]>;
-  satellites: LayerCell<TleRecord[]>;
+  satellites: LayerCell<TleRecord[], SatelliteFeedMeta>;
   aircraft: LayerCell<SpatialEntity[], AircraftFeedMeta>;
   military: LayerCell<SpatialEntity[], MilitaryFeedMeta>;
 };
@@ -65,7 +65,7 @@ function errorMessage(error: unknown) {
 export function createCoreLiveWorld() {
   let snapshot: CoreLiveWorldSnapshot = {
     earthquakes: cell<SpatialEntity[]>([]),
-    satellites: cell<TleRecord[]>([]),
+    satellites: cell<TleRecord[], SatelliteFeedMeta>([]),
     aircraft: cell<SpatialEntity[], AircraftFeedMeta>([]),
     military: cell<SpatialEntity[], MilitaryFeedMeta>([]),
   };
@@ -149,12 +149,16 @@ export function createCoreLiveWorld() {
     ...moduleBase("satellites"),
     async update({ signal }) {
       await withFailure("satellites", async () => {
-        const data = await fetchStationTles(signal, satelliteCatalog);
+        const result = await fetchStationTles(signal, satelliteCatalog);
         if (signal.aborted) return;
+        const criticalDenseFailure = result.meta.catalog === "dense" && result.meta.failedGroups.includes("STARLINK");
         patch("satellites", {
-          data,
-          status: data.length ? "ready" : "error",
-          error: data.length ? undefined : "CelesTrak returned no satellite elements",
+          data: result.records,
+          meta: result.meta,
+          status: result.records.length ? (criticalDenseFailure ? "degraded" : "ready") : "error",
+          error: result.records.length
+            ? (criticalDenseFailure ? "STARLINK source unavailable in DENSE catalog" : undefined)
+            : "CelesTrak returned no satellite elements",
           updatedAt: Date.now(),
         });
       });

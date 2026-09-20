@@ -5,16 +5,26 @@ export type GoogleStreetCoverage = {
   radiusMeters: number;
 };
 
+export type GoogleStreetViewLibrary = {
+  google: any;
+  StreetViewService: any;
+  StreetViewPanorama: any;
+  StreetViewStatus: any;
+  StreetViewSource: any;
+  StreetViewPreference: any;
+};
+
 declare global {
   interface Window {
     google?: any;
     __worldSelectGoogleMapsPromise?: Promise<any>;
+    __worldSelectGoogleStreetPromise?: Promise<GoogleStreetViewLibrary>;
     gm_authFailure?: () => void;
   }
 }
 
-const GOOGLE_MAPS_LOAD_TIMEOUT_MS = 6_000;
-const STREET_COVERAGE_TIMEOUT_MS = 4_500;
+const GOOGLE_MAPS_LOAD_TIMEOUT_MS = 8_000;
+const STREET_COVERAGE_TIMEOUT_MS = 5_000;
 const STREET_SEARCH_RADII_M = [120, 250, 500];
 
 function timeoutError(label: string, timeoutMs: number) {
@@ -31,76 +41,98 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
-async function ensureStreetViewLibrary(google: any): Promise<any> {
-  if (!google?.maps) throw new Error('Google Maps loaded without maps library');
-
-  if (typeof google.maps.StreetViewService === 'function' && typeof google.maps.StreetViewPanorama === 'function') {
-    return google;
-  }
-
-  if (typeof google.maps.importLibrary === 'function') {
-    const streetView = await google.maps.importLibrary('streetView');
-    if (typeof google.maps.StreetViewService !== 'function' && typeof streetView?.StreetViewService === 'function') {
-      google.maps.StreetViewService = streetView.StreetViewService;
-    }
-    if (typeof google.maps.StreetViewPanorama !== 'function' && typeof streetView?.StreetViewPanorama === 'function') {
-      google.maps.StreetViewPanorama = streetView.StreetViewPanorama;
-    }
-    if (!google.maps.StreetViewStatus && streetView?.StreetViewStatus) google.maps.StreetViewStatus = streetView.StreetViewStatus;
-    if (!google.maps.StreetViewSource && streetView?.StreetViewSource) google.maps.StreetViewSource = streetView.StreetViewSource;
-    if (!google.maps.StreetViewPreference && streetView?.StreetViewPreference) google.maps.StreetViewPreference = streetView.StreetViewPreference;
-  }
-
-  if (typeof google.maps.StreetViewService !== 'function' || typeof google.maps.StreetViewPanorama !== 'function') {
-    throw new Error('Google Street View library is unavailable');
-  }
-
-  return google;
-}
-
 export function loadGoogleMaps(apiKey: string): Promise<any> {
+  const key = String(apiKey || '').trim();
+  if (!key) return Promise.reject(new Error('Google Maps API key is not configured'));
+  if (window.google?.maps) return Promise.resolve(window.google);
   if (window.__worldSelectGoogleMapsPromise) return window.__worldSelectGoogleMapsPromise;
 
-  const loadPromise = window.google?.maps
-    ? Promise.resolve(window.google)
-    : new Promise<any>((resolve, reject) => {
-        const previousAuthFailure = window.gm_authFailure;
-        window.gm_authFailure = () => {
-          previousAuthFailure?.();
-          reject(new Error('Google Maps authentication/referrer check failed'));
-        };
+  const promise = new Promise<any>((resolve, reject) => {
+    const previousAuthFailure = window.gm_authFailure;
+    const finishAuthFailure = () => {
+      try { previousAuthFailure?.(); } catch {}
+      reject(new Error('Google Maps authentication/referrer check failed'));
+    };
+    window.gm_authFailure = finishAuthFailure;
 
-        const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
-        if (existing) {
-          existing.addEventListener('load', () => window.google?.maps ? resolve(window.google) : reject(new Error('Google Maps loaded without maps library')), { once: true });
-          existing.addEventListener('error', () => reject(new Error('Google Maps JavaScript API could not be loaded')), { once: true });
-          return;
-        }
+    const loaded = () => {
+      if (window.gm_authFailure === finishAuthFailure) window.gm_authFailure = previousAuthFailure;
+      if (window.google?.maps) resolve(window.google);
+      else reject(new Error('Google Maps loaded without maps library'));
+    };
+    const failed = () => {
+      if (window.gm_authFailure === finishAuthFailure) window.gm_authFailure = previousAuthFailure;
+      reject(new Error('Google Maps JavaScript API could not be loaded'));
+    };
 
-        const script = document.createElement('script');
-        script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly&loading=async&libraries=streetView`;
-        script.async = true;
-        script.defer = true;
-        script.dataset.worldSelectGoogleMaps = '1';
-        script.onload = () => window.google?.maps ? resolve(window.google) : reject(new Error('Google Maps loaded without maps library'));
-        script.onerror = () => reject(new Error('Google Maps JavaScript API could not be loaded'));
-        document.head.appendChild(script);
-      });
+    const existing = document.querySelector<HTMLScriptElement>('script[data-world-select-google-maps="1"]');
+    if (existing) {
+      if (window.google?.maps) {
+        loaded();
+        return;
+      }
+      existing.addEventListener('load', loaded, { once: true });
+      existing.addEventListener('error', failed, { once: true });
+      return;
+    }
 
-  window.__worldSelectGoogleMapsPromise = withTimeout(
-    loadPromise.then((google) => ensureStreetViewLibrary(google)),
-    GOOGLE_MAPS_LOAD_TIMEOUT_MS,
-    'Google Maps + Street View load',
-  ).catch((reason) => {
-    window.__worldSelectGoogleMapsPromise = undefined;
-    throw reason;
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async`;
+    script.async = true;
+    script.defer = true;
+    script.dataset.worldSelectGoogleMaps = '1';
+    script.addEventListener('load', loaded, { once: true });
+    script.addEventListener('error', failed, { once: true });
+    document.head.appendChild(script);
   });
 
+  window.__worldSelectGoogleMapsPromise = withTimeout(
+    promise,
+    GOOGLE_MAPS_LOAD_TIMEOUT_MS,
+    'Google Maps JavaScript API',
+  ).catch((error) => {
+    window.__worldSelectGoogleMapsPromise = undefined;
+    throw error;
+  });
   return window.__worldSelectGoogleMapsPromise;
 }
 
+export function loadGoogleStreetView(apiKey: string): Promise<GoogleStreetViewLibrary> {
+  if (window.__worldSelectGoogleStreetPromise) return window.__worldSelectGoogleStreetPromise;
+
+  window.__worldSelectGoogleStreetPromise = loadGoogleMaps(apiKey)
+    .then(async (google) => {
+      if (typeof google?.maps?.importLibrary !== 'function') {
+        throw new Error('Google Maps importLibrary is unavailable');
+      }
+      const library = await google.maps.importLibrary('streetView');
+      const StreetViewService = library?.StreetViewService ?? google.maps.StreetViewService;
+      const StreetViewPanorama = library?.StreetViewPanorama ?? google.maps.StreetViewPanorama;
+      const StreetViewStatus = library?.StreetViewStatus ?? google.maps.StreetViewStatus;
+      const StreetViewSource = library?.StreetViewSource ?? google.maps.StreetViewSource;
+      const StreetViewPreference = library?.StreetViewPreference ?? google.maps.StreetViewPreference;
+      if (typeof StreetViewService !== 'function' || typeof StreetViewPanorama !== 'function') {
+        throw new Error('Google Street View library loaded without constructors');
+      }
+      return {
+        google,
+        StreetViewService,
+        StreetViewPanorama,
+        StreetViewStatus,
+        StreetViewSource,
+        StreetViewPreference,
+      };
+    })
+    .catch((error) => {
+      window.__worldSelectGoogleStreetPromise = undefined;
+      throw error;
+    });
+
+  return window.__worldSelectGoogleStreetPromise;
+}
+
 function requestStreetPanorama(
-  google: any,
+  street: GoogleStreetViewLibrary,
   service: any,
   point: { latitude: number; longitude: number },
   radiusMeters: number,
@@ -110,12 +142,12 @@ function requestStreetPanorama(
       location: { lat: point.latitude, lng: point.longitude },
       radius: radiusMeters,
     };
-    if (google.maps.StreetViewPreference?.NEAREST) request.preference = google.maps.StreetViewPreference.NEAREST;
-    if (google.maps.StreetViewSource?.OUTDOOR) request.source = google.maps.StreetViewSource.OUTDOOR;
+    if (street.StreetViewPreference?.NEAREST) request.preference = street.StreetViewPreference.NEAREST;
+    if (street.StreetViewSource?.OUTDOOR) request.source = street.StreetViewSource.OUTDOOR;
 
-    service.getPanorama(request, (data: any, status: any) => {
-      const ok = status === google.maps.StreetViewStatus?.OK || String(status) === 'OK';
-      const zero = status === google.maps.StreetViewStatus?.ZERO_RESULTS || String(status) === 'ZERO_RESULTS';
+    const settle = (data: any, status: any) => {
+      const ok = status === street.StreetViewStatus?.OK || String(status) === 'OK';
+      const zero = status === street.StreetViewStatus?.ZERO_RESULTS || String(status) === 'ZERO_RESULTS';
       if (zero) {
         resolve(null);
         return;
@@ -136,7 +168,16 @@ function requestStreetPanorama(
         longitude: typeof latLng?.lng === 'function' ? latLng.lng() : point.longitude,
         radiusMeters,
       });
-    });
+    };
+
+    try {
+      const maybePromise = service.getPanorama(request, settle);
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        maybePromise.then((response: any) => settle(response?.data, response?.status ?? street.StreetViewStatus?.OK)).catch(reject);
+      }
+    } catch (error) {
+      reject(error);
+    }
   }), STREET_COVERAGE_TIMEOUT_MS, `Google Street View ${radiusMeters} m coverage check`);
 }
 
@@ -145,20 +186,18 @@ export async function findGoogleStreetCoverage(
   point: { latitude: number; longitude: number },
   radiusMeters = 120,
 ): Promise<GoogleStreetCoverage | null> {
-  if (!apiKey) return null;
-  const google = await loadGoogleMaps(apiKey);
-  const service = new google.maps.StreetViewService();
-  const radii = Array.from(new Set([radiusMeters, ...STREET_SEARCH_RADII_M])).filter((radius) => radius > 0 && radius <= 500);
+  const street = await loadGoogleStreetView(apiKey);
+  const service = new street.StreetViewService();
+  const radii = Array.from(new Set([radiusMeters, ...STREET_SEARCH_RADII_M]))
+    .filter((radius) => Number.isFinite(radius) && radius > 0 && radius <= 500);
 
   let lastError: Error | null = null;
   for (const radius of radii) {
     try {
-      const result = await requestStreetPanorama(google, service, point, radius);
+      const result = await requestStreetPanorama(street, service, point, radius);
       if (result) return result;
     } catch (reason) {
       lastError = reason instanceof Error ? reason : new Error('Google Street View coverage check failed');
-      // Authentication, quota and request-denied errors will not improve with a
-      // wider radius. Fail fast so KartaView can take over immediately.
       if (/auth|referer|denied|quota|billing|invalid/i.test(lastError.message)) throw lastError;
     }
   }

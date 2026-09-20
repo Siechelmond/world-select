@@ -11,12 +11,14 @@ import { createTrafficController } from "@/runtime/gev/layers/traffic-controller
 import { createPointLayerRenderer } from "@/runtime/gev/layers/point-layer-renderer";
 import { createInfrastructureRenderer } from "@/runtime/gev/layers/infrastructure-renderer";
 import { createCelestialBridgeRenderer } from "@/runtime/gev/layers/celestial-bridge-renderer";
-import { propagateTles, type SatelliteCatalog, type TleRecord } from "@/lib/celestrak";
+import { propagateTles, type SatelliteCatalog, type SatelliteFeedMeta, type TleRecord } from "@/lib/celestrak";
+import { SATELLITE_FILTERS, tallySatelliteClasses, type SatelliteFilter } from "@/lib/satellite-style";
 import type { AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
-import { loadGoogleMaps } from "@/lib/google-street";
+import { findGoogleStreetCoverage, loadGoogleStreetView } from "@/lib/google-street";
 import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
+import { fetchRecentLaunches, type SpaceLaunch } from "@/lib/launches";
 import SpaceExplorer from "@/components/SpaceExplorer";
 import { createWorldViewer, type WorldMapMode } from "@/lib/cesium-viewer";
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
@@ -51,6 +53,7 @@ const MOBILE_LIVE_MOTION_TICK_MS = 2_000;
 const UI_CLOCK_TICK_MS = 10_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
 const GROUND_HEIGHT_M = 120_000;
+const CELESTIAL_CONTEXT_HEIGHT_M = 6_500_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const EVENT_FILTERS = ["all", "fire", "storm", "volcano", "flood", "ice", "other"] as const;
 const RADIO_FILTERS = ["all", "news", "talk", "weather", "public-safety", "aviation-marine", "traffic-transit", "music", "other"] as const;
@@ -74,6 +77,7 @@ const CESIUM_ION_TOKEN = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN ?? "";
 const SEN_ISS_LIVE_VIDEO_ID = process.env.NEXT_PUBLIC_SEN_ISS_LIVE_VIDEO_ID ?? "fO9e9jnhYK8";
 export default function WorldSelectApp() {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const viewerRef = useRef<any>(null);
   const entityMapRef = useRef(new Map<string, SpatialEntity>());
   const earthquakeRendererRef = useRef<ReturnType<typeof createEarthquakeRenderer> | null>(null);
@@ -99,6 +103,8 @@ export default function WorldSelectApp() {
   const [earthquakeLayer, setEarthquakeLayer] = useState(true);
   const [satelliteLayer, setSatelliteLayer] = useState(true);
   const [satelliteCatalog, setSatelliteCatalog] = useState<SatelliteCatalog>("core");
+  const [satelliteFilter, setSatelliteFilter] = useState<SatelliteFilter>("all");
+  const [satelliteMeta, setSatelliteMeta] = useState<SatelliteFeedMeta | null>(null);
   const [aircraftLayer, setAircraftLayer] = useState(true);
   const [militaryLayer, setMilitaryLayer] = useState(true);
   const [trafficLayer, setTrafficLayer] = useState(true);
@@ -130,6 +136,8 @@ export default function WorldSelectApp() {
   const [radioState, setRadioState] = useState<LoadState>("idle");
   const [infrastructureState, setInfrastructureState] = useState<LoadState>("idle");
   const [spaceKp, setSpaceKp] = useState<number | null>(null);
+  const [spaceLaunches, setSpaceLaunches] = useState<SpaceLaunch[]>([]);
+  const [spaceLaunchState, setSpaceLaunchState] = useState<LoadState>("idle");
   const [eventRetry, setEventRetry] = useState(0);
   const [auroraRetry, setAuroraRetry] = useState(0);
   const [weatherRetry, setWeatherRetry] = useState(0);
@@ -176,6 +184,24 @@ export default function WorldSelectApp() {
     [timeOffsetDays, spacePlaybackDays, nowTick],
   );
   const satellites = useMemo(() => propagateTles(tleRecords, selectedTime), [tleRecords, selectedTime]);
+  const satelliteClassCounts = useMemo(() => tallySatelliteClasses(satellites), [satellites]);
+
+  useEffect(() => {
+    if (viewMode !== "space") return;
+    const controller = new AbortController();
+    setSpaceLaunchState("loading");
+    fetchRecentLaunches(controller.signal)
+      .then((items) => {
+        if (controller.signal.aborted) return;
+        setSpaceLaunches(items);
+        setSpaceLaunchState(items.length ? "ready" : "degraded");
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setSpaceLaunchState("error");
+      });
+    return () => controller.abort();
+  }, [viewMode]);
   const planets = useMemo(() => computePlanetPositions(selectedTime), [selectedTime]);
   const sun = useMemo(() => sunEntity(selectedTime), [selectedTime]);
   const aircraftAvailable = viewMode === "earth" && timeOffsetDays === 0 && spacePlaybackDays === 0;
@@ -262,6 +288,7 @@ export default function WorldSelectApp() {
         followSelected: followAircraft,
         nowMs,
         cameraHeight,
+        mapMode,
       });
       const viewer = viewerRef.current;
       const Cesium = window.Cesium;
@@ -286,6 +313,7 @@ export default function WorldSelectApp() {
     followAircraft,
     isMobile,
     cameraHeight,
+    mapMode,
   ]);
 
   useEffect(() => {
@@ -311,6 +339,7 @@ export default function WorldSelectApp() {
       setLayerError("earthquakes", snapshot.earthquakes.error);
 
       setTleRecords(snapshot.satellites.data);
+      setSatelliteMeta(snapshot.satellites.meta);
       setSatelliteState(snapshot.satellites.status);
       setLayerError("satellites", snapshot.satellites.error);
 
@@ -690,8 +719,9 @@ export default function WorldSelectApp() {
       cameraHeight,
       time: selectedTime,
       continuous: timeOffsetDays === 0 && spacePlaybackDays === 0,
+      filter: satelliteFilter,
     });
-  }, [satellites, tleRecords, satelliteCatalog, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays]);
+  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays]);
 
 
 
@@ -703,8 +733,9 @@ export default function WorldSelectApp() {
       followSelected: followAircraft,
       nowMs: nowTick,
       cameraHeight,
+      mapMode,
     });
-  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, cesiumReady, nowTick, cameraHeight, selected?.id, selected?.kind, followAircraft]);
+  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, cesiumReady, nowTick, cameraHeight, mapMode, selected?.id, selected?.kind, followAircraft]);
 
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
@@ -740,7 +771,7 @@ export default function WorldSelectApp() {
   useEffect(() => {
     celestialBridgeRendererRef.current?.sync({
       planets,
-      visible: viewMode === "earth",
+      visible: viewMode === "earth" && cameraHeight >= CELESTIAL_CONTEXT_HEIGHT_M,
       cameraHeight,
       selectedId: selected?.kind === "celestial-body" ? selected.id : null,
       showOrbits: planetOrbits,
@@ -775,8 +806,9 @@ export default function WorldSelectApp() {
       infrastructure,
       viewMode === "earth" && infrastructureLayer,
       new Set(infraFilters),
+      mapMode,
     );
-  }, [infrastructure, infrastructureLayer, infraFilters, viewMode, cesiumReady]);
+  }, [infrastructure, infrastructureLayer, infraFilters, viewMode, mapMode, cesiumReady]);
 
 
   useEffect(() => {
@@ -884,7 +916,7 @@ export default function WorldSelectApp() {
         return;
       }
 
-      const explicitQuery = query.includes(",") || /^[+-]?\d+(?:\.\d+)?\s*[,;]\s*[+-]?\d+(?:\.\d+)?$/.test(query);
+      const explicitQuery = /^[+-]?\d+(?:\.\d+)?\s*[,;]\s*[+-]?\d+(?:\.\d+)?$/.test(query);
       if (results.length === 1 || explicitQuery) {
         setSearchResults(results.length > 1 ? results : []);
         goToPlace(results[0], results.length > 1);
@@ -898,6 +930,15 @@ export default function WorldSelectApp() {
       setSearchMessage(error instanceof Error ? error.message : "Place search unavailable");
     }
   }, [searchQuery, goToPlace]);
+
+  const clearSearch = useCallback(() => {
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearchMessage("");
+    setSearchState("idle");
+    setSearchTarget(null);
+    window.requestAnimationFrame(() => searchInputRef.current?.focus());
+  }, []);
 
   const focusSelected = useCallback(() => {
     if (!selected || selected.kind === "celestial-body" || !viewerRef.current || !window.Cesium) return;
@@ -943,17 +984,14 @@ export default function WorldSelectApp() {
     setStreetPhotos([]);
     setLayerError("street");
 
-    setStreetProvider("google");
     if (GOOGLE_MAPS_API_KEY) {
+      setStreetProvider("google");
       setStreetState("loading");
       setStreetNotice(`Google Street View · searching near ${streetPoint.latitude.toFixed(5)}, ${streetPoint.longitude.toFixed(5)}`);
     } else {
-      const message = "Google Street View is not configured for this preview";
-      setStreetState("error");
-      setStreetNotice(message);
-      setLayerError("street", message);
+      loadKartaViewStreet("Google Street View is not configured for this preview · using KartaView");
     }
-  }, [viewMode, setLayerError, streetPoint.latitude, streetPoint.longitude]);
+  }, [viewMode, setLayerError, streetPoint.latitude, streetPoint.longitude, loadKartaViewStreet]);
 
   const handleGoogleStreetReady = useCallback(() => {
     setStreetState("ready");
@@ -962,10 +1000,8 @@ export default function WorldSelectApp() {
   }, [setLayerError]);
 
   const handleGoogleStreetFallback = useCallback((message: string) => {
-    setStreetState("error");
-    setStreetNotice(message);
-    setLayerError("street", message);
-  }, [setLayerError]);
+    loadKartaViewStreet(`${message} · using KartaView fallback`);
+  }, [loadKartaViewStreet]);
 
   const handleGoogleStreetPosition = useCallback((point: EarthPoint) => {
     setStreetTarget(point);
@@ -1031,6 +1067,8 @@ export default function WorldSelectApp() {
         satellites={satellites}
         sun={sun}
         time={selectedTime}
+        launches={spaceLaunches}
+        launchState={spaceLaunchState}
         onSelect={selectEntity}
         onReturnEarth={returnToEarthFromSpace}
         earthHandoff={earthHandoff}
@@ -1048,12 +1086,18 @@ export default function WorldSelectApp() {
 
       {viewMode === "earth" && <div className="mapNav glass">
         <form className="placeSearch" onSubmit={runPlaceSearch}>
-          <input
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search city, address or coordinates"
-            aria-label="Search city, address or coordinates"
-          />
+          <div className="placeSearchField">
+            <input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search city, address or coordinates"
+              aria-label="Search city, address or coordinates"
+            />
+            {(searchQuery || searchResults.length > 0 || searchMessage || searchTarget) && (
+              <button type="button" className="searchClear" onClick={clearSearch} aria-label="Clear search">×</button>
+            )}
+          </div>
           <button type="submit" disabled={searchState === "loading"}>{searchState === "loading" ? "…" : "GO"}</button>
         </form>
         <div className="orientationControls" role="group" aria-label="Map orientation">
@@ -1080,11 +1124,40 @@ export default function WorldSelectApp() {
         {!GOOGLE_MAPS_API_KEY && <div className="mapModeNotice">Google Street View is not configured on this preview. KartaView remains available manually.</div>}
         {threeDError && <div className="mapModeNotice">{threeDError}</div>}
         <LayerToggle checked={earthquakeLayer} onChange={toggleEarthquakeLayer} onRetry={() => retryLayer("earthquakes")} title="Earthquakes" subtitle="USGS · recent M2.5+ events" state={earthquakeState} count={earthquakes.length} disabled={viewMode !== "earth"} error={layerErrors.earthquakes} />
-        <LayerToggle checked={satelliteLayer} onChange={toggleSatelliteLayer} onRetry={() => retryLayer("satellites")} title="Satellites" subtitle={`CelesTrak ${satelliteCatalog.toUpperCase()} · SGP4 · real altitude · perspective-scaled`} state={satelliteState} count={satellites.length} disabled={viewMode !== "earth"} error={layerErrors.satellites} />
+        <LayerToggle
+          checked={satelliteLayer}
+          onChange={toggleSatelliteLayer}
+          onRetry={() => retryLayer("satellites")}
+          title="Satellites"
+          subtitle={satelliteCatalog === "dense"
+            ? `CelesTrak DENSE · SGP4 · Starlink ${satelliteClassCounts.starlink}${satelliteMeta?.failedGroups.includes("STARLINK") ? " · SOURCE FAILED" : ""}`
+            : "CelesTrak CORE · SGP4 · real altitude · horizon-aware"}
+          state={satelliteState}
+          count={satellites.length}
+          disabled={viewMode !== "earth"}
+          error={layerErrors.satellites}
+        />
         <div className="satelliteCatalogSwitch" role="group" aria-label="Satellite catalog">
-          <button className={satelliteCatalog === "core" ? "active" : ""} onClick={() => setSatelliteCatalog("core")}>CORE</button>
+          <button className={satelliteCatalog === "core" ? "active" : ""} onClick={() => { setSatelliteCatalog("core"); setSatelliteFilter("all"); }}>CORE</button>
           <button className={satelliteCatalog === "dense" ? "active" : ""} onClick={() => setSatelliteCatalog("dense")}>DENSE</button>
         </div>
+        {satelliteLayer && <div className="filterChips satelliteFilters">
+          {SATELLITE_FILTERS.map((filter) => {
+            const count = filter === "all" ? satellites.length : satelliteClassCounts[filter];
+            if (filter !== "all" && count === 0 && satelliteCatalog === "core" && ["starlink","oneweb","iridium"].includes(filter)) return null;
+            return <button
+              key={filter}
+              className={satelliteFilter === filter ? "active" : ""}
+              onClick={() => setSatelliteFilter(filter)}
+            >{filter.toUpperCase()} {count}</button>;
+          })}
+        </div>}
+        {satelliteCatalog === "dense" && satelliteMeta && <div className="satelliteSourceStatus">
+          <span>STARLINK {satelliteMeta.groupCounts.STARLINK ?? satelliteClassCounts.starlink}</span>
+          <span>ONEWEB {satelliteMeta.groupCounts.ONEWEB ?? satelliteClassCounts.oneweb}</span>
+          <span>IRIDIUM {satelliteMeta.groupCounts["IRIDIUM-NEXT"] ?? satelliteClassCounts.iridium}</span>
+          {satelliteMeta.failedGroups.length > 0 && <strong>FAILED: {satelliteMeta.failedGroups.join(", ")}</strong>}
+        </div>}
         <LayerToggle checked={aircraftLayer} onChange={toggleAircraftLayer} onRetry={() => retryLayer("aircraft")} title="Aircraft" subtitle={aircraftAvailable ? `ADS-B · ${aircraftMeta?.provider ?? "adsb.lol / OpenSky"} · stable coverage · all ${renderedAircraft.length} contacts rendered` : "NOW only"} state={aircraftState} count={aircraftAvailable ? renderedAircraft.length : 0} disabled={!aircraftAvailable} error={layerErrors.aircraft} />
         <LayerToggle checked={militaryLayer} onChange={toggleMilitaryLayer} onRetry={() => retryLayer("military")} title="Military" subtitle={aircraftAvailable ? `ADSB.lol · global military snapshot · ${militaryMeta?.stale ? "last-good" : "live"}` : "NOW only"} state={militaryState} count={aircraftAvailable ? military.length : 0} disabled={!aircraftAvailable} error={layerErrors.military} />
         <LayerToggle checked={trafficLayer} onChange={setTrafficLayer} onRetry={() => retryLayer("traffic")} title="Traffic" subtitle="AUTO near ground · OSM roads + modeled vehicles · TomTom when available" state={trafficState} count={trafficVehicleCount} disabled={viewMode !== "earth"} error={layerErrors.traffic} />
@@ -1099,14 +1172,14 @@ export default function WorldSelectApp() {
           <small>{viewCenter.latitude.toFixed(3)}, {viewCenter.longitude.toFixed(3)} · Open-Meteo</small>
         </div>}
         <div className="layerGroupTitle">INFRASTRUCTURE</div>
-        <LayerToggle checked={infrastructureLayer} onChange={setInfrastructureLayer} onRetry={() => setInfrastructureRetry((v) => v + 1)} title="Infrastructure" subtitle={infrastructure.length ? "OSM · mapped infrastructure in this area" : (cameraHeight > 500_000 ? "OSM · zoom in to load local infrastructure" : "OSM · no mapped infrastructure in this area")} state={infrastructureState} count={infrastructure.length} disabled={viewMode !== "earth"} error={layerErrors.infrastructure} />
+        <LayerToggle checked={infrastructureLayer} onChange={setInfrastructureLayer} onRetry={() => setInfrastructureRetry((v) => v + 1)} title="Infrastructure" subtitle={infrastructure.length ? "ws-donor · bundled infrastructure baseline" : "ws-donor · bundled baseline unavailable"} state={infrastructureState} count={infrastructure.length} disabled={viewMode !== "earth"} error={layerErrors.infrastructure} />
         {infrastructureLayer && <div className="filterChips">{INFRA_FILTERS.map((filter) => <button key={filter} className={infraFilters.includes(filter) ? "active" : ""} onClick={() => setInfraFilters((current) => current.includes(filter) ? current.filter((value) => value !== filter) : [...current, filter])}>{filter.toUpperCase()} {infrastructureCounts[filter]}</button>)}</div>}
         <div className="layerGroupTitle">UTILITIES</div>
         <LayerToggle checked={radioLayer} onChange={setRadioLayer} onRetry={() => setRadioRetry((v) => v + 1)} title="Radio" subtitle="Radio Browser · geolocated HTTPS stations" state={radioState} count={filteredRadio.length} disabled={viewMode !== "earth"} error={layerErrors.radio} />
         {radioLayer && <div className="filterChips">{RADIO_FILTERS.map((filter) => <button key={filter} className={radioFilter === filter ? "active" : ""} onClick={() => setRadioFilter(filter)}>{filter.replace("-", " ").toUpperCase()}</button>)}</div>}
         <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>
-          <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth"} onChange={(event) => setPlanetOrbits(event.target.checked)} />
-          <span><strong>Planet orbits</strong><small>Approximate JPL elements · physical AU/m scale</small></span>
+          <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth" || cameraHeight < CELESTIAL_CONTEXT_HEIGHT_M} onChange={(event) => setPlanetOrbits(event.target.checked)} />
+          <span><strong>Planet orbits</strong><small>{cameraHeight < CELESTIAL_CONTEXT_HEIGHT_M ? "Full-globe / orbital context only" : "Approximate JPL elements · physical AU/m scale"}</small></span>
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">
@@ -1367,14 +1440,6 @@ function StreetViewer({ provider, googleApiKey, notice, state, photo, index, tot
           </div>
         : <div className="streetSurfaceSourceRow">
             <span className="streetSurfaceSource">Interactive 360° · Google Street View</span>
-            <a
-              className="streetSurfaceExternal"
-              href={`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${point.latitude.toFixed(6)},${point.longitude.toFixed(6)}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Open Google Maps ↗
-            </a>
           </div>}
     </div>
   </aside>;
@@ -1390,7 +1455,6 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
     let positionListener: any = null;
     let statusListener: any = null;
     let watchdog: number | undefined;
-    const priorAuthFailure = window.gm_authFailure;
 
     const fail = (message: string) => {
       if (disposed) return;
@@ -1398,56 +1462,32 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       onFallback(message);
     };
 
-    const authFailure = () => {
-      try { priorAuthFailure?.(); } catch {}
-      fail("Google Maps authentication failed");
-    };
-    window.gm_authFailure = authFailure;
-
     if (!apiKey) {
       fail("Google Street View is not configured for this preview");
-      return () => {
-        if (window.gm_authFailure === authFailure) window.gm_authFailure = priorAuthFailure;
-      };
+      return;
     }
 
     watchdog = window.setTimeout(() => {
       fail("Google Street View did not become ready within 15 seconds");
     }, 15_000);
 
-    loadGoogleMaps(apiKey)
-      .then(async (google) => {
+    const origin = initialPointRef.current;
+    Promise.all([
+      loadGoogleStreetView(apiKey),
+      findGoogleStreetCoverage(apiKey, origin, 120),
+    ])
+      .then(([streetView, coverage]) => {
         if (disposed || !panoRef.current) return;
-
-        const {
-          StreetViewService,
-          StreetViewPanorama,
-          StreetViewStatus,
-        } = await google.maps.importLibrary("streetView");
-
-        if (
-          typeof StreetViewService !== "function" ||
-          typeof StreetViewPanorama !== "function"
-        ) {
-          throw new Error("Google Street View library loaded without constructors");
+        if (!coverage) {
+          fail("No Google Street View coverage near the current focus");
+          return;
         }
 
-        const origin = initialPointRef.current;
-        const service = new StreetViewService();
-        const response = await service.getPanorama({
-          location: { lat: origin.latitude, lng: origin.longitude },
-          radius: 250,
-        });
-        if (disposed || !panoRef.current) return;
-
-        const location = response?.data?.location;
-        if (!location?.pano) {
-          throw new Error("Google Street View returned no panorama near the current focus");
-        }
-
+        const { StreetViewPanorama, StreetViewStatus } = streetView;
+        panoRef.current.replaceChildren();
         panorama = new StreetViewPanorama(panoRef.current, {
-          pano: location.pano,
-          position: location.latLng,
+          pano: coverage.panoId,
+          position: { lat: coverage.latitude, lng: coverage.longitude },
           pov: { heading: 0, pitch: 0 },
           zoom: 1,
           addressControl: true,
@@ -1478,20 +1518,15 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
         positionListener = panorama.addListener?.("position_changed", publishPosition);
         statusListener = panorama.addListener?.("status_changed", () => {
           const status = panorama?.getStatus?.();
-          if (status === StreetViewStatus?.OK || status === "OK") {
-            markReady();
-          } else if (status != null) {
-            fail(`Google Street View render status: ${String(status)}`);
-          }
+          if (status === StreetViewStatus?.OK || status === "OK") markReady();
+          else if (status != null) fail(`Google Street View render status: ${String(status)}`);
         });
-
         window.setTimeout(() => {
           if (!disposed) markReady();
-        }, 300);
+        }, 350);
       })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        fail(`Google Street View failed: ${message}`);
+        fail(`Google Street View failed: ${error instanceof Error ? error.message : String(error)}`);
       });
 
     return () => {
@@ -1499,8 +1534,9 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       if (watchdog != null) window.clearTimeout(watchdog);
       if (positionListener?.remove) positionListener.remove();
       if (statusListener?.remove) statusListener.remove();
-      if (window.gm_authFailure === authFailure) window.gm_authFailure = priorAuthFailure;
+      panorama?.setVisible?.(false);
       panorama = null;
+      if (panoRef.current) panoRef.current.replaceChildren();
     };
   }, [apiKey, onReady, onFallback, onPositionChange]);
 

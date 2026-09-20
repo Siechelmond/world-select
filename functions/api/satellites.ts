@@ -9,8 +9,6 @@ const CORE_GROUPS: CelesTrakGroup[] = [
   { name: 'GEO' },
 ];
 
-// DENSE is intentionally opt-in. It adds multiple LEO constellations so the
-// mode still expands visibly if one large upstream group is temporarily unavailable.
 const DENSE_GROUPS: CelesTrakGroup[] = [
   ...CORE_GROUPS,
   { name: 'IRIDIUM-NEXT', limit: 100 },
@@ -34,24 +32,29 @@ export const onRequestGet = async ({ request }: { request: Request }) => {
 
   const responses = await Promise.allSettled(groups.map(async (group) => {
     const upstream = await fetch(`https://celestrak.org/NORAD/elements/gp.php?GROUP=${group.name}&FORMAT=TLE`, {
-      headers: { 'User-Agent': 'WorldSelect/0.6 (+https://world-select.pages.dev)' },
+      headers: { 'User-Agent': 'WorldSelect/0.7 (+https://world-select.pages.dev)' },
       cf: { cacheTtl: 7200, cacheEverything: true },
     } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
     if (!upstream.ok) throw new Error(`${group.name} HTTP ${upstream.status}`);
     const records = splitRecords(await upstream.text());
+    if (!records.length) throw new Error(`${group.name} returned no TLE records`);
     return group.limit ? records.slice(0, group.limit) : records;
   }));
 
   const byNorad = new Map<string, { name: string; line1: string; line2: string }>();
   const okGroups: string[] = [];
   const failedGroups: string[] = [];
+  const groupCounts: Record<string, number> = {};
+
   responses.forEach((result, index) => {
     const group = groups[index];
     if (result.status !== 'fulfilled') {
       failedGroups.push(group.name);
+      groupCounts[group.name] = 0;
       return;
     }
     okGroups.push(group.name);
+    groupCounts[group.name] = result.value.length;
     for (const record of result.value) {
       const norad = record.line1.slice(2, 7).trim();
       if (norad && !byNorad.has(norad)) byNorad.set(norad, record);
@@ -68,6 +71,7 @@ export const onRequestGet = async ({ request }: { request: Request }) => {
       'X-World-Select-Satellite-Catalog': catalog,
       'X-World-Select-Satellite-Groups': okGroups.join(','),
       'X-World-Select-Satellite-Failed-Groups': failedGroups.join(','),
+      'X-World-Select-Satellite-Group-Counts': Object.entries(groupCounts).map(([key, value]) => `${key}=${value}`).join(';'),
     },
   });
 };

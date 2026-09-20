@@ -6,6 +6,7 @@ type NominatimRow = {
   type?: string;
   class?: string;
   boundingbox?: [string, string, string, string];
+  address?: { house_number?: string; road?: string; pedestrian?: string; city?: string; town?: string; village?: string };
 };
 
 function json(body: unknown, status = 200) {
@@ -81,7 +82,20 @@ export const onRequestGet = async ({ request }: { request: Request }) => {
     } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });
     if (!response.ok) return json({ error: `Nominatim returned HTTP ${response.status}`, results: [] }, 502);
     const rows = await response.json() as NominatimRow[];
-    const results = (Array.isArray(rows) ? rows : []).flatMap((row) => {
+    const addressLike = /\d/.test(query);
+    const rankedRows = (Array.isArray(rows) ? rows : [])
+      .map((row, index) => {
+        const type = String(row.type ?? "").toLowerCase();
+        const address = row.address ?? {};
+        const score = (addressLike && address.house_number ? 100 : 0)
+          + (/(house|building|address)/.test(type) ? 60 : 0)
+          + ((address.road || address.pedestrian) ? 25 : 0)
+          - index;
+        return { row, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map(({ row }) => row);
+    const results = rankedRows.flatMap((row) => {
       const latitude = Number(row.lat);
       const longitude = Number(row.lon);
       if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];

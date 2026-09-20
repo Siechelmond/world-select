@@ -21,6 +21,29 @@ type Context = {
   mapMode: "photoreal" | "satellite" | "map" | "nasa";
 };
 
+function vehicleSvg(kind: "car" | "van" | "truck") {
+  const body = kind === "truck"
+    ? '<path fill="white" d="M5 18h32v20H5zM37 23h13l9 9v6H37z"/><circle cx="17" cy="42" r="6" fill="white"/><circle cx="48" cy="42" r="6" fill="white"/>'
+    : kind === "van"
+      ? '<path fill="white" d="M7 17h40l10 14v11H7z"/><circle cx="19" cy="44" r="6" fill="white"/><circle cx="46" cy="44" r="6" fill="white"/>'
+      : '<path fill="white" d="M8 28l8-12h30l10 12v13H8z"/><circle cx="20" cy="43" r="5" fill="white"/><circle cx="46" cy="43" r="5" fill="white"/>';
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">${body}</svg>`)}`;
+}
+
+const VEHICLE_ICONS = {
+  car: vehicleSvg("car"),
+  van: vehicleSvg("van"),
+  truck: vehicleSvg("truck"),
+};
+
+function vehicleKind(index: number, road?: RoadSegment): "car" | "van" | "truck" {
+  if (road?.highway === "motorway" || road?.highway === "trunk") {
+    if (index % 9 === 0) return "truck";
+    if (index % 5 === 0) return "van";
+  }
+  return index % 11 === 0 ? "van" : "car";
+}
+
 type RuntimeState = {
   state: LayerLoadState;
   status: TrafficStatus | null;
@@ -205,13 +228,15 @@ export function createTrafficController(input: {
     const roadMap = new Map(roads.map((road) => [road.id, road]));
     const roadBaseHeights = new Map<number, number>();
     const groundPolylineSupported = Boolean(
-      photoreal && Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene),
+      photoreal &&
+      Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene) &&
+      Cesium.ClassificationType?.CESIUM_3D_TILE != null,
     );
 
     roadCollection = (!photoreal || !groundPolylineSupported)
       ? new Cesium.PolylineCollection()
       : null;
-    vehicleCollection = new Cesium.PointPrimitiveCollection({ blendOption: Cesium.BlendOption.TRANSLUCENT });
+    vehicleCollection = new Cesium.BillboardCollection({ blendOption: Cesium.BlendOption.TRANSLUCENT });
     if (roadCollection) viewer.scene.primitives.add(roadCollection);
     viewer.scene.primitives.add(vehicleCollection);
 
@@ -243,13 +268,22 @@ export function createTrafficController(input: {
       if (!vehicleCollection || destroyed) return;
       const visibleCount = Math.min(maxVehicles, vehicles.length);
       while (vehicleCollection.length < visibleCount) {
+        const index = vehicleCollection.length;
+        const initialPosition = vehicleMotion?.positionFor(index);
+        if (!initialPosition) break;
+        const vehicle = vehicles[index];
+        const road = roadMap.get(vehicle?.roadId);
+        const kind = vehicleKind(index, road);
         vehicleCollection.add({
-          position: Cesium.Cartesian3.ZERO,
-          pixelSize: 3,
+          position: initialPosition,
+          image: VEHICLE_ICONS[kind],
+          width: kind === "truck" ? 18 : kind === "van" ? 16 : 14,
+          height: kind === "truck" ? 12 : 11,
+          rotation: Cesium.Math.toRadians(-(vehicle?.headingDeg ?? 0)),
           color: Cesium.Color.WHITE,
-          outlineColor: Cesium.Color.fromCssColorString('#020617'),
-          outlineWidth: 1,
-          disableDepthTestDistance: photoreal ? 15_000 : 5_000,
+          scaleByDistance: new Cesium.NearFarScalar(100, 1.6, 120_000, 0.28),
+          translucencyByDistance: new Cesium.NearFarScalar(100, 1.0, 160_000, 0.12),
+          disableDepthTestDistance: photoreal ? 20_000 : 2_000,
         });
       }
       while (vehicleCollection.length > visibleCount) {
@@ -258,11 +292,16 @@ export function createTrafficController(input: {
 
       for (let index = 0; index < visibleCount; index += 1) {
         const vehicle = vehicles[index];
-        const point = vehicleCollection.get(index);
-        point.pixelSize = context.cameraHeight < 30_000 ? 4 : 3;
-        point.color = Cesium.Color.fromCssColorString(
+        const billboard = vehicleCollection.get(index);
+        const road = roadMap.get(vehicle.roadId);
+        const kind = vehicleKind(index, road);
+        billboard.image = VEHICLE_ICONS[kind];
+        billboard.width = (kind === "truck" ? 18 : kind === "van" ? 16 : 14) * (context.cameraHeight < 8_000 ? 1.25 : 1);
+        billboard.height = (kind === "truck" ? 12 : 11) * (context.cameraHeight < 8_000 ? 1.25 : 1);
+        billboard.rotation = Cesium.Math.toRadians(-(vehicle.headingDeg ?? 0));
+        billboard.color = Cesium.Color.fromCssColorString(
           getCongestionColor(vehicle.congestion ?? 'free-flow'),
-        ).withAlpha(photoreal ? 0.82 : 0.9);
+        ).withAlpha(photoreal ? 0.9 : 0.94);
       }
       vehicleMotion?.writePositions(vehicleCollection, visibleCount);
       viewer.scene?.requestRender?.();
@@ -299,7 +338,7 @@ export function createTrafficController(input: {
     } else if (roadCollection) {
       for (const road of roads) {
         if (road.coordinates.length < 2) continue;
-        const fallbackHeight = photoreal ? 25 : 5;
+        const fallbackHeight = photoreal ? roadHeight(road.id) + 4 : 5;
         roadCollection.add({
           positions: road.coordinates.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, fallbackHeight)),
           width: road.highway === 'motorway' || road.highway === 'trunk' ? 3 : 2,
@@ -338,8 +377,12 @@ export function createTrafficController(input: {
     );
   };
 
-  async function ensureFallback() {
-    if (destroyed || !context.enabled || !context.earthVisible || !fallbackSourceNeeded()) {
+  async function ensureFallback(prefetchOnly = false) {
+    if (destroyed || !context.enabled || !context.earthVisible) {
+      clearRenderedFallback();
+      return;
+    }
+    if (!prefetchOnly && !fallbackSourceNeeded()) {
       clearRenderedFallback();
       return;
     }
@@ -349,14 +392,14 @@ export function createTrafficController(input: {
 
     // Zoom/tilt never reacquire roads or regenerate vehicles.
     if (!needsRebase && roads.length) {
-      renderFallback();
+      if (fallbackSourceNeeded()) renderFallback();
       return;
     }
     if (vectorController) return;
 
     const controller = new AbortController();
     vectorController = controller;
-    publish('loading');
+    if (!prefetchOnly || fallbackSourceNeeded()) publish('loading');
     try {
       const nextRoads = await fetchRoads(
         nextCenter.latitude,
@@ -377,9 +420,11 @@ export function createTrafficController(input: {
         publish('error', 'No OSM road geometry returned for this traffic coverage');
         return;
       }
-      renderFallback();
-      if (!fallbackVisible()) {
-        publish('degraded', 'Traffic data cached for this area · zoom changes rendering only');
+      if (fallbackSourceNeeded()) {
+        renderFallback();
+        if (!fallbackVisible()) {
+          publish('degraded', 'Traffic data cached for this area · zoom changes rendering only');
+        }
       }
     } catch (error) {
       if (controller.signal.aborted || destroyed) return;
@@ -450,6 +495,9 @@ export function createTrafficController(input: {
         if (status?.configured && status.available && !liveFailed) clearRenderedFallback();
       }
       if (!wasActive || (!status && !statusController)) void refreshStatus();
+      // Pre-warm the same OSM road/vehicle state while SAT/MAP/NASA are active.
+      // A later switch to 3D therefore changes rendering, not data acquisition.
+      if (!dataCenter || !roads.length) void ensureFallback(true);
 
       const modeChanged = previous.mapMode !== context.mapMode;
       const movedKm = distanceKm(

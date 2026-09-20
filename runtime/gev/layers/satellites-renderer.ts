@@ -6,6 +6,12 @@ import {
   type TleRecord,
 } from '@/lib/celestrak';
 import type { SpatialEntity } from '@/lib/spatial';
+import {
+  SATELLITE_CLASSES,
+  satelliteClassForEntity,
+  satelliteMatchesFilter,
+  type SatelliteFilter,
+} from '@/lib/satellite-style';
 import { holdContinuousRender, releaseContinuousRender } from '@/runtime/gev/render-governor';
 
 type SyncInput = {
@@ -18,6 +24,7 @@ type SyncInput = {
   cameraHeight: number;
   time: Date;
   continuous: boolean;
+  filter: SatelliteFilter;
 };
 
 type OrbitRecord = {
@@ -55,6 +62,7 @@ export function createSatelliteRenderer(input: {
   let continuous = false;
   let selectedId: string | null = null;
   let isMobile = false;
+  let activeFilter: SatelliteFilter = 'all';
   let catalog: SatelliteCatalog = 'core';
   let tleRecords: TleRecord[] = [];
   let coreRecords: TleRecord[] = [];
@@ -199,6 +207,10 @@ export function createSatelliteRenderer(input: {
     if (!enabled || destroyed) return;
     const live = new Set<string>();
     const wantedDetails = new Set<string>();
+    const cameraPosition = viewer.camera?.positionWC;
+    const occluder = cameraPosition
+      ? new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84, cameraPosition)
+      : null;
 
     for (const spatial of satellites) {
       live.add(spatial.id);
@@ -211,8 +223,12 @@ export function createSatelliteRenderer(input: {
       const isSelected = spatial.id === selectedId;
       const isIss = /ISS.*ZARYA|^ISS\b/i.test(spatial.name);
       const persistentLabel = isIss || spatial.name.includes('TIANHE');
-      const altitudeMeters = Math.max(0, spatial.position.altitudeMeters || 0);
-      const pixelSize = isIss ? 8 : altitudeMeters > 20_000_000 ? 6 : altitudeMeters > 2_000_000 ? 5.5 : 5;
+      const klass = satelliteClassForEntity(spatial);
+      const spec = SATELLITE_CLASSES[klass];
+      const filteredIn = satelliteMatchesFilter(spatial, activeFilter);
+      const horizonVisible = !occluder || occluder.isPointVisible(position);
+      const pixelSize = isIss ? Math.max(8, spec.pixelSize) : spec.pixelSize;
+      const pointColor = Cesium.Color.fromCssColorString(spec.color);
 
       let trail = trails.get(spatial.id) ?? [];
       if (isSelected && !isIss) {
@@ -226,30 +242,33 @@ export function createSatelliteRenderer(input: {
         trail = [];
       }
 
-      const detailWanted = isSelected || persistentLabel;
+      const detailWanted = filteredIn && horizonVisible && (isSelected || persistentLabel);
       let point = points.get(spatial.id);
       if (!point) {
         point = pointCollection.add({
           id: spatial.id,
           position,
           pixelSize,
-          color: baseColor,
+          color: pointColor,
           outlineColor: Cesium.Color.WHITE,
           outlineWidth: 0.5,
           scaleByDistance: pointScale,
           translucencyByDistance: pointAlpha,
-          show: !detailWanted,
+          show: filteredIn && horizonVisible && !detailWanted,
         });
         points.set(spatial.id, point);
       } else {
         point.position = position;
         point.pixelSize = pixelSize;
-        point.show = !detailWanted;
+        point.color = pointColor;
+        point.show = filteredIn && horizonVisible && !detailWanted;
       }
 
       if (detailWanted) {
         wantedDetails.add(spatial.id);
-        syncDetail(spatial, position, pixelSize, isSelected, isSelected && !isIss ? [...trail] : []);
+        const detail = syncDetail(spatial, position, pixelSize, isSelected, isSelected && !isIss ? [...trail] : []);
+        if (detail?.point) detail.point.color = new Cesium.ConstantProperty(pointColor);
+        if (detail?.label) detail.label.fillColor = new Cesium.ConstantProperty(pointColor);
       }
     }
 
@@ -324,11 +343,12 @@ export function createSatelliteRenderer(input: {
   };
 
   return Object.freeze({
-    sync({ satellites, tleRecords: nextRecords, catalog: nextCatalog, visible, selectedId: nextSelectedId, isMobile: nextIsMobile, time, continuous: nextContinuous }: SyncInput) {
+    sync({ satellites, tleRecords: nextRecords, catalog: nextCatalog, visible, selectedId: nextSelectedId, isMobile: nextIsMobile, time, continuous: nextContinuous, filter: nextFilter }: SyncInput) {
       if (destroyed) return;
       configureRecords(nextRecords, nextCatalog);
       selectedId = nextSelectedId;
       isMobile = nextIsMobile;
+      activeFilter = nextFilter;
       enabled = visible;
       continuous = visible && nextContinuous && nextRecords.length > 0;
       pointCollection.show = visible;

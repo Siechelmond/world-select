@@ -1,7 +1,23 @@
 import * as satellite from "satellite.js";
 import type { SpatialEntity } from "@/lib/spatial";
+import { satelliteClassForName } from "@/lib/satellite-style";
 
 export type TleRecord = { name: string; line1: string; line2: string };
+
+export type SatelliteCatalog = "core" | "dense";
+
+export type SatelliteFeedMeta = {
+  catalog: SatelliteCatalog;
+  totalCount: number;
+  groups: string[];
+  failedGroups: string[];
+  groupCounts: Record<string, number>;
+};
+
+export type SatelliteSnapshot = {
+  records: TleRecord[];
+  meta: SatelliteFeedMeta;
+};
 
 type Satrec = ReturnType<typeof satellite.twoline2satrec>;
 const SATREC_CACHE = new WeakMap<TleRecord, Satrec>();
@@ -24,12 +40,38 @@ function parseTle(text: string): TleRecord[] {
   return out;
 }
 
-export type SatelliteCatalog = "core" | "dense";
+function parseList(value: string | null) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
 
-export async function fetchStationTles(signal?: AbortSignal, catalog: SatelliteCatalog = "core"): Promise<TleRecord[]> {
+function parseCounts(value: string | null) {
+  const counts: Record<string, number> = {};
+  for (const token of String(value || "").split(";")) {
+    const [key, raw] = token.split("=");
+    const count = Number(raw);
+    if (key && Number.isFinite(count)) counts[key] = count;
+  }
+  return counts;
+}
+
+export async function fetchStationTles(
+  signal?: AbortSignal,
+  catalog: SatelliteCatalog = "core",
+): Promise<SatelliteSnapshot> {
   const response = await fetch(`/api/satellites?catalog=${catalog}`, { signal, cache: "no-store" });
   if (!response.ok) throw new Error(`Satellite proxy returned HTTP ${response.status}`);
-  return parseTle(await response.text());
+  const records = parseTle(await response.text());
+  const responseCatalog = response.headers.get("X-World-Select-Satellite-Catalog") === "dense" ? "dense" : "core";
+  return {
+    records,
+    meta: {
+      catalog: responseCatalog,
+      totalCount: Number(response.headers.get("X-World-Select-Satellite-Count") || records.length),
+      groups: parseList(response.headers.get("X-World-Select-Satellite-Groups")),
+      failedGroups: parseList(response.headers.get("X-World-Select-Satellite-Failed-Groups")),
+      groupCounts: parseCounts(response.headers.get("X-World-Select-Satellite-Group-Counts")),
+    },
+  };
 }
 
 export function propagateTles(records: TleRecord[], at: Date): SpatialEntity[] {
@@ -45,6 +87,7 @@ export function propagateTles(records: TleRecord[], at: Date): SpatialEntity[] {
       const altitudeMeters = gd.height * 1000;
       if (![longitude, latitude, altitudeMeters].every(Number.isFinite)) return [];
       const norad = record.line1.slice(2, 7).trim();
+      const satelliteClass = satelliteClassForName(record.name, altitudeMeters);
       return [{
         id: `celestrak:${norad}`,
         kind: "satellite" as const,
@@ -56,6 +99,7 @@ export function propagateTles(records: TleRecord[], at: Date): SpatialEntity[] {
         properties: {
           noradCatalogNumber: norad,
           altitudeKm: Number((altitudeMeters / 1000).toFixed(1)),
+          satelliteClass,
           propagation: "SGP4 from cached current GP/TLE",
         },
       } satisfies SpatialEntity];
@@ -64,7 +108,6 @@ export function propagateTles(records: TleRecord[], at: Date): SpatialEntity[] {
     }
   });
 }
-
 
 export function propagateTleOrbit(record: TleRecord, at: Date, samples = 160): Array<{ longitude: number; latitude: number; altitudeMeters: number }> {
   try {

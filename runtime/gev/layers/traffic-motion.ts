@@ -69,18 +69,27 @@ export function createTrafficMotionModel(input: {
     motions.push({ vehicle, road, segIdx: location.segIdx, t: location.t });
   }
 
-  const writeOne = (record: MotionRecord, point: any) => {
+  const interpolate = (record: MotionRecord, result: any) => {
     const a = record.road.waypoints[record.segIdx];
     const b = record.road.waypoints[record.segIdx + 1];
-    if (!a || !b || !point) return;
-    Cesium.Cartesian3.lerp(a, b, record.t, scratch);
-    // PointPrimitive.position clones internally. Reusing one scratch Cartesian3
-    // avoids an allocation per vehicle per frame (same donor contract).
-    point.position = scratch;
+    if (!a || !b) return null;
+    return Cesium.Cartesian3.lerp(a, b, record.t, result);
+  };
+
+  const writeOne = (record: MotionRecord, point: any) => {
+    if (!point) return;
+    const position = interpolate(record, scratch);
+    if (position) point.position = position;
   };
 
   return Object.freeze({
     count: motions.length,
+    positionFor(index: number) {
+      const record = motions[index];
+      if (!record) return null;
+      const result = new Cesium.Cartesian3();
+      return interpolate(record, result);
+    },
     advance(deltaSeconds: number) {
       const dt = Math.min(Math.max(Number(deltaSeconds) || 0, 0), 0.1);
       if (dt <= 0) return;
