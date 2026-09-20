@@ -232,7 +232,9 @@ export function createTrafficController(input: {
     const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
     const roadMap = new Map(roads.map((road) => [road.id, road]));
     const pointHeightCache = new Map<string, number>();
-    let unresolvedHeightProbe: { longitude: number; latitude: number } | null = null;
+    const unresolvedHeightProbe: {
+      current: { longitude: number; latitude: number } | null;
+    } = { current: null };
     const groundPolylineSupported = Boolean(
       photoreal &&
       Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene) &&
@@ -264,7 +266,7 @@ export function createTrafficController(input: {
       // The 3D stack may be active before local photogrammetry has streamed in.
       // Keep this temporary ellipsoid position uncached so later scene frames
       // can replace it with a real sampled height.
-      unresolvedHeightProbe ??= { longitude, latitude };
+      unresolvedHeightProbe.current ??= { longitude, latitude };
       return 1.5;
     };
 
@@ -366,13 +368,14 @@ export function createTrafficController(input: {
 
     renderVehicles();
 
+    const unresolvedProbe = unresolvedHeightProbe.current;
     if (
       photoreal &&
-      unresolvedHeightProbe &&
+      unresolvedProbe &&
       !photorealHeightRebindRemover &&
       viewer.scene.postRender?.addEventListener
     ) {
-      const probe = unresolvedHeightProbe;
+      const probe = unresolvedProbe;
       photorealHeightRebindRemover = viewer.scene.postRender.addEventListener(() => {
         if (destroyed || context.mapMode !== "photoreal" || !fallbackVisible()) {
           photorealHeightRebindRemover?.();
