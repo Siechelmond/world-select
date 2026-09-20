@@ -316,15 +316,15 @@ function OrbitView({ satellites, onSelect, onReturnEarth }: {
         <text x={cx + radiusForAltitude(35_786_000) + 8} y={cy - 4} className="orbitGuideLabel">GEO</text>
         {visible.map((item, index) => {
           const angle = ((item.position.longitude + 180) / 360) * Math.PI * 2 + (index % 7) * 0.004;
-          const radius = radiusForAltitude(item.position.altitudeMeters);
-          const x = cx + Math.cos(angle) * radius;
-          const y = cy + Math.sin(angle) * radius * 0.62;
+          const orbitRadius = radiusForAltitude(item.position.altitudeMeters);
+          const x = cx + Math.cos(angle) * orbitRadius;
+          const y = cy + Math.sin(angle) * orbitRadius * 0.62;
           const isIss = /ISS/i.test(item.name);
           const klass = satelliteClassForEntity(item);
           const spec = SATELLITE_CLASSES[klass];
-          const radius = isIss ? 5.5 : klass === "station" ? 4.5 : klass === "geo" ? 3.4 : klass === "nav" ? 3 : 2.4;
+          const markerRadius = isIss ? 5.5 : klass === "station" ? 4.5 : klass === "geo" ? 3.4 : klass === "nav" ? 3 : 2.4;
           return <g key={item.id} className="orbitObject" onClick={() => onSelect(item)}>
-            <circle cx={x} cy={y} r={radius} fill={spec.color} className={isIss ? "orbitSatellite iss" : "orbitSatellite"} />
+            <circle cx={x} cy={y} r={markerRadius} fill={spec.color} className={isIss ? "orbitSatellite iss" : "orbitSatellite"} />
             {isIss && <text x={x + 9} y={y - 8} className="orbitIssLabel">ISS</text>}
           </g>;
         })}
