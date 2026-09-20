@@ -279,7 +279,7 @@ export function createTrafficController(input: {
           image: VEHICLE_ICONS[kind],
           width: kind === "truck" ? 18 : kind === "van" ? 16 : 14,
           height: kind === "truck" ? 12 : 11,
-          rotation: Cesium.Math.toRadians(-(vehicle?.headingDeg ?? 0)),
+          rotation: Number(viewer.camera?.heading ?? 0) + Cesium.Math.PI_OVER_TWO - Cesium.Math.toRadians(vehicle?.headingDeg ?? 0),
           color: Cesium.Color.WHITE,
           scaleByDistance: new Cesium.NearFarScalar(100, 1.6, 120_000, 0.28),
           translucencyByDistance: new Cesium.NearFarScalar(100, 1.0, 160_000, 0.12),
@@ -298,7 +298,7 @@ export function createTrafficController(input: {
         billboard.image = VEHICLE_ICONS[kind];
         billboard.width = (kind === "truck" ? 18 : kind === "van" ? 16 : 14) * (context.cameraHeight < 8_000 ? 1.25 : 1);
         billboard.height = (kind === "truck" ? 12 : 11) * (context.cameraHeight < 8_000 ? 1.25 : 1);
-        billboard.rotation = Cesium.Math.toRadians(-(vehicle.headingDeg ?? 0));
+        billboard.rotation = Number(viewer.camera?.heading ?? 0) + Cesium.Math.PI_OVER_TWO - Cesium.Math.toRadians(vehicle.headingDeg ?? 0);
         billboard.color = Cesium.Color.fromCssColorString(
           getCongestionColor(vehicle.congestion ?? 'free-flow'),
         ).withAlpha(photoreal ? 0.9 : 0.94);
@@ -366,6 +366,14 @@ export function createTrafficController(input: {
         if (dt <= 0) return;
         vehicleMotion?.advance(dt);
         vehicleMotion?.writePositions(vehicleCollection, maxVehicles);
+        const visibleCount = Math.min(maxVehicles, vehicles.length, Number(vehicleCollection.length ?? 0));
+        const cameraHeading = Number(viewer.camera?.heading ?? 0);
+        for (let index = 0; index < visibleCount; index += 1) {
+          const billboard = vehicleCollection.get(index);
+          const vehicle = vehicles[index];
+          if (!billboard || !vehicle) continue;
+          billboard.rotation = cameraHeading + Cesium.Math.PI_OVER_TWO - Cesium.Math.toRadians(vehicle.headingDeg ?? 0);
+        }
       });
     }
 
