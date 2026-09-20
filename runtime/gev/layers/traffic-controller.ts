@@ -82,6 +82,8 @@ export function createTrafficController(input: {
   let vehicleCollection: any = null;
   let vehicleMotion: ReturnType<typeof createTrafficMotionModel> | null = null;
   let vehiclePreRenderRemover: (() => void) | null = null;
+  let photorealHeightRebindRemover: (() => void) | null = null;
+  let lastPhotorealHeightProbeMs = 0;
   let lastVehicleFrameMs = 0;
 
   // Traffic acquisition state is independent from camera zoom. Roads/flows/
@@ -103,6 +105,9 @@ export function createTrafficController(input: {
   const clearRenderedFallback = () => {
     vehiclePreRenderRemover?.();
     vehiclePreRenderRemover = null;
+    photorealHeightRebindRemover?.();
+    photorealHeightRebindRemover = null;
+    lastPhotorealHeightProbeMs = 0;
     lastVehicleFrameMs = 0;
     releaseContinuousRender('traffic');
     if (vehicleCollection) {
@@ -227,6 +232,7 @@ export function createTrafficController(input: {
     const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
     const roadMap = new Map(roads.map((road) => [road.id, road]));
     const pointHeightCache = new Map<string, number>();
+    let unresolvedHeightProbe: { longitude: number; latitude: number } | null = null;
     const groundPolylineSupported = Boolean(
       photoreal &&
       Cesium.GroundPolylinePrimitive?.isSupported?.(viewer.scene) &&
@@ -245,16 +251,21 @@ export function createTrafficController(input: {
       const key = `${roadId}:${longitude.toFixed(6)}:${latitude.toFixed(6)}`;
       const cached = pointHeightCache.get(key);
       if (cached != null) return cached;
-      let height = 0;
       if (viewer.scene.sampleHeightSupported && typeof viewer.scene.sampleHeight === 'function') {
         try {
           const sampled = viewer.scene.sampleHeight(Cesium.Cartographic.fromDegrees(longitude, latitude));
-          if (Number.isFinite(sampled)) height = sampled;
+          if (Number.isFinite(sampled)) {
+            const elevated = sampled + 1.5;
+            pointHeightCache.set(key, elevated);
+            return elevated;
+          }
         } catch {}
       }
-      const elevated = height + 1.5;
-      pointHeightCache.set(key, elevated);
-      return elevated;
+      // The 3D stack may be active before local photogrammetry has streamed in.
+      // Keep this temporary ellipsoid position uncached so later scene frames
+      // can replace it with a real sampled height.
+      unresolvedHeightProbe ??= { longitude, latitude };
+      return 1.5;
     };
 
     vehicleMotion = createTrafficMotionModel({
@@ -354,6 +365,43 @@ export function createTrafficController(input: {
     }
 
     renderVehicles();
+
+    if (
+      photoreal &&
+      unresolvedHeightProbe &&
+      !photorealHeightRebindRemover &&
+      viewer.scene.postRender?.addEventListener
+    ) {
+      const probe = unresolvedHeightProbe;
+      photorealHeightRebindRemover = viewer.scene.postRender.addEventListener(() => {
+        if (destroyed || context.mapMode !== "photoreal" || !fallbackVisible()) {
+          photorealHeightRebindRemover?.();
+          photorealHeightRebindRemover = null;
+          return;
+        }
+        const nowMs = performance.now();
+        if (nowMs - lastPhotorealHeightProbeMs < 250) return;
+        lastPhotorealHeightProbeMs = nowMs;
+
+        let sampledHeight = Number.NaN;
+        try {
+          sampledHeight = viewer.scene.sampleHeight(
+            Cesium.Cartographic.fromDegrees(probe.longitude, probe.latitude),
+          );
+        } catch {}
+        if (!Number.isFinite(sampledHeight)) return;
+
+        const remove = photorealHeightRebindRemover;
+        photorealHeightRebindRemover = null;
+        remove?.();
+
+        // Rebuild only Traffic. The donor-owned 3D map stack stays untouched.
+        clearRenderedFallback();
+        renderFallback();
+      });
+      viewer.scene?.requestRender?.();
+    }
+
     if (vehicles.length) {
       // Bilawal/GEV pattern: animation belongs to Cesium's frame lifecycle, not
       // an independent timer. The governor keeps frames continuous only while
@@ -374,7 +422,7 @@ export function createTrafficController(input: {
     publish(
       'degraded',
       photoreal
-        ? `3D traffic · cached OSM roads + ${Math.min(100, vehicles.length)} modeled vehicles · cached road heights`
+        ? `3D traffic · cached OSM roads + ${Math.min(100, vehicles.length)} modeled vehicles · scene-bound road heights`
         : 'Cached OSM road geometry + locally modeled vehicles · live TomTom unavailable',
     );
   };

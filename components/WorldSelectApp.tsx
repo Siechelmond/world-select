@@ -173,6 +173,7 @@ export default function WorldSelectApp() {
   const [streetProvider, setStreetProvider] = useState<StreetProvider>(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
   const [streetNotice, setStreetNotice] = useState<string | null>(null);
   const [mapMode, setMapMode] = useState<WorldMapMode>("satellite");
+  const [activeMapMode, setActiveMapMode] = useState<WorldMapMode>("satellite");
   const [threeDError, setThreeDError] = useState<string | null>(null);
   const [earthHandoff, setEarthHandoff] = useState<{ latitude: number; longitude: number; height: number; mapMode: WorldMapMode } | null>(null);
   const [frameHandoff, setFrameHandoff] = useState<"earth-to-space" | "space-to-earth" | null>(null);
@@ -611,6 +612,7 @@ export default function WorldSelectApp() {
     let cancelled = false;
     void viewerLifecycleRef.current?.setMapMode(mapMode).then((result) => {
       if (cancelled || !result) return;
+      setActiveMapMode(result.activeMode);
       if (mapMode === "photoreal" && result.ok) setThreeDError(null);
       if (!result.ok) {
         if (mapMode === "photoreal") {
@@ -800,9 +802,9 @@ export default function WorldSelectApp() {
       latitude: viewCenter.latitude,
       longitude: viewCenter.longitude,
       cameraHeight,
-      mapMode,
+      mapMode: activeMapMode,
     });
-  }, [trafficLayer, viewMode, viewCenter.latitude, viewCenter.longitude, cameraHeight, mapMode, cesiumReady]);
+  }, [trafficLayer, viewMode, viewCenter.latitude, viewCenter.longitude, cameraHeight, activeMapMode, cesiumReady]);
 
   useEffect(() => {
     eventRendererRef.current?.sync(filteredEvents, viewMode === "earth" && eventLayer);
