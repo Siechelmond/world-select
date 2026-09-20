@@ -171,6 +171,10 @@ export function createTrafficController(input: {
         near3dDrapeReady = true;
         near3dTileProgressRemover?.();
         near3dTileProgressRemover = null;
+
+        // Re-mount the proven TomTom Flow + Incidents drape after 3D settles.
+        mountLive();
+
         if (roads.length && fallbackVisible()) {
           clearRenderedFallback();
           renderFallback();
@@ -320,13 +324,14 @@ export function createTrafficController(input: {
 
   const liveImageryCollection = () => {
     if (context.mapMode !== 'photoreal') return viewer.imageryLayers;
-    // Near-ground photoreal never projects the raw raster over the whole
-    // photogrammetry mesh. A semantically filtered OSM/TomTom road drape is
-    // enabled only after Google 3D refinement settles.
-    if (context.cameraHeight < 8_000) return null;
     const tileset = getPhotorealisticTileset();
     const collection = tileset?.imageryLayers;
-    return collection?.addImageryProvider && collection?.remove ? collection : null;
+    if (!(collection?.addImageryProvider && collection?.remove)) return null;
+
+    // Restore the previously visible TomTom 3D drape at every camera height.
+    // Below 8 km it is deferred only until Google 3D refinement settles.
+    if (context.cameraHeight < 8_000 && !near3dDrapeReady) return null;
+    return collection;
   };
 
   const unmountLive = () => {
@@ -764,7 +769,7 @@ export function createTrafficController(input: {
           if (!mounted && context.cameraHeight >= 8_000) {
             publish("degraded", "TomTom live flow is available but Cesium 3D imagery drape is unavailable · OSM particles remain");
           } else if (!mounted && context.cameraHeight < 8_000) {
-            publish("loading", "Google 3D refining · semantic TomTom road overlay will appear after tiles settle");
+            publish("loading", "Google 3D refining · TomTom 3D traffic drape will appear after tiles settle");
           }
           void ensureFallback();
           void refreshLiveParticleFlow();
