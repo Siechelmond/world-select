@@ -221,8 +221,19 @@ export function createTrafficController(input: {
     };
   };
 
+  const isSubsurfaceRoad = (road: RoadSegment) =>
+    Boolean(road.tunnel || road.covered || (Number(road.layer ?? 0) < 0));
+
+  const isElevatedRoad = (road: RoadSegment) =>
+    Boolean(road.bridge || (Number(road.layer ?? 0) > 0));
+
+  const renderableRoads = () =>
+    context.mapMode === "photoreal" && context.cameraHeight < 8_000
+      ? roads.filter((road) => !isSubsurfaceRoad(road))
+      : roads;
+
   const rebuildParticles = () => {
-    particles = generateTrafficParticles(roads, flows, context.cameraHeight, 1200);
+    particles = generateTrafficParticles(renderableRoads(), flows, context.cameraHeight, 1200);
     vehicleCount = particles.length;
     particleDensityBand = densityBandFor(context.cameraHeight);
   };
@@ -242,6 +253,9 @@ export function createTrafficController(input: {
 
   const liveImageryCollection = () => {
     if (context.mapMode !== 'photoreal') return viewer.imageryLayers;
+    // Near-ground photoreal uses vector/OSM traffic instead of projecting
+    // raster imagery over buildings, trees, water, bridges and tunnels.
+    if (context.cameraHeight < 8_000) return null;
     const tileset = getPhotorealisticTileset();
     const collection = tileset?.imageryLayers;
     return collection?.addImageryProvider && collection?.remove ? collection : null;
@@ -267,7 +281,10 @@ export function createTrafficController(input: {
   const mountLive = () => {
     if (destroyed || !context.enabled || !context.earthVisible) return false;
     const collection = liveImageryCollection();
-    if (!collection) return false;
+    if (!collection) {
+      if (flowLayer || incidentLayer || liveLayerCollection) unmountLive();
+      return false;
+    }
     if (flowLayer && liveLayerCollection === collection) return true;
     if (flowLayer || incidentLayer || liveLayerCollection) unmountLive();
 
@@ -324,9 +341,13 @@ export function createTrafficController(input: {
     clearRenderedFallback();
     renderedMode = context.mapMode;
     const photoreal = context.mapMode === 'photoreal';
+    const visibleRoads = photoreal && context.cameraHeight < 8_000
+      ? roads.filter((road) => !isSubsurfaceRoad(road))
+      : roads;
     const flowMap = new Map(flows.map((flow) => [flow.roadId, flow]));
-    const roadMap = new Map(roads.map((road) => [road.id, road]));
+    const roadMap = new Map(visibleRoads.map((road) => [road.id, road]));
     const roadBaseHeights = new Map<number, number>();
+    const elevatedHeightProfiles = new Map<number, { start: number; mid: number; end: number }>();
     const liveTomTomDrape = photoreal && Boolean(flowLayer && liveLayerCollection);
     const groundPolylineSupported = Boolean(
       photoreal &&
@@ -335,33 +356,73 @@ export function createTrafficController(input: {
       Cesium.ClassificationType?.CESIUM_3D_TILE != null
     );
 
-    roadCollection = (!photoreal || (!groundPolylineSupported && !liveTomTomDrape))
+    roadCollection = (!photoreal || !liveTomTomDrape)
       ? new Cesium.PolylineCollection()
       : null;
     if (roadCollection) viewer.scene.primitives.add(roadCollection);
     particleCollection.show = true;
 
+    const sampleSceneHeight = (coordinate: [number, number], fallback = 0) => {
+      if (!photoreal || !viewer.scene.sampleHeightSupported || typeof viewer.scene.sampleHeight !== "function") {
+        return fallback;
+      }
+      try {
+        const sampled = viewer.scene.sampleHeight(
+          Cesium.Cartographic.fromDegrees(coordinate[0], coordinate[1]),
+        );
+        return Number.isFinite(sampled) ? Number(sampled) : fallback;
+      } catch {
+        return fallback;
+      }
+    };
+
     const roadHeight = (roadId: number) => {
       if (!photoreal) return 8;
       const cached = roadBaseHeights.get(roadId);
       if (cached != null) return cached;
-      let height = 0;
       const first = roadMap.get(roadId)?.coordinates?.[0];
-      if (first && viewer.scene.sampleHeightSupported && typeof viewer.scene.sampleHeight === 'function') {
-        try {
-          const sampled = viewer.scene.sampleHeight(Cesium.Cartographic.fromDegrees(first[0], first[1]));
-          if (Number.isFinite(sampled)) height = sampled;
-        } catch {}
-      }
+      const height = first ? sampleSceneHeight(first, 0) : 0;
       roadBaseHeights.set(roadId, height);
       return height;
     };
 
+    const elevatedProfile = (road: RoadSegment) => {
+      const cached = elevatedHeightProfiles.get(road.id);
+      if (cached) return cached;
+      const coordinates = road.coordinates;
+      const fallback = roadHeight(road.id);
+      const startCoord = coordinates[0];
+      const midCoord = coordinates[Math.floor((coordinates.length - 1) / 2)];
+      const endCoord = coordinates[coordinates.length - 1];
+      const profile = {
+        start: startCoord ? sampleSceneHeight(startCoord, fallback) : fallback,
+        mid: midCoord ? sampleSceneHeight(midCoord, fallback) : fallback,
+        end: endCoord ? sampleSceneHeight(endCoord, fallback) : fallback,
+      };
+      elevatedHeightProfiles.set(road.id, profile);
+      return profile;
+    };
+
+    const elevatedHeightAt = (road: RoadSegment, index: number, count: number, offset: number) => {
+      const profile = elevatedProfile(road);
+      const t = count > 1 ? index / (count - 1) : 0;
+      const base = t <= 0.5
+        ? profile.start + (profile.mid - profile.start) * (t * 2)
+        : profile.mid + (profile.end - profile.mid) * ((t - 0.5) * 2);
+      return base + offset;
+    };
+
     particleMotion = createTrafficMotionModel({
       Cesium,
-      roads,
+      roads: visibleRoads,
       particles,
       heightForRoad: (roadId) => photoreal ? roadHeight(roadId) + 3 : 8,
+      heightForCoordinate: (roadId, _coordinate, index, count) => {
+        if (!photoreal) return null;
+        const road = roadMap.get(roadId);
+        if (!road || !isElevatedRoad(road)) return null;
+        return elevatedHeightAt(road, index, count, 3);
+      },
     });
 
     const maxParticles = photoreal ? Math.min(900, particles.length) : particles.length;
@@ -385,8 +446,8 @@ export function createTrafficController(input: {
 
     if (!liveTomTomDrape && groundPolylineSupported) {
       const groups = new Map<string, any[]>();
-      for (const road of roads) {
-        if (road.coordinates.length < 2) continue;
+      for (const road of visibleRoads) {
+        if (road.coordinates.length < 2 || isElevatedRoad(road)) continue;
         const flow = flowMap.get(road.id);
         const key = flow?.source === 'tomtom-live' ? flow.congestion : 'simulated';
         const list = groups.get(key) ?? [];
@@ -413,8 +474,33 @@ export function createTrafficController(input: {
         }));
         groundRoadPrimitives.push(primitive);
       }
+
+      if (roadCollection) {
+        for (const road of visibleRoads) {
+          if (road.coordinates.length < 2 || !isElevatedRoad(road)) continue;
+          const flow = flowMap.get(road.id);
+          const color = flow?.source === "tomtom-live"
+            ? getCongestionColor(flow.congestion)
+            : "#94a3b8";
+          roadCollection.add({
+            positions: road.coordinates.map(([lon, lat], index) =>
+              Cesium.Cartesian3.fromDegrees(
+                lon,
+                lat,
+                elevatedHeightAt(road, index, road.coordinates.length, 4),
+              )
+            ),
+            width: road.highway === "motorway" || road.highway === "trunk" ? 3 : 2,
+            material: Cesium.Material.fromType("Color", {
+              color: Cesium.Color.fromCssColorString(color).withAlpha(
+                flow?.source === "tomtom-live" ? 0.72 : 0.24,
+              ),
+            }),
+          });
+        }
+      }
     } else if (!liveTomTomDrape && roadCollection) {
-      for (const road of roads) {
+      for (const road of visibleRoads) {
         if (road.coordinates.length < 2) continue;
         const flow = flowMap.get(road.id);
         const color = flow?.source === 'tomtom-live'
@@ -445,13 +531,13 @@ export function createTrafficController(input: {
       });
     }
 
-    if (liveTomTomDrape) {
+    if (liveTomTomDrape || (photoreal && flowCoveragePct > 0)) {
       publish('ready');
     } else {
       publish(
         'degraded',
         photoreal
-          ? '3D traffic · OSM particle simulation · TomTom raster drape unavailable'
+          ? '3D traffic · OSM road rendering · waiting for TomTom vector flow'
           : 'OSM particle simulation · live TomTom unavailable',
       );
     }
@@ -472,8 +558,12 @@ export function createTrafficController(input: {
     liveFlowController = controller;
     const generation = dataGeneration;
     try {
+      const flowRoads = context.mapMode === "photoreal" && context.cameraHeight < 8_000
+        ? renderableRoads()
+        : roads;
+      if (!flowRoads.length) return;
       const result = await fetchTomTomFlowsForRoads(
-        roads,
+        flowRoads,
         boundsAround(dataCenter.latitude, dataCenter.longitude, 8),
         controller.signal,
       );

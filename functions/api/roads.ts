@@ -19,6 +19,10 @@ type RoadSegment = {
   maxspeed: number | null;
   oneway: boolean;
   lanes: number | null;
+  bridge: boolean;
+  tunnel: boolean;
+  covered: boolean;
+  layer: number | null;
 };
 
 const MAJOR_TIMEOUT_MS = 12_000;
@@ -59,6 +63,10 @@ function normalizeRoads(data: OverpassResponse): RoadSegment[] {
       .map((point) => [point.lon, point.lat] as [number, number]);
     if (coords.length < 2) continue;
     const maxspeedMatch = el.tags?.maxspeed?.match(/^(\d+)/);
+    const bridgeTag = String(el.tags?.bridge ?? "").toLowerCase();
+    const tunnelTag = String(el.tags?.tunnel ?? "").toLowerCase();
+    const coveredTag = String(el.tags?.covered ?? "").toLowerCase();
+    const rawLayer = Number.parseFloat(String(el.tags?.layer ?? ""));
     roads.push({
       id: el.id,
       coordinates: coords,
@@ -68,6 +76,10 @@ function normalizeRoads(data: OverpassResponse): RoadSegment[] {
       maxspeed: maxspeedMatch ? Number(maxspeedMatch[1]) : null,
       oneway: el.tags?.oneway === "yes" || el.tags?.oneway === "true",
       lanes: el.tags?.lanes ? Number(el.tags.lanes) : null,
+      bridge: Boolean(bridgeTag && bridgeTag !== "no"),
+      tunnel: Boolean(tunnelTag && tunnelTag !== "no"),
+      covered: coveredTag === "yes" || coveredTag === "true",
+      layer: Number.isFinite(rawLayer) ? rawLayer : null,
     });
   }
   return roads;

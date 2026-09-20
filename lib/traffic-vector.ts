@@ -7,6 +7,10 @@ export type RoadSegment = {
   maxspeed: number | null;
   oneway: boolean;
   lanes: number | null;
+  bridge?: boolean;
+  tunnel?: boolean;
+  covered?: boolean;
+  layer?: number | null;
 };
 
 export type FlowSegment = {
