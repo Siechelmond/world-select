@@ -2,6 +2,7 @@ import type { SpatialEntity } from "@/lib/spatial";
 import { computePlanetPositions, type PlanetPosition } from "@/lib/space";
 
 const MIN_SOLAR_CONTEXT_HEIGHT_M = 6_500_000;
+const SOLAR_CONTEXT_REVEAL_SPAN_M = 6_500_000;
 const ORBIT_SAMPLES = 72;
 const EARTH_RADIUS_M = 6_371_000;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
@@ -22,7 +23,7 @@ function normalizedDistance(distanceAu: number) {
 }
 
 function revealHeight(distanceAu: number) {
-  return MIN_SOLAR_CONTEXT_HEIGHT_M + normalizedDistance(distanceAu) * 24_000_000;
+  return MIN_SOLAR_CONTEXT_HEIGHT_M + normalizedDistance(distanceAu) * SOLAR_CONTEXT_REVEAL_SPAN_M;
 }
 
 function earthRelative(body: PlanetPosition, earth: PlanetPosition) {
@@ -180,6 +181,7 @@ export function createCelestialBridgeRenderer(input: {
     }
 
     const epoch = new Date(earth.entity.observedAt);
+    if (viewer.scene?.sun) viewer.scene.sun.show = true;
     const candidates: Array<{
       id: string;
       entity: SpatialEntity;
@@ -272,6 +274,7 @@ export function createCelestialBridgeRenderer(input: {
     const wantedOrbitIds = new Set<string>();
     if (args.showOrbits) {
       for (const planet of args.planets) {
+        if (planet.entity.name === "Earth") continue;
         const vector = earthRelative(planet, earth);
         const distanceAu = Math.hypot(vector.x, vector.y, vector.z);
         if (args.cameraHeight < revealHeight(distanceAu)) continue;

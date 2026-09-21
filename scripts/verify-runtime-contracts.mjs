@@ -24,6 +24,8 @@ const checks = [
   ['keyless Telescope uses NASA Image and Video Library API', telescopeApi.includes('https://images-api.nasa.gov/search') && telescopeClient.includes('/api/telescope')],
   ['Telescope is isolated inside Space Explorer', spaceExplorer.includes('TELESCOPE') && spaceExplorer.includes('if (!telescopeOpen) return')],
   ['Earth planet bodies remain independent of orbit-line toggle', celestialBridge.includes('const visibleBodies = candidates.filter') && celestialBridge.includes('if (args.showOrbits)') && component.includes('showOrbits: planetOrbits')],
+  ['Earth orbit is excluded from Earth-relative orbit projection', celestialBridge.includes('if (planet.entity.name === "Earth") continue;') && celestialBridge.includes('const vector = earthRelative(planet, earth);')],
+  ['compressed planet reveal completes within bounded Earth context span', celestialBridge.includes('SOLAR_CONTEXT_REVEAL_SPAN_M = 6_500_000') && !celestialBridge.includes('normalizedDistance(distanceAu) * 24_000_000')],
 ];
 
 let failed = 0;
