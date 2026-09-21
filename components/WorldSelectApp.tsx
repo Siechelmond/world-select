@@ -1224,11 +1224,11 @@ export default function WorldSelectApp() {
         {radioLayer && <div className="filterChips">{RADIO_FILTERS.map((filter) => <button key={filter} className={radioFilter === filter ? "active" : ""} onClick={() => setRadioFilter(filter)}>{filter.replace("-", " ").toUpperCase()}</button>)}</div>}
         <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>
           <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth" || cameraHeight < CELESTIAL_CONTEXT_HEIGHT_M} onChange={(event) => setPlanetOrbits(event.target.checked)} />
-          <span><strong>Planet orbits</strong><small>{cameraHeight < CELESTIAL_CONTEXT_HEIGHT_M ? "Full-globe / orbital context only" : "Approximate JPL elements · physical AU/m scale"}</small></span>
+          <span><strong>Planet orbits</strong><small>{cameraHeight < CELESTIAL_CONTEXT_HEIGHT_M ? "Full-globe / orbital context only" : "Approximate JPL elements · fixed compressed solar scale"}</small></span>
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">
-          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "PHYSICAL SCALE"}</em>
+          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "COMPRESSED SCALE"}</em>
           <span>Ground map</span><em>ESRI STREET · WORLD SELECT LABELS EN</em>
           <span>Street imagery</span><em>GOOGLE + KARTAVIEW</em>
           <span>Annotations</span><em>LOCAL SESSION</em>
@@ -1293,7 +1293,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>{viewMode === "earth" && cameraHeight >= 12_000_000 ? "EARTH · DEEP ZOOM · physical planet distance + size" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
+        <span>{viewMode === "earth" && cameraHeight >= 12_000_000 ? "EARTH · DEEP ZOOM · JPL direction + compressed solar distance" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
       </footer>
     </main>
   );

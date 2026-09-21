@@ -11,6 +11,7 @@ const telescopeApi = fs.readFileSync(path.join(root, 'functions/api/telescope.ts
 const telescopeClient = fs.readFileSync(path.join(root, 'lib/telescope.ts'), 'utf8');
 const spaceExplorer = fs.readFileSync(path.join(root, 'components/SpaceExplorer.tsx'), 'utf8');
 const celestialBridge = fs.readFileSync(path.join(root, 'runtime/gev/layers/celestial-bridge-renderer.ts'), 'utf8');
+const satelliteRenderer = fs.readFileSync(path.join(root, 'runtime/gev/layers/satellites-renderer.ts'), 'utf8');
 
 const checks = [
   ['adsb.lol uses documented lat/lon/dist route', aircraftCore.includes('/v2/lat/${lat.toFixed(3)}/lon/${lon.toFixed(3)}/dist/${radius}')],
@@ -23,9 +24,12 @@ const checks = [
   ['UI still exposes explicit Degraded state', component.includes('effectiveState === "degraded"')],
   ['keyless Telescope uses NASA Image and Video Library API', telescopeApi.includes('https://images-api.nasa.gov/search') && telescopeClient.includes('/api/telescope')],
   ['Telescope is isolated inside Space Explorer', spaceExplorer.includes('TELESCOPE') && spaceExplorer.includes('if (!telescopeOpen) return')],
-  ['Earth planet bodies remain independent of orbit-line toggle', celestialBridge.includes('const visibleBodies = candidates.filter') && celestialBridge.includes('if (args.showOrbits)') && component.includes('showOrbits: planetOrbits')],
-  ['Earth orbit is excluded from Earth-relative orbit projection', celestialBridge.includes('if (planet.entity.name === "Earth") continue;') && celestialBridge.includes('const vector = earthRelative(planet, earth);')],
-  ['compressed planet reveal completes within bounded Earth context span', celestialBridge.includes('SOLAR_CONTEXT_REVEAL_SPAN_M = 6_500_000') && !celestialBridge.includes('normalizedDistance(distanceAu) * 24_000_000')],
+  ['Earth planet bodies remain independent of orbit-line toggle', celestialBridge.includes('syncBody({') && celestialBridge.includes('if (args.showOrbits)') && component.includes('showOrbits: planetOrbits')],
+  ['celestial bridge uses fixed compressed heliocentric geometry', celestialBridge.includes('SOLAR_DISPLAY_ONE_AU_M = 95_000_000') && celestialBridge.includes('compressedHeliocentricPosition') && !celestialBridge.includes('displayRadius(distanceAu, cameraHeight)')],
+  ['compressed Sun is explicit bridge reference', celestialBridge.includes('const SUN_ID = "bridge:solar:sun"') && celestialBridge.includes('setNativeSunVisible(false)') && celestialBridge.includes('SUN · REF')],
+  ['planet orbit paths share the compressed heliocentric transform', celestialBridge.includes('const sampleDisplay = compressedHeliocentricPosition') && celestialBridge.includes('earthDisplay')],
+  ['Earth orbit remains excluded from Earth-centered orbit projection', celestialBridge.includes('if (planet.entity.name === "Earth") continue;')],
+  ['deep solar context suppresses Earth-orbit satellite clutter', satelliteRenderer.includes('SOLAR_CONTEXT_LABEL_CUTOFF_M = 30_000_000') && satelliteRenderer.includes('SOLAR_CONTEXT_SATELLITE_CUTOFF_M = 120_000_000') && satelliteRenderer.includes('deepSolarContext')],
 ];
 
 let failed = 0;

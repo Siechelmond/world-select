@@ -37,6 +37,8 @@ const CORE_PROPAGATION_MS = 1_000;
 const TRACKED_PROPAGATION_MS = 200;
 const RING_ROTATION_MS = 1_000;
 const DENSE_REFRESH_FRAMES = 300;
+const SOLAR_CONTEXT_LABEL_CUTOFF_M = 30_000_000;
+const SOLAR_CONTEXT_SATELLITE_CUTOFF_M = 120_000_000;
 
 function isDenseExtra(record: TleRecord) {
   return /STARLINK|ONEWEB|IRIDIUM/i.test(record.name);
@@ -62,6 +64,7 @@ export function createSatelliteRenderer(input: {
   let continuous = false;
   let selectedId: string | null = null;
   let isMobile = false;
+  let cameraHeight = 0;
   let activeFilter: SatelliteFilter = 'all';
   let catalog: SatelliteCatalog = 'core';
   let tleRecords: TleRecord[] = [];
@@ -222,10 +225,12 @@ export function createSatelliteRenderer(input: {
       );
       const isSelected = spatial.id === selectedId;
       const isIss = /ISS.*ZARYA|^ISS\b/i.test(spatial.name);
-      const persistentLabel = isIss || spatial.name.includes('TIANHE');
+      const labelContextVisible = cameraHeight < SOLAR_CONTEXT_LABEL_CUTOFF_M;
+      const satelliteContextVisible = cameraHeight < SOLAR_CONTEXT_SATELLITE_CUTOFF_M;
+      const persistentLabel = labelContextVisible && (isIss || spatial.name.includes('TIANHE'));
       const klass = satelliteClassForEntity(spatial);
       const spec = SATELLITE_CLASSES[klass];
-      const filteredIn = satelliteMatchesFilter(spatial, activeFilter);
+      const filteredIn = satelliteContextVisible && satelliteMatchesFilter(spatial, activeFilter);
       const horizonVisible = !occluder || occluder.isPointVisible(position);
       const pixelSize = isIss ? Math.max(8, spec.pixelSize) : spec.pixelSize;
       const pointColor = Cesium.Color.fromCssColorString(spec.color);
@@ -343,24 +348,27 @@ export function createSatelliteRenderer(input: {
   };
 
   return Object.freeze({
-    sync({ satellites, tleRecords: nextRecords, catalog: nextCatalog, visible, selectedId: nextSelectedId, isMobile: nextIsMobile, time, continuous: nextContinuous, filter: nextFilter }: SyncInput) {
+    sync({ satellites, tleRecords: nextRecords, catalog: nextCatalog, visible, selectedId: nextSelectedId, isMobile: nextIsMobile, cameraHeight: nextCameraHeight, time, continuous: nextContinuous, filter: nextFilter }: SyncInput) {
       if (destroyed) return;
       configureRecords(nextRecords, nextCatalog);
       selectedId = nextSelectedId;
       isMobile = nextIsMobile;
+      cameraHeight = nextCameraHeight;
       activeFilter = nextFilter;
       enabled = visible;
-      continuous = visible && nextContinuous && nextRecords.length > 0;
-      pointCollection.show = visible;
+      const deepSolarContext = cameraHeight >= SOLAR_CONTEXT_SATELLITE_CUTOFF_M;
+      continuous = visible && !deepSolarContext && nextContinuous && nextRecords.length > 0;
+      pointCollection.show = visible && !deepSolarContext;
       setHold(continuous);
-      if (!visible) {
+      if (!visible || deepSolarContext) {
         hideDetails();
         if (orbit?.primitive) orbit.primitive.show = false;
         viewer.scene?.requestRender?.();
         return;
       }
-      if (orbit?.primitive) orbit.primitive.show = true;
+      if (orbit?.primitive) orbit.primitive.show = cameraHeight < SOLAR_CONTEXT_SATELLITE_CUTOFF_M;
       renderSnapshot(satellites, time, true);
+      if (orbit?.primitive) orbit.primitive.show = cameraHeight < SOLAR_CONTEXT_SATELLITE_CUTOFF_M;
       lastPropagation = continuous ? time.getTime() : 0;
       updateOrbitRotation(time);
       lastRingRotation = time.getTime();
