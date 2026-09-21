@@ -9,6 +9,7 @@ import { createSatelliteRenderer } from "@/runtime/gev/layers/satellites-rendere
 import { createAircraftRenderer } from "@/runtime/gev/layers/aircraft-renderer";
 import { createTrafficController } from "@/runtime/gev/layers/traffic-controller";
 import { createPointLayerRenderer } from "@/runtime/gev/layers/point-layer-renderer";
+import { createRadioRenderer } from "@/runtime/gev/layers/radio-renderer";
 import { createInfrastructureRenderer } from "@/runtime/gev/layers/infrastructure-renderer";
 import { createCelestialBridgeRenderer } from "@/runtime/gev/layers/celestial-bridge-renderer";
 import { propagateTles, type SatelliteCatalog, type SatelliteFeedMeta, type TleRecord } from "@/lib/celestrak";
@@ -93,7 +94,7 @@ export default function WorldSelectApp() {
   const celestialBridgeRendererRef = useRef<ReturnType<typeof createCelestialBridgeRenderer> | null>(null);
   const eventRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
   const auroraRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
-  const radioRendererRef = useRef<ReturnType<typeof createPointLayerRenderer> | null>(null);
+  const radioRendererRef = useRef<ReturnType<typeof createRadioRenderer> | null>(null);
   const infrastructureRendererRef = useRef<ReturnType<typeof createInfrastructureRenderer> | null>(null);
   const coreRuntimeRef = useRef<ReturnType<typeof createCoreLiveWorld> | null>(null);
   const streetFallbackAbortRef = useRef<AbortController | null>(null);
@@ -585,11 +586,10 @@ export default function WorldSelectApp() {
       entityRegistry: entityMapRef.current,
       styleFor: (item) => ({ color: "#4ade80", pixelSize: Math.max(3, Math.min(10, Number(item.properties.probability ?? 0) / 10)), altitudeMeters: 110_000, disableDepthTestDistance: 0 }),
     });
-    radioRendererRef.current = createPointLayerRenderer({
+    radioRendererRef.current = createRadioRenderer({
       viewer: lifecycle.viewer,
       Cesium: window.Cesium,
       entityRegistry: entityMapRef.current,
-      styleFor: () => ({ color: "#f472b6", pixelSize: 6, clampToGround: true, disableDepthTestDistance: 2500 }),
     });
     infrastructureRendererRef.current = createInfrastructureRenderer({
       viewer: lifecycle.viewer,
@@ -837,8 +837,12 @@ export default function WorldSelectApp() {
   }, [aurora, auroraLayer, earthSurfaceVisible, cesiumReady]);
 
   useEffect(() => {
-    radioRendererRef.current?.sync(filteredRadio, earthSurfaceVisible && radioLayer);
-  }, [filteredRadio, radioLayer, earthSurfaceVisible, cesiumReady]);
+    radioRendererRef.current?.sync(
+      filteredRadio,
+      earthSurfaceVisible && radioLayer,
+      selected?.kind === "radio-station" ? selected.id : null,
+    );
+  }, [filteredRadio, radioLayer, earthSurfaceVisible, selected?.id, selected?.kind, cesiumReady]);
 
   useEffect(() => {
     infrastructureRendererRef.current?.sync(

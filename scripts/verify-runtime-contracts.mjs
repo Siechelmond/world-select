@@ -12,6 +12,7 @@ const telescopeClient = fs.readFileSync(path.join(root, 'lib/telescope.ts'), 'ut
 const spaceExplorer = fs.readFileSync(path.join(root, 'components/SpaceExplorer.tsx'), 'utf8');
 const celestialBridge = fs.readFileSync(path.join(root, 'runtime/gev/layers/celestial-bridge-renderer.ts'), 'utf8');
 const satelliteRenderer = fs.readFileSync(path.join(root, 'runtime/gev/layers/satellites-renderer.ts'), 'utf8');
+const radioRenderer = fs.readFileSync(path.join(root, 'runtime/gev/layers/radio-renderer.ts'), 'utf8');
 const viewScale = fs.readFileSync(path.join(root, 'lib/view-scale.ts'), 'utf8');
 const viewerLifecycle = fs.readFileSync(path.join(root, 'lib/cesium-viewer.ts'), 'utf8');
 const mapController = fs.readFileSync(path.join(root, 'runtime/gev/map-controller.ts'), 'utf8');
@@ -47,6 +48,7 @@ const checks = [
   ['satellites and aircraft render only in the Earth/orbit tier', component.includes('visible: earthOrbitVisible && satelliteLayer') && component.includes('visible: earthOrbitVisible && (aircraftLayer || militaryLayer)')],
   ['surface layers leave the scene in solar tier', component.includes('earthVisible: earthSurfaceVisible') && component.includes('earthSurfaceVisible && earthquakeLayer')],
   ['deep solar context retains renderer-level satellite fallback cutoff', satelliteRenderer.includes('SOLAR_CONTEXT_SATELLITE_CUTOFF_M = 120_000_000') && satelliteRenderer.includes('deepSolarContext')],
+  ['radio markers keep donor-sized visibility without changing shared point renderer', radioRenderer.includes('NORMAL_PIXEL_SIZE = 13') && radioRenderer.includes('Number.POSITIVE_INFINITY') && radioRenderer.includes('SELECTED_PIXEL_SIZE = 16') && component.includes('createRadioRenderer')],
 ];
 
 let failed = 0;
