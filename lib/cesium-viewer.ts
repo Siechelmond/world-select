@@ -1,4 +1,5 @@
 import { GEO_LABELS_DE } from '@/lib/geo-labels';
+import { resolveEarthScaleTier, type EarthScaleTier } from '@/lib/view-scale';
 import { holdContinuousRender, installRenderGovernor, releaseContinuousRender, uninstallRenderGovernor } from '@/runtime/gev/render-governor';
 import {
   createMapController,
@@ -25,6 +26,7 @@ export function createWorldViewer(input: {
   Cesium: any;
   container: HTMLElement;
   onViewChange: (view: { latitude: number; longitude: number; height: number }) => void;
+  onScaleTierChange?: (value: { tier: EarthScaleTier; height: number }) => void;
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
   onEmptyClick?: (point: { latitude: number; longitude: number } | null) => void;
@@ -36,6 +38,7 @@ export function createWorldViewer(input: {
     Cesium,
     container,
     onViewChange,
+    onScaleTierChange = () => {},
     onEntityClick,
     onEntityHover,
     onEmptyClick,
@@ -75,6 +78,18 @@ export function createWorldViewer(input: {
 
   viewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000),
+  });
+
+  let lastScaleTier: EarthScaleTier = resolveEarthScaleTier(
+    viewer.camera.positionCartographic?.height ?? 9_500_000,
+  );
+  const removeScaleTierMonitor = viewer.scene.preRender.addEventListener(() => {
+    const height = viewer.camera.positionCartographic?.height;
+    if (!Number.isFinite(height)) return;
+    const nextTier = resolveEarthScaleTier(height);
+    if (nextTier === lastScaleTier) return;
+    lastScaleTier = nextTier;
+    onScaleTierChange({ tier: nextTier, height });
   });
 
   const mapController = createMapController({
@@ -324,6 +339,7 @@ export function createWorldViewer(input: {
       removeOrientationAnimation = null;
       releaseContinuousRender('camera-orientation');
       viewer.camera.moveEnd.removeEventListener(updateView);
+      if (typeof removeScaleTierMonitor === 'function') removeScaleTierMonitor();
       handler.destroy();
       mapController.destroy();
       uninstallRenderGovernor(viewer);

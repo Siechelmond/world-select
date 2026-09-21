@@ -1,16 +1,26 @@
 import type { SpatialEntity } from "@/lib/spatial";
 import { computePlanetPositions, type PlanetPosition } from "@/lib/space";
-import {
-  SOLAR_CONTEXT_HEIGHT_M,
-  SOLAR_GLOBE_HANDOFF_HEIGHT_M,
-} from "@/lib/view-scale";
+
 const SOLAR_DISPLAY_ONE_AU_M = 95_000_000;
 const SOLAR_DISPLAY_CURVE = 1.7;
 const ORBIT_SAMPLES = 96;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
 const SUN_ID = "bridge:solar:sun";
-const EARTH_PROXY_ID = "bridge:jpl:earth";
-const EARTH_PROXY_EPSILON_M = 1_000;
+const SUN_GLOW_IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`
+  <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+    <defs>
+      <radialGradient id="g">
+        <stop offset="0%" stop-color="#fffdf0" stop-opacity="1"/>
+        <stop offset="18%" stop-color="#fff7b2" stop-opacity="1"/>
+        <stop offset="38%" stop-color="#fde047" stop-opacity=".92"/>
+        <stop offset="62%" stop-color="#f59e0b" stop-opacity=".34"/>
+        <stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <circle cx="64" cy="64" r="62" fill="url(#g)"/>
+    <circle cx="64" cy="64" r="18" fill="#fff7c2"/>
+  </svg>
+`)}`;
 
 const BODY_RADIUS_KM: Record<string, number> = {
   Sun: 696_340,
@@ -137,6 +147,7 @@ export function createCelestialBridgeRenderer(input: {
   const bodyIds = new Set<string>();
   const orbitIds = new Set<string>();
   const orbitCache = new Map<string, any[]>();
+  let orbitEpochKey: string | null = null;
   let destroyed = false;
 
   const setNativeSunVisible = (visible: boolean) => {
@@ -169,8 +180,7 @@ export function createCelestialBridgeRenderer(input: {
     earth: PlanetPosition,
   ) => {
     const epoch = new Date(earth.entity.observedAt);
-    const hourKey = Math.floor(epoch.getTime() / 3_600_000);
-    const key = `${hourKey}:${name}`;
+    const key = `${epoch.getTime()}:${name}`;
     const cached = orbitCache.get(key);
     if (cached) return cached;
 
@@ -230,13 +240,33 @@ export function createCelestialBridgeRenderer(input: {
       item = viewer.entities.add({
         id,
         position,
-        point: {
-          pixelSize: selected ? pixelSize + 4 : pixelSize,
-          color,
-          outlineColor: Cesium.Color.fromCssColorString("#020617"),
-          outlineWidth: selected ? 3 : 1.5,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
+        ...(isSun
+          ? {
+              billboard: {
+                image: SUN_GLOW_IMAGE,
+                width: selected ? 58 : 50,
+                height: selected ? 58 : 50,
+                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+                verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              },
+              point: {
+                pixelSize: selected ? 9 : 7,
+                color: Cesium.Color.fromCssColorString("#fff7c2"),
+                outlineColor: Cesium.Color.fromCssColorString("#facc15"),
+                outlineWidth: 2,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              },
+            }
+          : {
+              point: {
+                pixelSize: selected ? pixelSize + 4 : pixelSize,
+                color,
+                outlineColor: Cesium.Color.fromCssColorString("#020617"),
+                outlineWidth: selected ? 3 : 1.5,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+              },
+            }),
         label: {
           text: isSun ? "SUN · REF" : name.toUpperCase(),
           font: isSun
@@ -254,11 +284,17 @@ export function createCelestialBridgeRenderer(input: {
       });
     } else {
       item.position = new Cesium.ConstantPositionProperty(position);
+      if (isSun && item.billboard) {
+        const glowSize = selected ? 58 : 50;
+        item.billboard.width = new Cesium.ConstantProperty(glowSize);
+        item.billboard.height = new Cesium.ConstantProperty(glowSize);
+      }
       if (item.point) {
-        item.point.pixelSize = new Cesium.ConstantProperty(
-          selected ? pixelSize + 4 : pixelSize,
+        const nextSize = isSun ? (selected ? 9 : 7) : (selected ? pixelSize + 4 : pixelSize);
+        item.point.pixelSize = new Cesium.ConstantProperty(nextSize);
+        item.point.outlineWidth = new Cesium.ConstantProperty(
+          isSun ? 2 : (selected ? 3 : 1.5),
         );
-        item.point.outlineWidth = new Cesium.ConstantProperty(selected ? 3 : 1.5);
       }
     }
   };
@@ -266,13 +302,12 @@ export function createCelestialBridgeRenderer(input: {
   const sync = (args: {
     planets: PlanetPosition[];
     visible: boolean;
-    cameraHeight: number;
     selectedId?: string | null;
     showOrbits?: boolean;
   }) => {
     if (destroyed || viewer.isDestroyed?.()) return;
 
-    if (!args.visible || args.cameraHeight < SOLAR_CONTEXT_HEIGHT_M) {
+    if (!args.visible) {
       clear();
       return;
     }
@@ -289,6 +324,11 @@ export function createCelestialBridgeRenderer(input: {
     setNativeSunVisible(false);
 
     const epoch = new Date(earth.entity.observedAt);
+    const epochKey = earth.entity.observedAt;
+    if (orbitEpochKey !== epochKey) {
+      orbitCache.clear();
+      orbitEpochKey = epochKey;
+    }
     const earthVector = { x: earth.xAu, y: earth.yAu, z: earth.zAu };
     const nextBodyIds = new Set<string>();
 
@@ -327,37 +367,6 @@ export function createCelestialBridgeRenderer(input: {
       selected: args.selectedId === SUN_ID,
       isSun: true,
     });
-
-    if (args.cameraHeight >= SOLAR_GLOBE_HANDOFF_HEIGHT_M) {
-      const awayFromSun = Cesium.Cartesian3.negate(
-        sunPosition,
-        new Cesium.Cartesian3(),
-      );
-      const earthProxyPosition = Cesium.Cartesian3.multiplyByScalar(
-        Cesium.Cartesian3.normalize(awayFromSun, new Cesium.Cartesian3()),
-        EARTH_PROXY_EPSILON_M,
-        new Cesium.Cartesian3(),
-      );
-      const earthProxyEntity: SpatialEntity = {
-        ...earth.entity,
-        id: EARTH_PROXY_ID,
-        properties: {
-          ...earth.entity.properties,
-          role: "solar Earth proxy",
-          displayFrame: "Earth-centered compressed heliocentric J2000 context",
-          visualScale: "Body radius relation compressed separately from orbital distance",
-          sunRepresentation: "World Select compressed solar reference",
-        },
-      };
-      nextBodyIds.add(EARTH_PROXY_ID);
-      syncBody({
-        id: EARTH_PROXY_ID,
-        entity: earthProxyEntity,
-        position: earthProxyPosition,
-        name: "Earth",
-        selected: args.selectedId === EARTH_PROXY_ID,
-      });
-    }
 
     for (const planet of args.planets) {
       if (planet.entity.name === "Earth") continue;
@@ -461,6 +470,7 @@ export function createCelestialBridgeRenderer(input: {
       if (destroyed) return;
       clear();
       orbitCache.clear();
+      orbitEpochKey = null;
       destroyed = true;
     },
   });

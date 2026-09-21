@@ -36,9 +36,8 @@ import {
 import { loadInfrastructureBaseline } from "@/lib/infrastructure-local";
 import {
   GROUND_TIER_MAX_HEIGHT_M,
-  SOLAR_CONTEXT_HEIGHT_M,
-  SOLAR_GLOBE_HANDOFF_HEIGHT_M,
   resolveEarthScaleTier,
+  type EarthScaleTier,
 } from "@/lib/view-scale";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
@@ -185,8 +184,10 @@ export default function WorldSelectApp() {
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [timeCollapsed, setTimeCollapsed] = useState(false);
   const [planetOrbits, setPlanetOrbits] = useState(false);
+  const [scaleTier, setScaleTier] = useState<EarthScaleTier>(() =>
+    resolveEarthScaleTier(9_500_000)
+  );
 
-  const scaleTier = useMemo(() => resolveEarthScaleTier(cameraHeight), [cameraHeight]);
   const earthSurfaceVisible = viewMode === "earth" && scaleTier !== "solar";
   const earthOrbitVisible = viewMode === "earth" && scaleTier === "earth";
   const solarContextVisible = viewMode === "earth" && scaleTier === "solar";
@@ -505,6 +506,11 @@ export default function WorldSelectApp() {
       onViewChange: ({ latitude, longitude, height }) => {
         setViewCenter({ latitude, longitude });
         setCameraHeight(height);
+        setScaleTier(resolveEarthScaleTier(height));
+      },
+      onScaleTierChange: ({ tier, height }) => {
+        setScaleTier(tier);
+        setCameraHeight(height);
       },
       onEntityClick: (id) => {
         const spatial = entityMapRef.current.get(id);
@@ -677,15 +683,15 @@ export default function WorldSelectApp() {
   }, [streetTarget?.latitude, streetTarget?.longitude, earthSurfaceVisible, cesiumReady]);
 
   useEffect(() => {
-    if (
-      viewMode === "earth" &&
-      selected?.kind === "celestial-body" &&
-      !selected.id.startsWith("bridge:")
-    ) {
+    if (viewMode !== "earth" || selected?.kind !== "celestial-body") return;
+    const validSolarSelection =
+      scaleTier === "solar" &&
+      selected.id.startsWith("bridge:");
+    if (!validSolarSelection) {
       setSelected(null);
       setFollowAircraft(false);
     }
-  }, [viewMode, selected?.kind, selected?.id]);
+  }, [viewMode, scaleTier, selected?.kind, selected?.id]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -729,21 +735,6 @@ export default function WorldSelectApp() {
       : null);
     setMapMode(mode);
   }, []);
-
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer || viewer.isDestroyed?.()) return;
-    const globeVisible =
-      viewMode === "earth" &&
-      cameraHeight < SOLAR_GLOBE_HANDOFF_HEIGHT_M;
-
-    if (viewer.scene?.globe) viewer.scene.globe.show = globeVisible;
-    if (viewer.scene?.skyAtmosphere) viewer.scene.skyAtmosphere.show = globeVisible;
-    if (viewer.scene?.moon) viewer.scene.moon.show = globeVisible;
-    viewer.scene?.requestRender?.();
-  }, [viewMode, cameraHeight, cesiumReady]);
-
-
 
   useEffect(() => {
     earthquakeRendererRef.current?.sync(
@@ -821,11 +812,10 @@ export default function WorldSelectApp() {
     celestialBridgeRendererRef.current?.sync({
       planets,
       visible: solarContextVisible,
-      cameraHeight,
       selectedId: selected?.kind === "celestial-body" ? selected.id : null,
       showOrbits: planetOrbits,
     });
-  }, [planets, solarContextVisible, cameraHeight, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
+  }, [planets, solarContextVisible, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
 
   useEffect(() => {
     trafficControllerRef.current?.sync({
@@ -1249,8 +1239,8 @@ export default function WorldSelectApp() {
         <LayerToggle checked={radioLayer} onChange={setRadioLayer} onRetry={() => setRadioRetry((v) => v + 1)} title="Radio" subtitle="Radio Browser · geolocated HTTPS stations" state={radioState} count={filteredRadio.length} disabled={viewMode !== "earth"} error={layerErrors.radio} />
         {radioLayer && <div className="filterChips">{RADIO_FILTERS.map((filter) => <button key={filter} className={radioFilter === filter ? "active" : ""} onClick={() => setRadioFilter(filter)}>{filter.replace("-", " ").toUpperCase()}</button>)}</div>}
         <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>
-          <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth" || cameraHeight < SOLAR_CONTEXT_HEIGHT_M} onChange={(event) => setPlanetOrbits(event.target.checked)} />
-          <span><strong>Planet orbits</strong><small>{cameraHeight < SOLAR_CONTEXT_HEIGHT_M ? "Full-globe / orbital context only" : "Approximate JPL elements · fixed compressed solar scale"}</small></span>
+          <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth" || scaleTier !== "solar"} onChange={(event) => setPlanetOrbits(event.target.checked)} />
+          <span><strong>Planet orbits</strong><small>{scaleTier !== "solar" ? "Full-globe / orbital context only" : "Approximate JPL elements · fixed compressed solar scale"}</small></span>
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">

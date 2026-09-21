@@ -13,6 +13,8 @@ const spaceExplorer = fs.readFileSync(path.join(root, 'components/SpaceExplorer.
 const celestialBridge = fs.readFileSync(path.join(root, 'runtime/gev/layers/celestial-bridge-renderer.ts'), 'utf8');
 const satelliteRenderer = fs.readFileSync(path.join(root, 'runtime/gev/layers/satellites-renderer.ts'), 'utf8');
 const viewScale = fs.readFileSync(path.join(root, 'lib/view-scale.ts'), 'utf8');
+const viewerLifecycle = fs.readFileSync(path.join(root, 'lib/cesium-viewer.ts'), 'utf8');
+const mapController = fs.readFileSync(path.join(root, 'runtime/gev/map-controller.ts'), 'utf8');
 
 const checks = [
   ['adsb.lol uses documented lat/lon/dist route', aircraftCore.includes('/v2/lat/${lat.toFixed(3)}/lon/${lon.toFixed(3)}/dist/${radius}')],
@@ -30,9 +32,13 @@ const checks = [
   ['compressed Sun is explicit bridge reference', celestialBridge.includes('const SUN_ID = "bridge:solar:sun"') && celestialBridge.includes('setNativeSunVisible(false)') && celestialBridge.includes('SUN · REF')],
   ['planet orbit paths share the compressed heliocentric transform', celestialBridge.includes('const sampleDisplay = compressedHeliocentricPosition') && celestialBridge.includes('earthDisplay')],
   ['Earth orbit is rendered while exact Earth-origin samples stay filtered', !celestialBridge.includes('if (planet.entity.name === "Earth") continue;') && celestialBridge.includes('Cesium.Cartesian3.magnitude(position) > 1')],
-  ['Earth proxy replaces the real globe only after solar handoff', celestialBridge.includes('EARTH_PROXY_ID') && celestialBridge.includes('SOLAR_GLOBE_HANDOFF_HEIGHT_M') && component.includes('viewer.scene.globe.show = globeVisible')],
+  ['native Earth is the only Earth across Earth and solar tiers', !celestialBridge.includes('EARTH_PROXY_ID') && !component.includes('viewer.scene.globe.show = globeVisible')],
+  ['map controller exclusively owns globe versus Google 3D surface', mapController.includes('viewer.scene.globe.show = !in3d') && !component.includes('viewer.scene?.globe.show')],
   ['planet display sizes preserve radius ordering on a compressed visual scale', celestialBridge.includes('BODY_RADIUS_KM') && celestialBridge.includes('Math.pow(radiusKm / earthRadiusKm, 0.25)')],
-  ['three-tier contract centralizes ground Earth and solar thresholds', viewScale.includes('"ground" | "earth" | "solar"') && viewScale.includes('GROUND_TIER_MAX_HEIGHT_M = 120_000') && viewScale.includes('SOLAR_CONTEXT_HEIGHT_M = 36_000_000') && viewScale.includes('SOLAR_GLOBE_HANDOFF_HEIGHT_M = 60_000_000')],
+  ['three-tier contract uses one solar boundary', viewScale.includes('"ground" | "earth" | "solar"') && viewScale.includes('GROUND_TIER_MAX_HEIGHT_M = 120_000') && viewScale.includes('SOLAR_CONTEXT_HEIGHT_M = 36_000_000') && !viewScale.includes('SOLAR_GLOBE_HANDOFF_HEIGHT_M')],
+  ['camera movement publishes tier changes before moveEnd', viewerLifecycle.includes('scene.preRender.addEventListener') && viewerLifecycle.includes('onScaleTierChange({ tier: nextTier, height })')],
+  ['orbit cache is invalidated by the exact selected-time epoch', celestialBridge.includes('const key = `${epoch.getTime()}:${name}`') && celestialBridge.includes('orbitEpochKey !== epochKey')],
+  ['compressed Sun uses a glow while Cesium lighting remains separate', celestialBridge.includes('SUN_GLOW_IMAGE') && celestialBridge.includes('setNativeSunVisible(false)')],
   ['satellites and aircraft render only in the Earth/orbit tier', component.includes('visible: earthOrbitVisible && satelliteLayer') && component.includes('visible: earthOrbitVisible && (aircraftLayer || militaryLayer)')],
   ['surface layers leave the scene in solar tier', component.includes('earthVisible: earthSurfaceVisible') && component.includes('earthSurfaceVisible && earthquakeLayer')],
   ['deep solar context retains renderer-level satellite fallback cutoff', satelliteRenderer.includes('SOLAR_CONTEXT_SATELLITE_CUTOFF_M = 120_000_000') && satelliteRenderer.includes('deepSolarContext')],
