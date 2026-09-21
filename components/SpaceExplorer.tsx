@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useRef, useState, type WheelEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type WheelEvent } from "react";
 import type { SpatialEntity } from "@/lib/spatial";
 import type { SpaceLaunch } from "@/lib/launches";
+import { fetchTelescopeAsset, fetchTelescopeImages, type TelescopeFilter, type TelescopeImage } from "@/lib/telescope";
 import { SATELLITE_CLASSES, satelliteClassForEntity } from "@/lib/satellite-style";
 import {
   getPlanetMoons,
@@ -152,13 +153,75 @@ export default function SpaceExplorer({ planets, satellites, sun, time, launches
   const [focusedPlanet, setFocusedPlanet] = useState<string>("Earth");
   const lastWheelAt = useRef(0);
   const planet = planets.find((item) => item.entity.name === focusedPlanet) ?? planets[2] ?? planets[0];
+  const [telescopeOpen, setTelescopeOpen] = useState(false);
+  const [telescopeFilter, setTelescopeFilter] = useState<TelescopeFilter>("all");
+  const [telescopeDraft, setTelescopeDraft] = useState("");
+  const [telescopeQuery, setTelescopeQuery] = useState("");
+  const [telescopeItems, setTelescopeItems] = useState<TelescopeImage[]>([]);
+  const [telescopeState, setTelescopeState] = useState<"idle" | "loading" | "ready" | "degraded" | "error">("idle");
+  const [telescopeError, setTelescopeError] = useState<string | null>(null);
+  const [telescopeSelected, setTelescopeSelected] = useState<TelescopeImage | null>(null);
+  const [telescopeAssetUrl, setTelescopeAssetUrl] = useState<string | null>(null);
+  const [telescopeAssetState, setTelescopeAssetState] = useState<"idle" | "loading" | "ready" | "degraded">("idle");
+
+  useEffect(() => {
+    if (!telescopeOpen) return;
+    const controller = new AbortController();
+    setTelescopeState("loading");
+    setTelescopeError(null);
+
+    fetchTelescopeImages(telescopeFilter, telescopeQuery, controller.signal)
+      .then((feed) => {
+        if (controller.signal.aborted) return;
+        setTelescopeItems(feed.items);
+        setTelescopeState(feed.degraded || !feed.items.length ? "degraded" : "ready");
+        setTelescopeSelected((current) =>
+          current && feed.items.some((item) => item.id === current.id) ? current : null
+        );
+      })
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) return;
+        setTelescopeItems([]);
+        setTelescopeState("error");
+        setTelescopeError(reason instanceof Error ? reason.message : "Telescope image source unavailable");
+      });
+
+    return () => controller.abort();
+  }, [telescopeOpen, telescopeFilter, telescopeQuery]);
+
+  useEffect(() => {
+    if (!telescopeOpen || !telescopeSelected) {
+      setTelescopeAssetUrl(null);
+      setTelescopeAssetState("idle");
+      return;
+    }
+
+    const controller = new AbortController();
+    setTelescopeAssetUrl(telescopeSelected.thumbnailUrl);
+    setTelescopeAssetState("loading");
+    fetchTelescopeAsset(telescopeSelected.nasaId, controller.signal)
+      .then((imageUrl) => {
+        if (controller.signal.aborted) return;
+        setTelescopeAssetUrl(imageUrl ?? telescopeSelected.thumbnailUrl);
+        setTelescopeAssetState(imageUrl ? "ready" : "degraded");
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setTelescopeAssetUrl(telescopeSelected.thumbnailUrl);
+        setTelescopeAssetState("degraded");
+      });
+
+    return () => controller.abort();
+  }, [telescopeOpen, telescopeSelected]);
 
   const changeLevel = (next: SpaceLevel) => {
     if (next === "planet" && !planet) return;
+    setTelescopeOpen(false);
     setLevel(next);
   };
 
   const zoomBy = (direction: -1 | 1) => {
+    if (telescopeOpen) return;
     if (level === "orbit" && direction < 0) {
       onReturnEarth();
       return;
@@ -169,6 +232,7 @@ export default function SpaceExplorer({ planets, satellites, sun, time, launches
   };
 
   const onWheel = (event: WheelEvent<HTMLDivElement>) => {
+    if (telescopeOpen) return;
     const now = Date.now();
     if (now - lastWheelAt.current < 320 || Math.abs(event.deltaY) < 18) return;
     event.preventDefault();
@@ -177,6 +241,7 @@ export default function SpaceExplorer({ planets, satellites, sun, time, launches
   };
 
   const openPlanet = (item: PlanetPosition) => {
+    setTelescopeOpen(false);
     setFocusedPlanet(item.entity.name);
     setLevel("planet");
     onSelect(item.entity);
@@ -192,13 +257,17 @@ export default function SpaceExplorer({ planets, satellites, sun, time, launches
           : "Earth camera preserved for return"}</small>
       </div>
       <div className="spaceTitle">
-        <span>{LEVEL_LABELS[level]}</span>
+        <span>{telescopeOpen ? "TELESCOPE VIEW" : LEVEL_LABELS[level]}</span>
         <small>
-          {level === "orbit" && `Earth orbital frame · ${satellites.length} propagated CelesTrak objects available`}
-          {level === "planet" && `${focusedPlanet} system · moon sizes and distances expanded for visibility`}
-          {level === "solar" && "JPL approximate heliocentric positions · logarithmic display scale"}
-          {level === "outer" && "Named dwarf-planet orbit scales · Kuiper density illustrative"}
-          {level === "galaxy" && "Milky Way context · Solar System marker is schematic"}
+          {telescopeOpen
+            ? "Keyless NASA astronomy imagery · archive/release content, not live telescope telemetry"
+            : <>
+              {level === "orbit" && `Earth orbital frame · ${satellites.length} propagated CelesTrak objects available`}
+              {level === "planet" && `${focusedPlanet} system · moon sizes and distances expanded for visibility`}
+              {level === "solar" && "JPL approximate heliocentric positions · logarithmic display scale"}
+              {level === "outer" && "Named dwarf-planet orbit scales · Kuiper density illustrative"}
+              {level === "galaxy" && "Milky Way context · Solar System marker is schematic"}
+            </>}
         </small>
       </div>
 
@@ -206,43 +275,186 @@ export default function SpaceExplorer({ planets, satellites, sun, time, launches
         {LEVELS.map((item) => (
           <button
             key={item}
-            className={level === item ? "active" : ""}
+            className={!telescopeOpen && level === item ? "active" : ""}
             disabled={item === "planet" && !planet}
             onClick={() => changeLevel(item)}
           >
             {item === "planet" ? focusedPlanet.toUpperCase() : LEVEL_LABELS[item]}
           </button>
         ))}
+        <button
+          className={telescopeOpen ? "active telescopeControl" : "telescopeControl"}
+          onClick={() => setTelescopeOpen((open) => !open)}
+        >
+          TELESCOPE
+        </button>
       </div>
 
-      <div className="spaceZoomHint">scroll to travel scale · + / − changes spatial frame</div>
-      <div className="spaceZoomButtons glass" aria-label="Space zoom">
+      {!telescopeOpen && <div className="spaceZoomHint">scroll to travel scale · + / − changes spatial frame</div>}
+      {!telescopeOpen && <div className="spaceZoomButtons glass" aria-label="Space zoom">
         <button onClick={() => zoomBy(-1)}>+</button>
         <button onClick={() => zoomBy(1)} disabled={level === "galaxy"}>−</button>
+      </div>}
+
+      {telescopeOpen ? (
+        <TelescopeView
+          items={telescopeItems}
+          state={telescopeState}
+          error={telescopeError}
+          filter={telescopeFilter}
+          draft={telescopeDraft}
+          selected={telescopeSelected}
+          assetUrl={telescopeAssetUrl}
+          assetState={telescopeAssetState}
+          onFilter={(filter) => {
+            setTelescopeFilter(filter);
+            setTelescopeSelected(null);
+          }}
+          onDraft={setTelescopeDraft}
+          onSearch={(event) => {
+            event.preventDefault();
+            setTelescopeQuery(telescopeDraft.trim());
+            setTelescopeSelected(null);
+          }}
+          onSelect={setTelescopeSelected}
+          onClose={() => setTelescopeOpen(false)}
+        />
+      ) : (
+        <>
+          {level === "orbit" && (
+            <>
+              <OrbitView satellites={satellites} onSelect={onSelect} onReturnEarth={onReturnEarth} />
+              <KeylessLaunchPanel launches={launches} state={launchState} />
+            </>
+          )}
+          {level === "planet" && planet && (
+            <PlanetSystemView planet={planet} time={time} onSelect={onSelect} onBack={() => setLevel("solar")} />
+          )}
+          {level === "solar" && (
+            <>
+              <SolarSystemView planets={planets} sun={sun} onSelect={onSelect} onOpenPlanet={openPlanet} />
+              <KeylessLaunchPanel launches={launches} state={launchState} />
+              <div className="spaceMissionFacts glass"><strong>SPACECRAFT</strong><span><b>JWST</b> — Sun–Earth L2 region, about 1.5 million km from Earth. Context position, not live telemetry.</span></div>
+            </>
+          )}
+          {level === "outer" && <>
+            <OuterSystemView time={time} onSelect={onSelect} onSolar={() => setLevel("solar")} />
+            <div className="spaceMissionFacts outerFacts glass"><strong>DEEP-SPACE PROBES</strong><span><b>New Horizons</b> — ~9.5 billion km from Earth in June 2026, beyond Pluto and the classical Kuiper Belt.</span><span><b>Voyager 1 / 2</b> — both in interstellar space; Voyager 1 is the most distant human-made object.</span></div>
+          </>}
+          {level === "galaxy" && <GalaxyView onSolar={() => setLevel("solar")} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+
+function TelescopeView({
+  items,
+  state,
+  error,
+  filter,
+  draft,
+  selected,
+  assetUrl,
+  assetState,
+  onFilter,
+  onDraft,
+  onSearch,
+  onSelect,
+  onClose,
+}: {
+  items: TelescopeImage[];
+  state: "idle" | "loading" | "ready" | "degraded" | "error";
+  error: string | null;
+  filter: TelescopeFilter;
+  draft: string;
+  selected: TelescopeImage | null;
+  assetUrl: string | null;
+  assetState: "idle" | "loading" | "ready" | "degraded";
+  onFilter: (filter: TelescopeFilter) => void;
+  onDraft: (value: string) => void;
+  onSearch: (event: FormEvent<HTMLFormElement>) => void;
+  onSelect: (item: TelescopeImage | null) => void;
+  onClose: () => void;
+}) {
+  const filters: Array<{ id: TelescopeFilter; label: string }> = [
+    { id: "all", label: "ALL" },
+    { id: "jwst", label: "JWST" },
+    { id: "hubble", label: "HUBBLE" },
+    { id: "observatory", label: "OBSERVATORIES" },
+  ];
+
+  return (
+    <section className="telescopeView" aria-label="Telescope astronomy imagery">
+      <div className="telescopeToolbar glass">
+        <div className="telescopeFilterRow" role="group" aria-label="Telescope source filter">
+          {filters.map((item) => (
+            <button
+              key={item.id}
+              className={filter === item.id ? "active" : ""}
+              onClick={() => onFilter(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <form className="telescopeSearch" onSubmit={onSearch}>
+          <input
+            value={draft}
+            onChange={(event) => onDraft(event.target.value)}
+            placeholder="Search nebula, galaxy, planet…"
+            aria-label="Search NASA astronomy images"
+          />
+          <button type="submit">SEARCH</button>
+        </form>
+        <button className="telescopeClose" type="button" onClick={onClose}>BACK TO SPACE</button>
       </div>
 
-      {level === "orbit" && (
-        <>
-          <OrbitView satellites={satellites} onSelect={onSelect} onReturnEarth={onReturnEarth} />
-          <KeylessLaunchPanel launches={launches} state={launchState} />
-        </>
+      {selected ? (
+        <div className="telescopeDetail">
+          <div className="telescopeImageStage glass">
+            <button className="telescopeGalleryBack" type="button" onClick={() => onSelect(null)}>← GALLERY</button>
+            {assetUrl
+              ? <img src={assetUrl} alt={selected.title} />
+              : <div className="telescopeEmpty">Image unavailable</div>}
+            {assetState === "loading" && <span className="telescopeAssetState">Loading higher-resolution asset…</span>}
+            {assetState === "degraded" && <span className="telescopeAssetState">Archive preview shown · higher-resolution asset unavailable</span>}
+          </div>
+          <aside className="telescopeMeta glass">
+            <span className="telescopeMission">{selected.mission}</span>
+            <h2>{selected.title}</h2>
+            <dl>
+              <div><dt>DATE</dt><dd>{selected.dateCreated ? new Date(selected.dateCreated).toLocaleDateString() : "Not provided"}</dd></div>
+              <div><dt>MISSION / TELESCOPE</dt><dd>{selected.mission}</dd></div>
+              {selected.instrument && <div><dt>INSTRUMENT</dt><dd>{selected.instrument}</dd></div>}
+              {selected.center && <div><dt>NASA CENTER</dt><dd>{selected.center}</dd></div>}
+              <div><dt>CREDIT</dt><dd>{selected.credit}</dd></div>
+              <div><dt>SOURCE ID</dt><dd>{selected.nasaId}</dd></div>
+            </dl>
+            {selected.description && <p>{selected.description}</p>}
+            <a href={selected.sourceUrl} target="_blank" rel="noreferrer">OPEN NASA SOURCE ↗</a>
+            <small>Published archive/release imagery · not live telescope telemetry.</small>
+          </aside>
+        </div>
+      ) : (
+        <div className="telescopeGallery">
+          {state === "loading" && !items.length && <div className="telescopeEmpty">Loading NASA astronomy imagery…</div>}
+          {state === "error" && <div className="telescopeEmpty">Telescope imagery unavailable{error ? ` · ${error}` : ""}</div>}
+          {state === "degraded" && <div className="telescopeNotice">NASA imagery is partial or temporarily degraded; the rest of Space remains available.</div>}
+          {items.map((item) => (
+            <button className="telescopeCard glass" key={item.id} onClick={() => onSelect(item)}>
+              <img loading="lazy" src={item.thumbnailUrl} alt="" />
+              <span className="telescopeCardBody">
+                <b>{item.title}</b>
+                <small>{item.mission}{item.dateCreated ? ` · ${new Date(item.dateCreated).getFullYear()}` : ""}</small>
+              </span>
+            </button>
+          ))}
+          {state !== "loading" && state !== "error" && !items.length && <div className="telescopeEmpty">No NASA images matched this view.</div>}
+        </div>
       )}
-      {level === "planet" && planet && (
-        <PlanetSystemView planet={planet} time={time} onSelect={onSelect} onBack={() => setLevel("solar")} />
-      )}
-      {level === "solar" && (
-        <>
-          <SolarSystemView planets={planets} sun={sun} onSelect={onSelect} onOpenPlanet={openPlanet} />
-          <KeylessLaunchPanel launches={launches} state={launchState} />
-          <div className="spaceMissionFacts glass"><strong>SPACECRAFT</strong><span><b>JWST</b> — Sun–Earth L2 region, about 1.5 million km from Earth. Context position, not live telemetry.</span></div>
-        </>
-      )}
-      {level === "outer" && <>
-        <OuterSystemView time={time} onSelect={onSelect} onSolar={() => setLevel("solar")} />
-        <div className="spaceMissionFacts outerFacts glass"><strong>DEEP-SPACE PROBES</strong><span><b>New Horizons</b> — ~9.5 billion km from Earth in June 2026, beyond Pluto and the classical Kuiper Belt.</span><span><b>Voyager 1 / 2</b> — both in interstellar space; Voyager 1 is the most distant human-made object.</span></div>
-      </>}
-      {level === "galaxy" && <GalaxyView onSolar={() => setLevel("solar")} />}
-    </div>
+    </section>
   );
 }
 

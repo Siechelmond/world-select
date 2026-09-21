@@ -7,6 +7,10 @@ const aircraftApi = fs.readFileSync(path.join(root, 'functions/api/aircraft.ts')
 const aircraftClient = fs.readFileSync(path.join(root, 'lib/aircraft.ts'), 'utf8');
 const component = fs.readFileSync(path.join(root, 'components/WorldSelectApp.tsx'), 'utf8');
 const streetApi = fs.readFileSync(path.join(root, 'functions/api/street.ts'), 'utf8');
+const telescopeApi = fs.readFileSync(path.join(root, 'functions/api/telescope.ts'), 'utf8');
+const telescopeClient = fs.readFileSync(path.join(root, 'lib/telescope.ts'), 'utf8');
+const spaceExplorer = fs.readFileSync(path.join(root, 'components/SpaceExplorer.tsx'), 'utf8');
+const celestialBridge = fs.readFileSync(path.join(root, 'runtime/gev/layers/celestial-bridge-renderer.ts'), 'utf8');
 
 const checks = [
   ['adsb.lol uses documented lat/lon/dist route', aircraftCore.includes('/v2/lat/${lat.toFixed(3)}/lon/${lon.toFixed(3)}/dist/${radius}')],
@@ -17,6 +21,9 @@ const checks = [
   ['stale aircraft are not projected as fresh motion', component.includes('spatial.dataState !== "STALE"')],
   ['KartaView search stays within documented 500 m radius', streetApi.includes('const searchRadiusM = 500')],
   ['UI still exposes explicit Degraded state', component.includes('effectiveState === "degraded"')],
+  ['keyless Telescope uses NASA Image and Video Library API', telescopeApi.includes('https://images-api.nasa.gov/search') && telescopeClient.includes('/api/telescope')],
+  ['Telescope is isolated inside Space Explorer', spaceExplorer.includes('TELESCOPE') && spaceExplorer.includes('if (!telescopeOpen) return')],
+  ['Earth planet bodies remain independent of orbit-line toggle', celestialBridge.includes('const visibleBodies = candidates.filter') && celestialBridge.includes('if (args.showOrbits)') && component.includes('showOrbits: planetOrbits')],
 ];
 
 let failed = 0;
