@@ -7,10 +7,16 @@ export type RoadSegment = {
   maxspeed: number | null;
   oneway: boolean;
   lanes: number | null;
+  lanesForward?: number | null;
+  lanesBackward?: number | null;
   bridge?: boolean;
   tunnel?: boolean;
   covered?: boolean;
   layer?: number | null;
+  service?: string;
+  access?: string;
+  motorVehicle?: string;
+  junction?: string;
 };
 
 export type FlowSegment = {
@@ -158,6 +164,7 @@ export function inferFreeFlowSpeed(road: RoadSegment): number {
   const limits: Record<string, number> = {
     motorway: 120, trunk: 100, primary: 80, secondary: 70,
     tertiary: 50, unclassified: 50, residential: 30,
+    living_street: 15, service: road.service === "parking_aisle" ? 10 : 15,
     motorway_link: 60, trunk_link: 50, primary_link: 50, secondary_link: 40,
   };
   return limits[road.highway] ?? 50;

@@ -210,7 +210,14 @@ export function createMapController(input: {
         throw new Error("Viewer was destroyed while Google 3D was loading");
       }
       if (!google3d) {
-        // ws-donor leaves Google/Cesium streaming and LOD defaults intact.
+        // Keep donor map-stack ownership, but restore the bounded streaming
+        // controls that previously gave World Select a faster first/refine pass.
+        // These affect request/LOD behavior only; geographic positions stay exact.
+        loaded.tileset.maximumScreenSpaceError = 24;
+        if ("dynamicScreenSpaceError" in loaded.tileset) loaded.tileset.dynamicScreenSpaceError = true;
+        if ("preloadWhenHidden" in loaded.tileset) loaded.tileset.preloadWhenHidden = false;
+        if ("preloadFlightDestinations" in loaded.tileset) loaded.tileset.preloadFlightDestinations = false;
+        if ("cullRequestsWhileMoving" in loaded.tileset) loaded.tileset.cullRequestsWhileMoving = true;
         loaded.tileset.show = false;
         viewer.scene.primitives.add(loaded.tileset);
         google3d = loaded.tileset;

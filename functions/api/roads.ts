@@ -19,10 +19,16 @@ type RoadSegment = {
   maxspeed: number | null;
   oneway: boolean;
   lanes: number | null;
+  lanesForward: number | null;
+  lanesBackward: number | null;
   bridge: boolean;
   tunnel: boolean;
   covered: boolean;
   layer: number | null;
+  service: string;
+  access: string;
+  motorVehicle: string;
+  junction: string;
 };
 
 const MAJOR_TIMEOUT_MS = 12_000;
@@ -49,37 +55,76 @@ function buildOverpassQuery(
   const bb = `(${bbox.south},${bbox.west},${bbox.north},${bbox.east})`;
   const highwayRegex = majorOnly
     ? "^(motorway|trunk|primary|secondary)$"
-    : "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link)$";
+    : "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|motorway_link|trunk_link|primary_link|secondary_link)$";
   const timeoutSec = majorOnly ? 12 : 20;
   return `[out:json][timeout:${timeoutSec}];(way["highway"~"${highwayRegex}"]${bb};);out geom qt ${MAX_ELEMENTS};`;
 }
 
 function normalizeRoads(data: OverpassResponse): RoadSegment[] {
   const roads: RoadSegment[] = [];
+  const denied = new Set(["no", "private"]);
   for (const el of data.elements ?? []) {
     if (el.type !== "way" || !el.geometry?.length) continue;
-    const coords = el.geometry
+    const tags = el.tags ?? {};
+    const highway = String(tags.highway ?? "unclassified").toLowerCase();
+    const service = String(tags.service ?? "").toLowerCase();
+    const access = String(tags.access ?? "").toLowerCase();
+    const vehicle = String(tags.vehicle ?? "").toLowerCase();
+    const motorVehicle = String(tags.motor_vehicle ?? "").toLowerCase();
+    const junction = String(tags.junction ?? "").toLowerCase();
+
+    // Do not model public traffic on explicitly non-motorized/private ways.
+    // Service/living-street roads remain eligible when motor access is plausible,
+    // which covers genuine park roads and parking circulation without footpaths.
+    if (denied.has(motorVehicle) || denied.has(vehicle) || denied.has(access)) continue;
+    if (highway === "service" && ["driveway", "emergency_access"].includes(service)) continue;
+
+    let coords = el.geometry
       .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
       .map((point) => [point.lon, point.lat] as [number, number]);
     if (coords.length < 2) continue;
-    const maxspeedMatch = el.tags?.maxspeed?.match(/^(\d+)/);
-    const bridgeTag = String(el.tags?.bridge ?? "").toLowerCase();
-    const tunnelTag = String(el.tags?.tunnel ?? "").toLowerCase();
-    const coveredTag = String(el.tags?.covered ?? "").toLowerCase();
-    const rawLayer = Number.parseFloat(String(el.tags?.layer ?? ""));
+
+    const rawOneway = String(tags.oneway ?? "").toLowerCase();
+    const reverseOneway = rawOneway === "-1" || rawOneway === "reverse";
+    const impliedRoundaboutOneway =
+      !rawOneway && (junction === "roundabout" || junction === "circular");
+    const oneway =
+      reverseOneway ||
+      rawOneway === "yes" ||
+      rawOneway === "true" ||
+      rawOneway === "1" ||
+      impliedRoundaboutOneway;
+    if (reverseOneway) coords = [...coords].reverse();
+
+    const maxspeedMatch = tags.maxspeed?.match(/^(\d+)/);
+    const bridgeTag = String(tags.bridge ?? "").toLowerCase();
+    const tunnelTag = String(tags.tunnel ?? "").toLowerCase();
+    const coveredTag = String(tags.covered ?? "").toLowerCase();
+    const rawLayer = Number.parseFloat(String(tags.layer ?? ""));
+    const parseLane = (value: string | undefined) => {
+      const number = Number.parseInt(String(value ?? ""), 10);
+      return Number.isFinite(number) && number > 0 ? number : null;
+    };
+
     roads.push({
       id: el.id,
       coordinates: coords,
-      highway: el.tags?.highway ?? "unclassified",
-      name: el.tags?.name ?? "",
-      ref: el.tags?.ref ?? "",
+      highway,
+      name: tags.name ?? "",
+      ref: tags.ref ?? "",
       maxspeed: maxspeedMatch ? Number(maxspeedMatch[1]) : null,
-      oneway: el.tags?.oneway === "yes" || el.tags?.oneway === "true",
-      lanes: el.tags?.lanes ? Number(el.tags.lanes) : null,
+      oneway,
+      lanes: parseLane(tags.lanes),
+      lanesForward: parseLane(tags["lanes:forward"]),
+      lanesBackward: parseLane(tags["lanes:backward"]),
       bridge: Boolean(bridgeTag && bridgeTag !== "no"),
       tunnel: Boolean(tunnelTag && tunnelTag !== "no"),
       covered: coveredTag === "yes" || coveredTag === "true",
       layer: Number.isFinite(rawLayer) ? rawLayer : null,
+      service,
+      access,
+      motorVehicle,
+      junction,
     });
   }
   return roads;

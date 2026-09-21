@@ -23,6 +23,8 @@ const SPEED_MPS: Record<string, number> = {
   secondary: 11,
   tertiary: 8,
   residential: 5,
+  living_street: 3.5,
+  service: 3,
   unclassified: 5,
   motorway_link: 16,
   trunk_link: 14,
@@ -37,6 +39,8 @@ const DENSITY_MULT: Record<string, number> = {
   secondary: 1.5,
   tertiary: 1.0,
   residential: 0.5,
+  living_street: 0.35,
+  service: 0.22,
   unclassified: 0.4,
   motorway_link: 1.5,
   trunk_link: 1.4,
@@ -51,6 +55,8 @@ const SIZE_BY_TYPE: Record<string, number> = {
   secondary: 5,
   tertiary: 4,
   residential: 4,
+  living_street: 3.5,
+  service: 3.5,
   unclassified: 4,
   motorway_link: 5,
   trunk_link: 5,
@@ -145,7 +151,12 @@ function laneOffsetMeters(
     return (laneIndex - (totalLanes - 1) / 2) * laneWidthM;
   }
 
-  const lanesPerDirection = Math.max(1, Math.floor(totalLanes / 2));
+  const taggedDirectionalLanes = direction === 1
+    ? road.lanesForward
+    : road.lanesBackward;
+  const lanesPerDirection = Number.isFinite(taggedDirectionalLanes)
+    ? Math.max(1, Math.min(4, Math.round(taggedDirectionalLanes as number)))
+    : Math.max(1, Math.floor(totalLanes / 2));
   const laneIndex = ordinal % lanesPerDirection;
   const centerFromRoadCenterM = laneWidthM * (0.5 + laneIndex);
   return direction * centerFromRoadCenterM;

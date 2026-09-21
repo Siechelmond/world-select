@@ -1499,6 +1499,9 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
     let failed = false;
     let panorama: any = null;
     let positionListener: any = null;
+    let statusListener: any = null;
+    let panoListener: any = null;
+    let readyPublished = false;
     let watchdog: number | undefined;
     let removeAuthFailureListener: (() => void) | null = null;
 
@@ -1599,10 +1602,35 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
           }
         };
 
+        const publishReady = () => {
+          if (disposed || failed || readyPublished) return;
+          const panoId = panorama?.getPano?.();
+          if (!panoId) return;
+          readyPublished = true;
+          if (watchdog != null) window.clearTimeout(watchdog);
+          publishPosition();
+          onReady();
+        };
+        const handleStatus = () => {
+          if (disposed || failed) return;
+          const status = panorama?.getStatus?.();
+          if (status == null) {
+            publishReady();
+            return;
+          }
+          const ok = status === streetView.StreetViewStatus?.OK || String(status) === "OK";
+          if (!ok) {
+            fail(`Google Street View panorama failed (${String(status || "UNKNOWN_STATUS")})`);
+            return;
+          }
+          publishReady();
+        };
+
         positionListener = panorama.addListener?.("position_changed", publishPosition);
-        if (watchdog != null) window.clearTimeout(watchdog);
+        statusListener = panorama.addListener?.("status_changed", handleStatus);
+        panoListener = panorama.addListener?.("pano_changed", publishReady);
         publishPosition();
-        onReady();
+        window.setTimeout(handleStatus, 0);
       })
       .catch((error: unknown) => {
         fail(`Google Street View failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1613,6 +1641,8 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
       if (watchdog != null) window.clearTimeout(watchdog);
       removeAuthFailureListener?.();
       if (positionListener?.remove) positionListener.remove();
+      if (statusListener?.remove) statusListener.remove();
+      if (panoListener?.remove) panoListener.remove();
       panorama?.setVisible?.(false);
       panorama = null;
       if (panoRef.current) panoRef.current.replaceChildren();

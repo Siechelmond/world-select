@@ -172,11 +172,16 @@ export function createTrafficController(input: {
         near3dTileProgressRemover?.();
         near3dTileProgressRemover = null;
 
-        // Re-mount the proven TomTom Flow + Incidents drape after 3D settles.
+        // Keep an already-mounted TomTom drape stable while Google 3D refines.
+        // Re-adding imagery providers and rebuilding particle primitives at each
+        // settle point created avoidable scene-graph churn and competed with 3D tiles.
         mountLive();
 
-        if (roads.length && fallbackVisible()) {
-          clearRenderedFallback();
+        if (
+          roads.length &&
+          fallbackVisible() &&
+          (!particleCollection?.show || renderedMode !== context.mapMode)
+        ) {
           renderFallback();
         }
         viewer.scene?.requestRender?.();
@@ -328,9 +333,13 @@ export function createTrafficController(input: {
     const collection = tileset?.imageryLayers;
     if (!(collection?.addImageryProvider && collection?.remove)) return null;
 
-    // Restore the previously visible TomTom 3D drape at every camera height.
-    // Below 8 km it is deferred only until Google 3D refinement settles.
-    if (context.cameraHeight < 8_000 && !near3dDrapeReady) return null;
+    // Keep the already-mounted near-ground drape alive while a new Google 3D
+    // refinement cycle settles. Only the *initial* mount is deferred. This keeps
+    // traffic visible below 8 km without repeatedly tearing down imagery layers.
+    if (context.cameraHeight < 8_000 && !near3dDrapeReady) {
+      if (flowLayer && liveLayerCollection === collection) return collection;
+      return null;
+    }
     return collection;
   };
 
@@ -456,8 +465,29 @@ export function createTrafficController(input: {
       if (!photoreal) return 8;
       const cached = roadBaseHeights.get(roadId);
       if (cached != null) return cached;
-      const first = roadMap.get(roadId)?.coordinates?.[0];
-      const height = first ? sampleSceneHeight(first, 0) : 0;
+      const road = roadMap.get(roadId);
+      const coordinates = road?.coordinates ?? [];
+      if (!coordinates.length) return 0;
+
+      // Google photogrammetry sampleHeight can hit trees/buildings beside or
+      // above a road. For ordinary surface roads use the lowest of start/mid/end
+      // samples as a robust road-bed estimate. Bridges/layer>0 retain the median
+      // scene sample so their deck stays elevated.
+      const probes = [
+        coordinates[0],
+        coordinates[Math.floor((coordinates.length - 1) / 2)],
+        coordinates[coordinates.length - 1],
+      ].filter(Boolean) as Array<[number, number]>;
+      const sampled = probes
+        .map((coordinate) => sampleSceneHeight(coordinate, Number.NaN))
+        .filter((value) => Number.isFinite(value))
+        .sort((a, b) => a - b);
+      let height = 0;
+      if (sampled.length) {
+        height = isElevatedRoad(road!)
+          ? sampled[Math.floor(sampled.length / 2)]
+          : sampled[0];
+      }
       roadBaseHeights.set(roadId, height);
       return height;
     };
