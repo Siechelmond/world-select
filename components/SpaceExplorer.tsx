@@ -154,7 +154,7 @@ export default function SpaceExplorer({ planets, satellites, sun, time, launches
   const lastWheelAt = useRef(0);
   const planet = planets.find((item) => item.entity.name === focusedPlanet) ?? planets[2] ?? planets[0];
   const [telescopeOpen, setTelescopeOpen] = useState(false);
-  const [telescopeFilter, setTelescopeFilter] = useState<TelescopeFilter>("all");
+  const [telescopeFilter, setTelescopeFilter] = useState<TelescopeFilter>("jwst");
   const [telescopeDraft, setTelescopeDraft] = useState("");
   const [telescopeQuery, setTelescopeQuery] = useState("");
   const [telescopeItems, setTelescopeItems] = useState<TelescopeImage[]>([]);
@@ -199,7 +199,7 @@ export default function SpaceExplorer({ planets, satellites, sun, time, launches
     const controller = new AbortController();
     setTelescopeAssetUrl(telescopeSelected.thumbnailUrl);
     setTelescopeAssetState("loading");
-    fetchTelescopeAsset(telescopeSelected.nasaId, controller.signal)
+    fetchTelescopeAsset(telescopeSelected, controller.signal)
       .then((imageUrl) => {
         if (controller.signal.aborted) return;
         setTelescopeAssetUrl(imageUrl ?? telescopeSelected.thumbnailUrl);
@@ -260,7 +260,7 @@ export default function SpaceExplorer({ planets, satellites, sun, time, launches
         <span>{telescopeOpen ? "TELESCOPE VIEW" : LEVEL_LABELS[level]}</span>
         <small>
           {telescopeOpen
-            ? "Keyless NASA astronomy imagery · archive/release content, not live telescope telemetry"
+            ? "Official telescope observations · NASA Images + ESA/Webb + Hubble Science · archive/release content"
             : <>
               {level === "orbit" && `Earth orbital frame · ${satellites.length} propagated CelesTrak objects available`}
               {level === "planet" && `${focusedPlanet} system · moon sizes and distances expanded for visibility`}
@@ -379,10 +379,13 @@ function TelescopeView({
   onClose: () => void;
 }) {
   const filters: Array<{ id: TelescopeFilter; label: string }> = [
-    { id: "all", label: "ALL" },
     { id: "jwst", label: "JWST" },
     { id: "hubble", label: "HUBBLE" },
-    { id: "observatory", label: "OBSERVATORIES" },
+    { id: "other", label: "OTHER SPACE TELESCOPES" },
+    { id: "solar-system", label: "SOLAR SYSTEM" },
+    { id: "galaxies", label: "GALAXIES" },
+    { id: "nebulae", label: "NEBULAE" },
+    { id: "stars-clusters", label: "STARS / CLUSTERS" },
   ];
 
   return (
@@ -404,7 +407,7 @@ function TelescopeView({
             value={draft}
             onChange={(event) => onDraft(event.target.value)}
             placeholder="Search nebula, galaxy, planet…"
-            aria-label="Search NASA astronomy images"
+            aria-label="Search telescope observations"
           />
           <button type="submit">SEARCH</button>
         </form>
@@ -422,36 +425,39 @@ function TelescopeView({
             {assetState === "degraded" && <span className="telescopeAssetState">Archive preview shown · higher-resolution asset unavailable</span>}
           </div>
           <aside className="telescopeMeta glass">
-            <span className="telescopeMission">{selected.mission}</span>
+            <span className="telescopeMission">{selected.telescope}{selected.instrument ? " · " + selected.instrument : ""}</span>
             <h2>{selected.title}</h2>
             <dl>
-              <div><dt>DATE</dt><dd>{selected.dateCreated ? new Date(selected.dateCreated).toLocaleDateString() : "Not provided"}</dd></div>
-              <div><dt>MISSION / TELESCOPE</dt><dd>{selected.mission}</dd></div>
+              <div><dt>RELEASE / OBSERVATION DATE</dt><dd>{selected.dateCreated ? new Date(selected.dateCreated).toLocaleDateString() : "Not provided"}</dd></div>
+              <div><dt>TELESCOPE</dt><dd>{selected.telescope}</dd></div>
               {selected.instrument && <div><dt>INSTRUMENT</dt><dd>{selected.instrument}</dd></div>}
-              {selected.center && <div><dt>NASA CENTER</dt><dd>{selected.center}</dd></div>}
-              <div><dt>CREDIT</dt><dd>{selected.credit}</dd></div>
-              <div><dt>SOURCE ID</dt><dd>{selected.nasaId}</dd></div>
+              <div><dt>PROVIDER</dt><dd>{selected.provider}</dd></div>
+              <div><dt>SOURCE ORGANIZATIONS</dt><dd>{selected.sourceOrganizations.length ? selected.sourceOrganizations.join(" · ") : "Not provided"}</dd></div>
+              <div><dt>FULL CREDIT</dt><dd>{selected.credit}</dd></div>
+              <div><dt>SOURCE ID</dt><dd>{selected.sourceId}</dd></div>
+              {selected.observationType && <div><dt>CONTENT TYPE</dt><dd>{selected.observationType}</dd></div>}
+              {selected.rights && <div><dt>USAGE / RIGHTS</dt><dd>{selected.rights}</dd></div>}
             </dl>
             {selected.description && <p>{selected.description}</p>}
-            <a href={selected.sourceUrl} target="_blank" rel="noreferrer">OPEN NASA SOURCE ↗</a>
-            <small>Published archive/release imagery · not live telescope telemetry.</small>
+            <a href={selected.sourceUrl} target="_blank" rel="noreferrer">OPEN {selected.provider.toUpperCase()} SOURCE ↗</a>{assetState === "ready" && assetUrl && <a href={assetUrl} target="_blank" rel="noreferrer">VIEW HIGH RESOLUTION ↗</a>}
+            <small>Astronomical observation/release imagery · not live telescope telemetry. Full source credit is preserved above.</small>
           </aside>
         </div>
       ) : (
         <div className="telescopeGallery">
-          {state === "loading" && !items.length && <div className="telescopeEmpty">Loading NASA astronomy imagery…</div>}
+          {state === "loading" && !items.length && <div className="telescopeEmpty">Loading official telescope observations…</div>}
           {state === "error" && <div className="telescopeEmpty">Telescope imagery unavailable{error ? ` · ${error}` : ""}</div>}
-          {state === "degraded" && <div className="telescopeNotice">NASA imagery is partial or temporarily degraded; the rest of Space remains available.</div>}
+          {state === "degraded" && <div className="telescopeNotice">One or more telescope sources are partial or temporarily degraded; available observations remain usable.</div>}
           {items.map((item) => (
             <button className="telescopeCard glass" key={item.id} onClick={() => onSelect(item)}>
               <img loading="lazy" src={item.thumbnailUrl} alt="" />
               <span className="telescopeCardBody">
                 <b>{item.title}</b>
-                <small>{item.mission}{item.dateCreated ? ` · ${new Date(item.dateCreated).getFullYear()}` : ""}</small>
+                <small>{item.telescope}{item.instrument ? " · " + item.instrument : ""}{item.dateCreated ? " · " + new Date(item.dateCreated).getFullYear() : ""}</small>
               </span>
             </button>
           ))}
-          {state !== "loading" && state !== "error" && !items.length && <div className="telescopeEmpty">No NASA images matched this view.</div>}
+          {state !== "loading" && state !== "error" && !items.length && <div className="telescopeEmpty">No telescope observations matched this view.</div>}
         </div>
       )}
     </section>
