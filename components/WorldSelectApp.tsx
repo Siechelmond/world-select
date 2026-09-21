@@ -34,6 +34,12 @@ import {
   type InfrastructureCategory,
 } from "@/lib/keyless";
 import { loadInfrastructureBaseline } from "@/lib/infrastructure-local";
+import {
+  GROUND_TIER_MAX_HEIGHT_M,
+  SOLAR_CONTEXT_HEIGHT_M,
+  SOLAR_GLOBE_HANDOFF_HEIGHT_M,
+  resolveEarthScaleTier,
+} from "@/lib/view-scale";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
 
@@ -52,8 +58,6 @@ const LIVE_MOTION_TICK_MS = 1_000;
 const MOBILE_LIVE_MOTION_TICK_MS = 2_000;
 const UI_CLOCK_TICK_MS = 10_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
-const GROUND_HEIGHT_M = 120_000;
-const CELESTIAL_CONTEXT_HEIGHT_M = 6_500_000;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const EVENT_FILTERS = ["all", "fire", "storm", "volcano", "flood", "ice", "other"] as const;
 const RADIO_FILTERS = ["all", "news", "talk", "weather", "public-safety", "aviation-marine", "traffic-transit", "music", "other"] as const;
@@ -182,6 +186,11 @@ export default function WorldSelectApp() {
   const [timeCollapsed, setTimeCollapsed] = useState(false);
   const [planetOrbits, setPlanetOrbits] = useState(false);
 
+  const scaleTier = useMemo(() => resolveEarthScaleTier(cameraHeight), [cameraHeight]);
+  const earthSurfaceVisible = viewMode === "earth" && scaleTier !== "solar";
+  const earthOrbitVisible = viewMode === "earth" && scaleTier === "earth";
+  const solarContextVisible = viewMode === "earth" && scaleTier === "solar";
+
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
     [timeOffsetDays, spacePlaybackDays, nowTick],
@@ -283,6 +292,7 @@ export default function WorldSelectApp() {
   useEffect(() => {
     if (
       viewMode !== "earth" ||
+      scaleTier !== "earth" ||
       timeOffsetDays !== 0 ||
       spacePlaybackDays !== 0 ||
       !cesiumReady ||
@@ -310,6 +320,7 @@ export default function WorldSelectApp() {
     return () => window.clearInterval(timer);
   }, [
     viewMode,
+    scaleTier,
     timeOffsetDays,
     spacePlaybackDays,
     cesiumReady,
@@ -634,7 +645,7 @@ export default function WorldSelectApp() {
     if (!viewer || !Cesium) return;
 
     viewer.entities.removeById(markerId);
-    if (!streetTarget || viewMode !== "earth") return;
+    if (!streetTarget || !earthSurfaceVisible) return;
 
     viewer.entities.add({
       id: markerId,
@@ -663,7 +674,7 @@ export default function WorldSelectApp() {
     return () => {
       if (viewerRef.current) viewerRef.current.entities.removeById(markerId);
     };
-  }, [streetTarget?.latitude, streetTarget?.longitude, viewMode, cesiumReady]);
+  }, [streetTarget?.latitude, streetTarget?.longitude, earthSurfaceVisible, cesiumReady]);
 
   useEffect(() => {
     if (
@@ -682,7 +693,7 @@ export default function WorldSelectApp() {
     const markerId = "search-target";
     if (!viewer || !Cesium) return;
     viewer.entities.removeById(markerId);
-    if (!searchTarget || viewMode !== "earth") return;
+    if (!searchTarget || !earthSurfaceVisible) return;
 
     viewer.entities.add({
       id: markerId,
@@ -709,7 +720,7 @@ export default function WorldSelectApp() {
     });
 
     return () => { viewer.entities.removeById(markerId); };
-  }, [searchTarget?.id, searchTarget?.latitude, searchTarget?.longitude, viewMode, cesiumReady]);
+  }, [searchTarget?.id, searchTarget?.latitude, searchTarget?.longitude, earthSurfaceVisible, cesiumReady]);
 
   const switchMapMode = useCallback((mode: WorldMapMode) => {
     setStreetOpen(false);
@@ -719,21 +730,34 @@ export default function WorldSelectApp() {
     setMapMode(mode);
   }, []);
 
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed?.()) return;
+    const globeVisible =
+      viewMode === "earth" &&
+      cameraHeight < SOLAR_GLOBE_HANDOFF_HEIGHT_M;
+
+    if (viewer.scene?.globe) viewer.scene.globe.show = globeVisible;
+    if (viewer.scene?.skyAtmosphere) viewer.scene.skyAtmosphere.show = globeVisible;
+    if (viewer.scene?.moon) viewer.scene.moon.show = globeVisible;
+    viewer.scene?.requestRender?.();
+  }, [viewMode, cameraHeight, cesiumReady]);
+
 
 
   useEffect(() => {
     earthquakeRendererRef.current?.sync(
       earthquakes,
-      viewMode === "earth" && earthquakeLayer,
+      earthSurfaceVisible && earthquakeLayer,
     );
-  }, [earthquakes, earthquakeLayer, viewMode, cesiumReady]);
+  }, [earthquakes, earthquakeLayer, earthSurfaceVisible, cesiumReady]);
 
   useEffect(() => {
     satelliteRendererRef.current?.sync({
       satellites,
       tleRecords,
       catalog: satelliteCatalog,
-      visible: viewMode === "earth" && satelliteLayer,
+      visible: earthOrbitVisible && satelliteLayer,
       selectedId: selected?.kind === "satellite" ? selected.id : null,
       isMobile,
       cameraHeight,
@@ -744,42 +768,44 @@ export default function WorldSelectApp() {
         activeMapMode !== "photoreal",
       filter: satelliteFilter,
     });
-  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays, activeMapMode]);
+  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, earthOrbitVisible, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays, activeMapMode]);
 
 
 
   useEffect(() => {
     aircraftRendererRef.current?.sync({
       items: renderedAircraft,
-      visible: viewMode === "earth" && (aircraftLayer || militaryLayer) && aircraftAvailable,
+      visible: earthOrbitVisible && (aircraftLayer || militaryLayer) && aircraftAvailable,
       selectedId: selected?.kind === "aircraft" ? selected.id : null,
       followSelected: followAircraft,
       nowMs: nowTick,
       cameraHeight,
       mapMode: activeMapMode,
     });
-  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, viewMode, cesiumReady, nowTick, cameraHeight, activeMapMode, selected?.id, selected?.kind, followAircraft]);
+  }, [renderedAircraft, aircraftLayer, militaryLayer, aircraftAvailable, earthOrbitVisible, cesiumReady, nowTick, cameraHeight, activeMapMode, selected?.id, selected?.kind, followAircraft]);
 
   useEffect(() => {
     const viewer = viewerRef.current; const Cesium = window.Cesium;
-    if (!viewer || !Cesium || viewMode !== "earth") return;
+    if (!viewer || !Cesium) return;
     const live = new Set<string>();
-    for (const annotation of annotations) {
-      const id = `annotation:${annotation.id}`;
-      live.add(id);
-      if (viewer.entities.getById(id)) continue;
-      annotationIdsRef.current.add(id);
-      viewer.entities.add({
-        id,
-        position: Cesium.Cartesian3.fromDegrees(annotation.longitude, annotation.latitude, 15),
-        point: { pixelSize: 10, color: Cesium.Color.fromCssColorString("#fb923c"), outlineColor: Cesium.Color.WHITE, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-        label: { text: annotation.label, font: "11px sans-serif", fillColor: Cesium.Color.WHITE, pixelOffset: new Cesium.Cartesian2(10, -11), showBackground: true, backgroundColor: Cesium.Color.fromCssColorString("#111827").withAlpha(0.72) },
-      });
+    if (earthSurfaceVisible) {
+      for (const annotation of annotations) {
+        const id = `annotation:${annotation.id}`;
+        live.add(id);
+        if (viewer.entities.getById(id)) continue;
+        annotationIdsRef.current.add(id);
+        viewer.entities.add({
+          id,
+          position: Cesium.Cartesian3.fromDegrees(annotation.longitude, annotation.latitude, 15),
+          point: { pixelSize: 10, color: Cesium.Color.fromCssColorString("#fb923c"), outlineColor: Cesium.Color.WHITE, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+          label: { text: annotation.label, font: "11px sans-serif", fillColor: Cesium.Color.WHITE, pixelOffset: new Cesium.Cartesian2(10, -11), showBackground: true, backgroundColor: Cesium.Color.fromCssColorString("#111827").withAlpha(0.72) },
+        });
+      }
     }
     for (const id of Array.from(annotationIdsRef.current) as string[]) {
       if (!live.has(id)) { viewer.entities.removeById(id); annotationIdsRef.current.delete(id); }
     }
-  }, [annotations, viewMode, cesiumReady]);
+  }, [annotations, earthSurfaceVisible, cesiumReady]);
 
 
 
@@ -794,44 +820,44 @@ export default function WorldSelectApp() {
   useEffect(() => {
     celestialBridgeRendererRef.current?.sync({
       planets,
-      visible: viewMode === "earth" && cameraHeight >= CELESTIAL_CONTEXT_HEIGHT_M,
+      visible: solarContextVisible,
       cameraHeight,
       selectedId: selected?.kind === "celestial-body" ? selected.id : null,
       showOrbits: planetOrbits,
     });
-  }, [planets, viewMode, cameraHeight, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
+  }, [planets, solarContextVisible, cameraHeight, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
 
   useEffect(() => {
     trafficControllerRef.current?.sync({
       enabled: trafficLayer,
-      earthVisible: viewMode === "earth",
+      earthVisible: earthSurfaceVisible,
       latitude: viewCenter.latitude,
       longitude: viewCenter.longitude,
       cameraHeight,
       mapMode: activeMapMode,
     });
-  }, [trafficLayer, viewMode, viewCenter.latitude, viewCenter.longitude, cameraHeight, activeMapMode, cesiumReady]);
+  }, [trafficLayer, earthSurfaceVisible, viewCenter.latitude, viewCenter.longitude, cameraHeight, activeMapMode, cesiumReady]);
 
   useEffect(() => {
-    eventRendererRef.current?.sync(filteredEvents, viewMode === "earth" && eventLayer);
-  }, [filteredEvents, eventLayer, viewMode, cesiumReady]);
+    eventRendererRef.current?.sync(filteredEvents, earthSurfaceVisible && eventLayer);
+  }, [filteredEvents, eventLayer, earthSurfaceVisible, cesiumReady]);
 
   useEffect(() => {
-    auroraRendererRef.current?.sync(aurora, viewMode === "earth" && auroraLayer);
-  }, [aurora, auroraLayer, viewMode, cesiumReady]);
+    auroraRendererRef.current?.sync(aurora, earthSurfaceVisible && auroraLayer);
+  }, [aurora, auroraLayer, earthSurfaceVisible, cesiumReady]);
 
   useEffect(() => {
-    radioRendererRef.current?.sync(filteredRadio, viewMode === "earth" && radioLayer);
-  }, [filteredRadio, radioLayer, viewMode, cesiumReady]);
+    radioRendererRef.current?.sync(filteredRadio, earthSurfaceVisible && radioLayer);
+  }, [filteredRadio, radioLayer, earthSurfaceVisible, cesiumReady]);
 
   useEffect(() => {
     infrastructureRendererRef.current?.sync(
       infrastructure,
-      viewMode === "earth" && infrastructureLayer,
+      earthSurfaceVisible && infrastructureLayer,
       new Set(infraFilters),
       mapMode,
     );
-  }, [infrastructure, infrastructureLayer, infraFilters, viewMode, mapMode, cesiumReady]);
+  }, [infrastructure, infrastructureLayer, infraFilters, earthSurfaceVisible, mapMode, cesiumReady]);
 
 
   useEffect(() => {
@@ -1122,11 +1148,11 @@ export default function WorldSelectApp() {
       <header className="topbar glass">
         <div className="brand"><p className="eyebrow">SPATIAL INTELLIGENCE</p><h1>World Select</h1></div>
         <div className="modeSwitch" role="group" aria-label="View mode">
-          <button className={viewMode === "earth" && cameraHeight >= GROUND_HEIGHT_M ? "active" : ""} onClick={viewMode === "space" ? returnToEarthFromSpace : flyEarth}>EARTH</button>
-          <button className={viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
+          <button className={viewMode === "earth" && cameraHeight >= GROUND_TIER_MAX_HEIGHT_M ? "active" : ""} onClick={viewMode === "space" ? returnToEarthFromSpace : flyEarth}>EARTH</button>
+          <button className={viewMode === "earth" && cameraHeight < GROUND_TIER_MAX_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={enterSpaceFromEarth}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" && cameraHeight < GROUND_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" && cameraHeight < GROUND_TIER_MAX_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
       </header>
 
       {viewMode === "earth" && <div className="mapNav glass">
@@ -1223,12 +1249,12 @@ export default function WorldSelectApp() {
         <LayerToggle checked={radioLayer} onChange={setRadioLayer} onRetry={() => setRadioRetry((v) => v + 1)} title="Radio" subtitle="Radio Browser · geolocated HTTPS stations" state={radioState} count={filteredRadio.length} disabled={viewMode !== "earth"} error={layerErrors.radio} />
         {radioLayer && <div className="filterChips">{RADIO_FILTERS.map((filter) => <button key={filter} className={radioFilter === filter ? "active" : ""} onClick={() => setRadioFilter(filter)}>{filter.replace("-", " ").toUpperCase()}</button>)}</div>}
         <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>
-          <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth" || cameraHeight < CELESTIAL_CONTEXT_HEIGHT_M} onChange={(event) => setPlanetOrbits(event.target.checked)} />
-          <span><strong>Planet orbits</strong><small>{cameraHeight < CELESTIAL_CONTEXT_HEIGHT_M ? "Full-globe / orbital context only" : "Approximate JPL elements · fixed compressed solar scale"}</small></span>
+          <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth" || cameraHeight < SOLAR_CONTEXT_HEIGHT_M} onChange={(event) => setPlanetOrbits(event.target.checked)} />
+          <span><strong>Planet orbits</strong><small>{cameraHeight < SOLAR_CONTEXT_HEIGHT_M ? "Full-globe / orbital context only" : "Approximate JPL elements · fixed compressed solar scale"}</small></span>
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">
-          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : "COMPRESSED SCALE"}</em>
+          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : scaleTier === "solar" ? "SOLAR · COMPRESSED" : scaleTier === "earth" ? "EARTH / ORBIT" : "GROUND"}</em>
           <span>Ground map</span><em>ESRI STREET · WORLD SELECT LABELS EN</em>
           <span>Street imagery</span><em>GOOGLE + KARTAVIEW</em>
           <span>Annotations</span><em>LOCAL SESSION</em>
@@ -1293,7 +1319,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>{viewMode === "earth" && cameraHeight >= 12_000_000 ? "EARTH · DEEP ZOOM · JPL direction + compressed solar distance" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
+        <span>{viewMode === "earth" && scaleTier === "solar" ? "EARTH → SOLAR · JPL direction + compressed distance" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
       </footer>
     </main>
   );

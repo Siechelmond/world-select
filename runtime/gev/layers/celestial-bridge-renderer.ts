@@ -1,12 +1,28 @@
 import type { SpatialEntity } from "@/lib/spatial";
 import { computePlanetPositions, type PlanetPosition } from "@/lib/space";
-
-const MIN_SOLAR_CONTEXT_HEIGHT_M = 6_500_000;
+import {
+  SOLAR_CONTEXT_HEIGHT_M,
+  SOLAR_GLOBE_HANDOFF_HEIGHT_M,
+} from "@/lib/view-scale";
 const SOLAR_DISPLAY_ONE_AU_M = 95_000_000;
 const SOLAR_DISPLAY_CURVE = 1.7;
 const ORBIT_SAMPLES = 96;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
 const SUN_ID = "bridge:solar:sun";
+const EARTH_PROXY_ID = "bridge:jpl:earth";
+const EARTH_PROXY_EPSILON_M = 1_000;
+
+const BODY_RADIUS_KM: Record<string, number> = {
+  Sun: 696_340,
+  Mercury: 2_439.7,
+  Venus: 6_051.8,
+  Earth: 6_371,
+  Mars: 3_389.5,
+  Jupiter: 69_911,
+  Saturn: 58_232,
+  Uranus: 25_362,
+  Neptune: 24_622,
+};
 
 const ORBIT_PERIOD_DAYS: Record<string, number> = {
   Mercury: 87.969,
@@ -86,15 +102,17 @@ function earthCenteredPosition(
   return Cesium.Cartesian3.subtract(body, earth, new Cesium.Cartesian3());
 }
 
-function basePixelSize(name: string) {
-  if (name === "Jupiter") return 10;
-  if (name === "Saturn") return 9;
-  return 7;
+function bodyPixelSize(name: string) {
+  const earthRadiusKm = BODY_RADIUS_KM.Earth;
+  const radiusKm = BODY_RADIUS_KM[name] ?? earthRadiusKm;
+  const compressed = 5.5 * Math.pow(radiusKm / earthRadiusKm, 0.25);
+  return Math.max(3.5, Math.min(19, compressed));
 }
 
 function bodyColor(name: string) {
-  return name === "Mercury" ? "#cbd5e1"
-    : name === "Venus" ? "#facc15"
+  return name === "Earth" ? "#38bdf8"
+    : name === "Mercury" ? "#cbd5e1"
+      : name === "Venus" ? "#facc15"
       : name === "Mars" ? "#fb923c"
         : name === "Jupiter" ? "#d6b38a"
           : name === "Saturn" ? "#fde68a"
@@ -204,7 +222,7 @@ export function createCelestialBridgeRenderer(input: {
 
     entityRegistry.set(id, entity);
     bodyIds.add(id);
-    const pixelSize = isSun ? 14 : basePixelSize(name);
+    const pixelSize = bodyPixelSize(isSun ? "Sun" : name);
     const color = Cesium.Color.fromCssColorString(isSun ? "#fde047" : bodyColor(name));
 
     let item = viewer.entities.getById(id);
@@ -254,7 +272,7 @@ export function createCelestialBridgeRenderer(input: {
   }) => {
     if (destroyed || viewer.isDestroyed?.()) return;
 
-    if (!args.visible || args.cameraHeight < MIN_SOLAR_CONTEXT_HEIGHT_M) {
+    if (!args.visible || args.cameraHeight < SOLAR_CONTEXT_HEIGHT_M) {
       clear();
       return;
     }
@@ -310,6 +328,37 @@ export function createCelestialBridgeRenderer(input: {
       isSun: true,
     });
 
+    if (args.cameraHeight >= SOLAR_GLOBE_HANDOFF_HEIGHT_M) {
+      const awayFromSun = Cesium.Cartesian3.negate(
+        sunPosition,
+        new Cesium.Cartesian3(),
+      );
+      const earthProxyPosition = Cesium.Cartesian3.multiplyByScalar(
+        Cesium.Cartesian3.normalize(awayFromSun, new Cesium.Cartesian3()),
+        EARTH_PROXY_EPSILON_M,
+        new Cesium.Cartesian3(),
+      );
+      const earthProxyEntity: SpatialEntity = {
+        ...earth.entity,
+        id: EARTH_PROXY_ID,
+        properties: {
+          ...earth.entity.properties,
+          role: "solar Earth proxy",
+          displayFrame: "Earth-centered compressed heliocentric J2000 context",
+          visualScale: "Body radius relation compressed separately from orbital distance",
+          sunRepresentation: "World Select compressed solar reference",
+        },
+      };
+      nextBodyIds.add(EARTH_PROXY_ID);
+      syncBody({
+        id: EARTH_PROXY_ID,
+        entity: earthProxyEntity,
+        position: earthProxyPosition,
+        name: "Earth",
+        selected: args.selectedId === EARTH_PROXY_ID,
+      });
+    }
+
     for (const planet of args.planets) {
       if (planet.entity.name === "Earth") continue;
 
@@ -363,9 +412,6 @@ export function createCelestialBridgeRenderer(input: {
     const wantedOrbitIds = new Set<string>();
     if (args.showOrbits) {
       for (const planet of args.planets) {
-        // Earth is the origin of this bridge. Its translated path reaches
-        // Cartesian3.ZERO and is intentionally not drawn.
-        if (planet.entity.name === "Earth") continue;
         const periodDays = ORBIT_PERIOD_DAYS[planet.entity.name];
         if (!periodDays) continue;
 
@@ -384,7 +430,7 @@ export function createCelestialBridgeRenderer(input: {
             id: orbitId,
             polyline: {
               positions,
-              width: 1,
+              width: planet.entity.name === "Earth" ? 1.6 : 1,
               material,
               arcType: Cesium.ArcType.NONE,
             },
