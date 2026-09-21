@@ -11,6 +11,30 @@ const GLOBAL_ACTIVE = 80;
 const REGIONAL_ACTIVE = 200;
 const LOCAL_ACTIVE = 420;
 
+const OPERATOR_PALETTE = Object.freeze([
+  '#38bdf8',
+  '#f59e0b',
+  '#8b5cf6',
+  '#84cc16',
+  '#06b6d4',
+  '#f97316',
+  '#6366f1',
+  '#14b8a6',
+  '#eab308',
+  '#ef4444',
+]);
+
+function stableOperatorColor(operator?: string) {
+  const normalized = operator?.trim().toLocaleLowerCase();
+  if (!normalized) return null;
+  let hash = 2166136261;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return OPERATOR_PALETTE[(hash >>> 0) % OPERATOR_PALETTE.length];
+}
+
 function pointBudget(cameraHeight: number) {
   if (!Number.isFinite(cameraHeight) || cameraHeight >= GLOBAL_HEIGHT_M) return GLOBAL_ACTIVE;
   if (cameraHeight >= REGIONAL_HEIGHT_M) return REGIONAL_ACTIVE;
@@ -46,13 +70,12 @@ export function createInfrastructureRenderer(input: {
   }));
   const landingById = new Map<string, { item: InfrastructureFeature; primitive: any; position: any }>();
 
-  const colorFor = (category: InfrastructureCategory) => {
-    // High-contrast palette: submarine cables must not disappear into pale
-    // blue ocean/map tiles. Landing points remain a distinct warm marker.
-    if (category === 'cable') return '#ff4f87';
-    if (category === 'landing') return '#ffbf3f';
-    if (category === 'datacenter') return '#a78bfa';
-    return '#2563eb';
+  const colorFor = (item: InfrastructureFeature) => {
+    if (item.category === 'cable') return item.visualColor ?? '#64748b';
+    if (item.category === 'landing') return '#fbbf24';
+    if (item.category === 'datacenter') return stableOperatorColor(item.operator) ?? '#94a3b8';
+    if (item.category === 'dam') return stableOperatorColor(item.operator) ?? '#64748b';
+    return '#64748b';
   };
 
   const classificationType = () =>
@@ -152,7 +175,7 @@ export function createInfrastructureRenderer(input: {
           id: item.id,
           position,
           pixelSize: 7,
-          color: Cesium.Color.fromCssColorString(colorFor('landing')).withAlpha(0.96),
+          color: Cesium.Color.fromCssColorString(colorFor(item)).withAlpha(0.96),
           outlineColor: Cesium.Color.fromCssColorString('#111827'),
           outlineWidth: 1.2,
           scaleByDistance: new Cesium.NearFarScalar(50_000, 1.15, 12_000_000, 0.55),
@@ -219,7 +242,7 @@ export function createInfrastructureRenderer(input: {
     try {
       const source = await Cesium.GeoJsonDataSource.load(geo, {
         clampToGround: true,
-        stroke: Cesium.Color.fromCssColorString(colorFor('cable')).withAlpha(0.92),
+        stroke: Cesium.Color.fromCssColorString('#64748b').withAlpha(0.92),
         fill: Cesium.Color.TRANSPARENT,
         strokeWidth: 2.5,
       });
@@ -243,7 +266,7 @@ export function createInfrastructureRenderer(input: {
         if (entity.polyline) {
           entity.polyline.width = new Cesium.ConstantProperty(2.5);
           entity.polyline.material = new Cesium.ColorMaterialProperty(
-            Cesium.Color.fromCssColorString(colorFor('cable')).withAlpha(0.92),
+            Cesium.Color.fromCssColorString(colorFor(item)).withAlpha(0.92),
           );
           entity.polyline.classificationType = new Cesium.ConstantProperty(classificationType());
         }
@@ -304,7 +327,7 @@ export function createInfrastructureRenderer(input: {
         position,
         point: {
           pixelSize: 7,
-          color: Cesium.Color.fromCssColorString(colorFor(item.category)),
+          color: Cesium.Color.fromCssColorString(colorFor(item)),
           outlineColor: Cesium.Color.fromCssColorString('#020617'),
           outlineWidth: 1,
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,

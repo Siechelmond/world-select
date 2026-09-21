@@ -6,6 +6,7 @@ export type InfrastructureFeature = {
   category: InfrastructureCategory;
   name: string;
   operator?: string;
+  visualColor?: string;
   point?: { longitude: number; latitude: number };
   coordinates?: Array<[number, number]>;
   source?: { id: string; label: string; url?: string };

@@ -143,6 +143,9 @@ function normalizeCableDataset(collection: GeoJsonCollection): InfrastructureFea
     const props = feature.properties ?? {};
     const rawId = String(props.id ?? feature.id ?? `cable-${index}`);
     const name = featureLabel(feature, 'Submarine cable');
+    const sourceColor = typeof props.color === 'string' && /^#[0-9a-f]{6}$/i.test(props.color)
+      ? props.color.toLowerCase()
+      : undefined;
     const geometry = feature.geometry;
     const lines = geometry?.type === 'MultiLineString'
       ? (Array.isArray(geometry.coordinates) ? geometry.coordinates : [])
@@ -163,6 +166,7 @@ function normalizeCableDataset(collection: GeoJsonCollection): InfrastructureFea
         id: `donor:cable:${rawId}:${part++}`,
         category: 'cable',
         name,
+        visualColor: sourceColor,
         coordinates,
         source: {
           id: 'telegeography-submarine-cables',

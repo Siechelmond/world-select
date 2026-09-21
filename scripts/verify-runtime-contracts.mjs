@@ -13,6 +13,9 @@ const spaceExplorer = fs.readFileSync(path.join(root, 'components/SpaceExplorer.
 const celestialBridge = fs.readFileSync(path.join(root, 'runtime/gev/layers/celestial-bridge-renderer.ts'), 'utf8');
 const satelliteRenderer = fs.readFileSync(path.join(root, 'runtime/gev/layers/satellites-renderer.ts'), 'utf8');
 const radioRenderer = fs.readFileSync(path.join(root, 'runtime/gev/layers/radio-renderer.ts'), 'utf8');
+const infrastructureRenderer = fs.readFileSync(path.join(root, 'runtime/gev/layers/infrastructure-renderer.ts'), 'utf8');
+const infrastructureLocal = fs.readFileSync(path.join(root, 'lib/infrastructure-local.ts'), 'utf8');
+const keyless = fs.readFileSync(path.join(root, 'lib/keyless.ts'), 'utf8');
 const viewScale = fs.readFileSync(path.join(root, 'lib/view-scale.ts'), 'utf8');
 const viewerLifecycle = fs.readFileSync(path.join(root, 'lib/cesium-viewer.ts'), 'utf8');
 const mapController = fs.readFileSync(path.join(root, 'runtime/gev/map-controller.ts'), 'utf8');
@@ -49,6 +52,7 @@ const checks = [
   ['surface layers leave the scene in solar tier', component.includes('earthVisible: earthSurfaceVisible') && component.includes('earthSurfaceVisible && earthquakeLayer')],
   ['deep solar context retains renderer-level satellite fallback cutoff', satelliteRenderer.includes('SOLAR_CONTEXT_SATELLITE_CUTOFF_M = 120_000_000') && satelliteRenderer.includes('deepSolarContext')],
   ['radio markers stay donor-sized, earth-anchored and horizon-occluded', radioRenderer.includes('NORMAL_PIXEL_SIZE = 13') && radioRenderer.includes('RADIO_COLOR = "#34d399"') && radioRenderer.includes('Number.POSITIVE_INFINITY') && radioRenderer.includes('SELECTED_PIXEL_SIZE = 16') && radioRenderer.includes('EllipsoidalOccluder') && radioRenderer.includes('preRender') && component.includes('createRadioRenderer')],
+  ['infrastructure preserves cable source colors and operator-based point colors', keyless.includes('visualColor?: string') && infrastructureLocal.includes('visualColor: sourceColor') && infrastructureRenderer.includes('OPERATOR_PALETTE') && infrastructureRenderer.includes("item.visualColor ?? '#64748b'") && infrastructureRenderer.includes('stableOperatorColor(item.operator)')],
 ];
 
 let failed = 0;
