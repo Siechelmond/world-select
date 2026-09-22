@@ -6,14 +6,13 @@ import {
   type MoonSpec,
   type PlanetPosition,
 } from "@/lib/space";
+import {
+  AU_METERS,
+  logicalToDisplayDistanceM,
+} from "@/lib/view-scale";
 
-const SOLAR_DISPLAY_ONE_AU_M = 5_000_000_000;
-const SOLAR_DISPLAY_CURVE = 1.7;
 const ORBIT_SAMPLES = 96;
 const MOON_ORBIT_SAMPLES = 128;
-const GEO_REFERENCE_ORBIT_RADIUS_M = 42_164_000;
-const MOON_MEAN_ORBIT_RADIUS_M = 384_400_000;
-const MOON_DISPLAY_ORBIT_RADIUS_M = 150_000_000;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
 const SUN_ID = "bridge:solar:sun";
 const SUN_GLOW_IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`
@@ -56,44 +55,27 @@ const ORBIT_PERIOD_DAYS: Record<string, number> = {
   Neptune: 60182,
 };
 
-function compressedRadiusMeters(distanceAu: number) {
-  if (!Number.isFinite(distanceAu) || distanceAu <= 0) return 0;
-  return SOLAR_DISPLAY_ONE_AU_M
-    * Math.log1p(SOLAR_DISPLAY_CURVE * distanceAu)
-    / Math.log1p(SOLAR_DISPLAY_CURVE);
-}
-
-function eclipticJ2000ToEquatorial(vector: { x: number; y: number; z: number }) {
-  const cosE = Math.cos(OBLIQUITY_J2000_RAD);
-  const sinE = Math.sin(OBLIQUITY_J2000_RAD);
-  return {
-    x: vector.x,
-    y: vector.y * cosE - vector.z * sinE,
-    z: vector.y * sinE + vector.z * cosE,
-  };
-}
-
-function inertialToFixed(Cesium: any, vector: any, date: Date) {
-  const julian = Cesium.JulianDate.fromDate(date);
-  const matrix =
-    Cesium.Transforms.computeIcrfToFixedMatrix?.(julian) ??
-    Cesium.Transforms.computeTemeToPseudoFixedMatrix?.(julian);
-
-  if (!matrix) return vector;
-  return Cesium.Matrix3.multiplyByVector(matrix, vector, new Cesium.Cartesian3());
-}
-
-function compressedHeliocentricPosition(
+function earthRelativeDisplayPosition(
   Cesium: any,
-  vectorAu: { x: number; y: number; z: number },
+  bodyVectorAu: { x: number; y: number; z: number },
+  earthVectorAu: { x: number; y: number; z: number },
   date: Date,
 ) {
-  const magnitudeAu = Math.hypot(vectorAu.x, vectorAu.y, vectorAu.z);
-  if (!Number.isFinite(magnitudeAu) || magnitudeAu < 1e-10) {
+  const relativeAu = {
+    x: bodyVectorAu.x - earthVectorAu.x,
+    y: bodyVectorAu.y - earthVectorAu.y,
+    z: bodyVectorAu.z - earthVectorAu.z,
+  };
+  const magnitudeAu = Math.hypot(
+    relativeAu.x,
+    relativeAu.y,
+    relativeAu.z,
+  );
+  if (!Number.isFinite(magnitudeAu) || magnitudeAu < 1e-12) {
     return Cesium.Cartesian3.ZERO;
   }
 
-  const equatorial = eclipticJ2000ToEquatorial(vectorAu);
+  const equatorial = eclipticJ2000ToEquatorial(relativeAu);
   const inertialDirection = new Cesium.Cartesian3(
     equatorial.x / magnitudeAu,
     equatorial.y / magnitudeAu,
@@ -104,23 +86,15 @@ function compressedHeliocentricPosition(
     fixedDirection,
     new Cesium.Cartesian3(),
   );
+  const logicalDistanceM = magnitudeAu * AU_METERS;
+  const displayDistanceM =
+    logicalToDisplayDistanceM(logicalDistanceM);
 
   return Cesium.Cartesian3.multiplyByScalar(
     normalized,
-    compressedRadiusMeters(magnitudeAu),
+    displayDistanceM,
     new Cesium.Cartesian3(),
   );
-}
-
-function earthCenteredPosition(
-  Cesium: any,
-  bodyVectorAu: { x: number; y: number; z: number },
-  earthVectorAu: { x: number; y: number; z: number },
-  date: Date,
-) {
-  const body = compressedHeliocentricPosition(Cesium, bodyVectorAu, date);
-  const earth = compressedHeliocentricPosition(Cesium, earthVectorAu, date);
-  return Cesium.Cartesian3.subtract(body, earth, new Cesium.Cartesian3());
 }
 
 function bodyPixelSize(name: string, radiusKmOverride?: number) {
@@ -158,22 +132,6 @@ function phaseSeedRadians(value: string) {
   return (hash % 360) * Math.PI / 180;
 }
 
-function cislunarDisplayRadiusMeters(realRadiusM: number) {
-  if (!Number.isFinite(realRadiusM) || realRadiusM <= 0) return 0;
-  if (realRadiusM <= GEO_REFERENCE_ORBIT_RADIUS_M) return realRadiusM;
-
-  // Keep GEO untouched, then compress only the post-GEO leg. The true
-  // 384,400 km Moon radius remains in the entity model/telemetry, while its
-  // display radius lands at 150,000 km so Earth, GEO and Moon stay readable
-  // in one continuous camera journey.
-  const postGeoDisplayScale =
-    (MOON_DISPLAY_ORBIT_RADIUS_M - GEO_REFERENCE_ORBIT_RADIUS_M)
-    / (MOON_MEAN_ORBIT_RADIUS_M - GEO_REFERENCE_ORBIT_RADIUS_M);
-
-  return GEO_REFERENCE_ORBIT_RADIUS_M
-    + (realRadiusM - GEO_REFERENCE_ORBIT_RADIUS_M) * postGeoDisplayScale;
-}
-
 function moonLocalOffset(
   Cesium: any,
   moon: MoonSpec,
@@ -182,9 +140,7 @@ function moonLocalOffset(
   phaseOverride?: number,
 ) {
   const trueRadiusM = moon.orbitalRadiusKm * 1_000;
-  const radiusM = parentName === "Earth"
-    ? cislunarDisplayRadiusMeters(trueRadiusM)
-    : trueRadiusM;
+  const radiusM = logicalToDisplayDistanceM(trueRadiusM);
   const elapsedDays = date.getTime() / 86_400_000;
   const phase = phaseOverride ?? (
     elapsedDays / moon.orbitalPeriodDays * Math.PI * 2
@@ -267,7 +223,6 @@ export function createCelestialBridgeRenderer(input: {
     if (cached) return cached;
 
     const earthVector = { x: earth.xAu, y: earth.yAu, z: earth.zAu };
-    const earthDisplay = compressedHeliocentricPosition(Cesium, earthVector, epoch);
     const positions: any[] = [];
 
     for (let index = 0; index <= ORBIT_SAMPLES; index += 1) {
@@ -279,18 +234,13 @@ export function createCelestialBridgeRenderer(input: {
       );
       if (!sample) continue;
 
-      // Keep all paths in one selected-time fixed frame. The heliocentric
-      // radius is logarithmically compressed first, then translated so the
-      // current Earth remains the origin of the bridge.
-      const sampleDisplay = compressedHeliocentricPosition(
+      // Keep every orbit sample in the same Earth-relative display contract
+      // used by the camera and body positions. The current Earth remains origin.
+      const position = earthRelativeDisplayPosition(
         Cesium,
         { x: sample.xAu, y: sample.yAu, z: sample.zAu },
+        earthVector,
         epoch,
-      );
-      const position = Cesium.Cartesian3.subtract(
-        sampleDisplay,
-        earthDisplay,
-        new Cesium.Cartesian3(),
       );
       if (finiteCartesian(position) && Cesium.Cartesian3.magnitude(position) > 1) {
         positions.push(position);
@@ -430,7 +380,13 @@ export function createCelestialBridgeRenderer(input: {
 
     const earthVector = { x: earth.xAu, y: earth.yAu, z: earth.zAu };
     const nextBodyIds = new Set<string>();
-    const wantedOrbitIds = new Set<string>();
+
+    // Orbit geometry is persistent once created. The UI checkbox changes only
+    // visibility; it never moves bodies or rebuilds/removes orbit entities.
+    for (const id of orbitIds) {
+      const orbit = viewer.entities.getById(id);
+      if (orbit) orbit.show = false;
+    }
 
     const syncMoonAtParent = (
       parentName: string,
@@ -463,9 +419,7 @@ export function createCelestialBridgeRenderer(input: {
             : "Parent-relative moon orbit inside compressed solar context",
           trueOrbitalRadiusKm: moon.orbitalRadiusKm,
           displayOrbitalRadiusKm: Math.round(
-            (parentName === "Earth"
-              ? cislunarDisplayRadiusMeters(moon.orbitalRadiusKm * 1_000)
-              : moon.orbitalRadiusKm * 1_000) / 1_000,
+            logicalToDisplayDistanceM(moon.orbitalRadiusKm * 1_000) / 1_000,
           ),
           displayDistanceKm: Math.round(displayDistanceM / 1_000),
           parentDisplayDistanceKm: Math.round(
@@ -488,42 +442,46 @@ export function createCelestialBridgeRenderer(input: {
     };
 
     // The Earth-Moon system is the cislunar bridge between GEO and Solar.
-    // Its true mean 384,400 km orbital radius comes directly from lib/space.ts.
-    // Rendering keeps GEO at real scale, then compresses only the post-GEO leg
-    // so the native Earth remains visually useful while DIST stays truthful.
+    // Its true 384,400 km model distance stays in lib/space.ts; its rendered
+    // radius comes from the same shared transform as the camera.
     const earthMoon = getPlanetMoons("Earth")[0];
     if (earthMoon) {
       syncMoonAtParent("Earth", Cesium.Cartesian3.ZERO, earthMoon, true);
 
-      const moonOrbitId = "bridge-orbit:earth-moon";
-      const positions = moonOrbitPositions(
-        Cesium,
-        Cesium.Cartesian3.ZERO,
-        earthMoon,
-        "Earth",
-        epoch,
-      );
-      wantedOrbitIds.add(moonOrbitId);
-      const existing = viewer.entities.getById(moonOrbitId);
-      const material = Cesium.Color
-        .fromCssColorString(earthMoon.color)
-        .withAlpha(0.22);
+      if (args.showOrbits && args.showSolarBodies) {
+        const moonOrbitId = "bridge-orbit:earth-moon";
+        const positions = moonOrbitPositions(
+          Cesium,
+          Cesium.Cartesian3.ZERO,
+          earthMoon,
+          "Earth",
+          epoch,
+        );
+        const existing = viewer.entities.getById(moonOrbitId);
+        const material = Cesium.Color
+          .fromCssColorString(earthMoon.color)
+          .withAlpha(0.42);
 
-      if (!existing) {
-        viewer.entities.add({
-          id: moonOrbitId,
-          polyline: {
-            positions,
-            width: 1.2,
-            material,
-            arcType: Cesium.ArcType.NONE,
-          },
-        });
-      } else if (existing.polyline) {
-        existing.polyline.positions = new Cesium.ConstantProperty(positions);
-        existing.polyline.material = new Cesium.ColorMaterialProperty(material);
+        if (!existing) {
+          viewer.entities.add({
+            id: moonOrbitId,
+            show: true,
+            polyline: {
+              positions,
+              width: 1.4,
+              material,
+              arcType: Cesium.ArcType.NONE,
+            },
+          });
+        } else {
+          existing.show = true;
+          if (existing.polyline) {
+            existing.polyline.positions = new Cesium.ConstantProperty(positions);
+            existing.polyline.material = new Cesium.ColorMaterialProperty(material);
+          }
+        }
+        orbitIds.add(moonOrbitId);
       }
-      orbitIds.add(moonOrbitId);
     }
 
     if (args.showSolarBodies) {
@@ -532,7 +490,7 @@ export function createCelestialBridgeRenderer(input: {
       // reference, so the bridge owns one explicit compressed Sun instead.
       setNativeSunVisible(false);
 
-      const sunPosition = earthCenteredPosition(
+      const sunPosition = earthRelativeDisplayPosition(
         Cesium,
         { x: 0, y: 0, z: 0 },
         earthVector,
@@ -554,7 +512,7 @@ export function createCelestialBridgeRenderer(input: {
         properties: {
           role: "compressed solar reference",
           displayFrame: "Earth-centered compressed heliocentric J2000 context",
-          visualScale: "Fixed logarithmic AU distance scale",
+          visualScale: "Shared logical-to-display distance contract",
           displayDistanceKm: Math.round(sunDistanceM / 1_000),
         },
       };
@@ -571,7 +529,7 @@ export function createCelestialBridgeRenderer(input: {
       for (const planet of args.planets) {
         if (planet.entity.name === "Earth") continue;
 
-        const position = earthCenteredPosition(
+        const position = earthRelativeDisplayPosition(
           Cesium,
           { x: planet.xAu, y: planet.yAu, z: planet.zAu },
           earthVector,
@@ -598,7 +556,7 @@ export function createCelestialBridgeRenderer(input: {
               ).toFixed(4),
             ),
             displayFrame: "Earth-centered compressed heliocentric J2000 context",
-            visualScale: "Fixed logarithmic AU distance scale with cislunar clearance",
+            visualScale: "Shared logical-to-display distance contract",
             displayDistanceKm: Math.round(displayDistanceM / 1_000),
             sunRepresentation: "World Select compressed solar reference",
           },
@@ -627,25 +585,28 @@ export function createCelestialBridgeRenderer(input: {
           if (positions.length < 2) continue;
 
           const orbitId = `bridge-orbit:${planet.entity.name.toLowerCase()}`;
-          wantedOrbitIds.add(orbitId);
           const existing = viewer.entities.getById(orbitId);
           const material = Cesium.Color
             .fromCssColorString(bodyColor(planet.entity.name))
-            .withAlpha(0.22);
+            .withAlpha(0.42);
 
           if (!existing) {
             viewer.entities.add({
               id: orbitId,
+              show: true,
               polyline: {
                 positions,
-                width: planet.entity.name === "Earth" ? 1.6 : 1,
+                width: planet.entity.name === "Earth" ? 1.8 : 1.4,
                 material,
                 arcType: Cesium.ArcType.NONE,
               },
             });
-          } else if (existing.polyline) {
-            existing.polyline.positions = new Cesium.ConstantProperty(positions);
-            existing.polyline.material = new Cesium.ColorMaterialProperty(material);
+          } else {
+            existing.show = true;
+            if (existing.polyline) {
+              existing.polyline.positions = new Cesium.ConstantProperty(positions);
+              existing.polyline.material = new Cesium.ColorMaterialProperty(material);
+            }
           }
 
           orbitIds.add(orbitId);
@@ -657,13 +618,6 @@ export function createCelestialBridgeRenderer(input: {
 
     for (const id of Array.from(bodyIds)) {
       if (!nextBodyIds.has(id)) removeBody(id);
-    }
-
-    for (const id of Array.from(orbitIds)) {
-      if (!wantedOrbitIds.has(id)) {
-        viewer.entities.removeById(id);
-        orbitIds.delete(id);
-      }
     }
 
     viewer.scene?.requestRender?.();

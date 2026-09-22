@@ -1,5 +1,11 @@
 import { GEO_LABELS_DE } from '@/lib/geo-labels';
-import { resolveEarthScaleTier } from '@/lib/view-scale';
+import {
+  displayToLogicalDistanceM,
+  EARTH_VIEW_MAX_DISPLAY_DISTANCE_M,
+  EARTH_VIEW_MAX_LOGICAL_DISTANCE_M,
+  logicalToDisplayDistanceM,
+  resolveEarthScaleTier,
+} from '@/lib/view-scale';
 import { holdContinuousRender, installRenderGovernor, releaseContinuousRender, uninstallRenderGovernor } from '@/runtime/gev/render-governor';
 import {
   createMapController,
@@ -70,12 +76,12 @@ export function createWorldViewer(input: {
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#020617');
 
   // Keep one native Earth viewer usable from ground scale out to the outer
-  // planets. Camera height remains real Earth-relative telemetry; celestial
-  // overlays may use explicit display compression while logarithmic depth
-  // preserves precision across the extreme near/far range.
+  // planets. Cesium camera height is DISPLAY distance above the compression
+  // boundary; the UI/state receives the inverse LOGICAL distance.
   viewer.scene.logarithmicDepthBuffer = true;
   viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
-  viewer.scene.screenSpaceCameraController.maximumZoomDistance = 6_000_000_000_000;
+  viewer.scene.screenSpaceCameraController.maximumZoomDistance =
+    EARTH_VIEW_MAX_DISPLAY_DISTANCE_M;
   viewer.scene.screenSpaceCameraController.enableTilt = true;
   viewer.scene.screenSpaceCameraController.enableLook = true;
 
@@ -148,17 +154,20 @@ export function createWorldViewer(input: {
   };
 
   let lastPublishedScaleTier = resolveEarthScaleTier(
-    viewer.camera.positionCartographic?.height ?? 9_500_000,
+    displayToLogicalDistanceM(
+      viewer.camera.positionCartographic?.height ?? 9_500_000,
+    ),
   );
 
   const updateView = () => {
     const cameraCartographic = viewer.camera.positionCartographic;
     const ground = pickGroundCenter();
     if (ground) lastGroundCenter = { latitude: ground.latitude, longitude: ground.longitude };
-    const height = cameraCartographic?.height;
-    if (Number.isFinite(height)) {
-      lastPublishedScaleTier = resolveEarthScaleTier(height);
-      onViewChange({ ...lastGroundCenter, height });
+    const displayHeight = cameraCartographic?.height;
+    if (Number.isFinite(displayHeight)) {
+      const logicalHeight = displayToLogicalDistanceM(displayHeight);
+      lastPublishedScaleTier = resolveEarthScaleTier(logicalHeight);
+      onViewChange({ ...lastGroundCenter, height: logicalHeight });
     }
   };
 
@@ -170,10 +179,12 @@ export function createWorldViewer(input: {
 
   const onOrbitScaleWheel = (event: WheelEvent) => {
     const cameraCartographic = viewer.camera.positionCartographic;
-    const currentHeight = cameraCartographic?.height;
-    if (!Number.isFinite(currentHeight) || currentHeight < ORBIT_WHEEL_DAMPING_HEIGHT_M) {
-      return;
-    }
+    const currentDisplayHeight = cameraCartographic?.height;
+    if (!Number.isFinite(currentDisplayHeight)) return;
+
+    const currentLogicalHeight =
+      displayToLogicalDistanceM(currentDisplayHeight);
+    if (currentLogicalHeight < ORBIT_WHEEL_DAMPING_HEIGHT_M) return;
     if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
 
     event.preventDefault();
@@ -187,18 +198,21 @@ export function createWorldViewer(input: {
         : event.deltaY;
     const normalized = Math.max(-1, Math.min(1, deltaPixels / ORBIT_WHEEL_PIXEL_REFERENCE));
     const logStep = normalized * MAX_ORBIT_WHEEL_LOG_STEP;
-    const minHeight = viewer.scene.screenSpaceCameraController.minimumZoomDistance ?? 2;
-    const maxHeight = viewer.scene.screenSpaceCameraController.maximumZoomDistance ?? 6_000_000_000_000;
-    const nextHeight = Math.max(
-      minHeight,
-      Math.min(maxHeight, currentHeight * Math.exp(logStep)),
+    const nextLogicalHeight = Math.max(
+      viewer.scene.screenSpaceCameraController.minimumZoomDistance ?? 2,
+      Math.min(
+        EARTH_VIEW_MAX_LOGICAL_DISTANCE_M,
+        currentLogicalHeight * Math.exp(logStep),
+      ),
     );
+    const nextDisplayHeight =
+      logicalToDisplayDistanceM(nextLogicalHeight);
 
     const currentPosition = viewer.camera.positionWC;
     const currentRadius = Cesium.Cartesian3.magnitude(currentPosition);
     if (!Number.isFinite(currentRadius) || currentRadius <= 0) return;
-    const surfaceRadius = Math.max(1, currentRadius - currentHeight);
-    const targetRadius = surfaceRadius + nextHeight;
+    const surfaceRadius = Math.max(1, currentRadius - currentDisplayHeight);
+    const targetRadius = surfaceRadius + nextDisplayHeight;
     const radialDirection = Cesium.Cartesian3.normalize(
       currentPosition,
       new Cesium.Cartesian3(),
@@ -231,9 +245,10 @@ export function createWorldViewer(input: {
   // only when the camera crosses a scale-tier boundary; moveEnd still publishes
   // the final center/height. This avoids competing React writers for Solar state.
   const removeScaleTierMonitor = viewer.scene.preRender.addEventListener(() => {
-    const height = viewer.camera.positionCartographic?.height;
-    if (!Number.isFinite(height)) return;
-    const nextTier = resolveEarthScaleTier(height);
+    const displayHeight = viewer.camera.positionCartographic?.height;
+    if (!Number.isFinite(displayHeight)) return;
+    const logicalHeight = displayToLogicalDistanceM(displayHeight);
+    const nextTier = resolveEarthScaleTier(logicalHeight);
     if (nextTier === lastPublishedScaleTier) return;
     updateView();
   });
