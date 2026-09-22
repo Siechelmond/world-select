@@ -55,6 +55,30 @@ const ORBIT_PERIOD_DAYS: Record<string, number> = {
   Neptune: 60182,
 };
 
+function eclipticJ2000ToEquatorial(vector: { x: number; y: number; z: number }) {
+  const cosE = Math.cos(OBLIQUITY_J2000_RAD);
+  const sinE = Math.sin(OBLIQUITY_J2000_RAD);
+  return {
+    x: vector.x,
+    y: vector.y * cosE - vector.z * sinE,
+    z: vector.y * sinE + vector.z * cosE,
+  };
+}
+
+function inertialToFixed(Cesium: any, vector: any, date: Date) {
+  const julian = Cesium.JulianDate.fromDate(date);
+  const matrix =
+    Cesium.Transforms.computeIcrfToFixedMatrix?.(julian) ??
+    Cesium.Transforms.computeTemeToPseudoFixedMatrix?.(julian);
+
+  if (!matrix) return vector;
+  return Cesium.Matrix3.multiplyByVector(
+    matrix,
+    vector,
+    new Cesium.Cartesian3(),
+  );
+}
+
 function earthRelativeDisplayPosition(
   Cesium: any,
   bodyVectorAu: { x: number; y: number; z: number },
