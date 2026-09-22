@@ -35,11 +35,7 @@ import {
   type InfrastructureCategory,
 } from "@/lib/keyless";
 import { loadInfrastructureBaseline } from "@/lib/infrastructure-local";
-import {
-  GROUND_TIER_MAX_HEIGHT_M,
-  resolveEarthScaleTier,
-  type EarthScaleTier,
-} from "@/lib/view-scale";
+import { resolveEarthSceneState } from "@/lib/view-scale";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
 
@@ -157,8 +153,10 @@ export default function WorldSelectApp() {
   const [searchState, setSearchState] = useState<"idle" | "loading" | "error">("idle");
   const [searchMessage, setSearchMessage] = useState("");
   const [searchTarget, setSearchTarget] = useState<PlaceSearchResult | null>(null);
-  const [viewCenter, setViewCenter] = useState<EarthPoint>(INITIAL_CENTER);
-  const [cameraHeight, setCameraHeight] = useState(9_500_000);
+  const [earthCamera, setEarthCamera] = useState(() => ({
+    ...INITIAL_CENTER,
+    height: 9_500_000,
+  }));
   const [followAircraft, setFollowAircraft] = useState(false);
   const [selected, setSelected] = useState<SpatialEntity | null>(null);
   const [hovered, setHovered] = useState<SpatialEntity | null>(null);
@@ -189,13 +187,18 @@ export default function WorldSelectApp() {
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [timeCollapsed, setTimeCollapsed] = useState(false);
   const [planetOrbits, setPlanetOrbits] = useState(false);
-  const [scaleTier, setScaleTier] = useState<EarthScaleTier>(() =>
-    resolveEarthScaleTier(9_500_000)
-  );
 
-  const earthSurfaceVisible = viewMode === "earth" && scaleTier !== "solar";
-  const earthOrbitVisible = viewMode === "earth" && scaleTier === "earth";
-  const solarContextVisible = viewMode === "earth" && scaleTier === "solar";
+  const viewCenter = earthCamera;
+  const cameraHeight = earthCamera.height;
+  const earthScene = useMemo(
+    () => resolveEarthSceneState(cameraHeight),
+    [cameraHeight],
+  );
+  const scaleTier = earthScene.tier;
+  const earthSurfaceVisible = viewMode === "earth" && earthScene.surfaceVisible;
+  const earthOrbitVisible = viewMode === "earth" && earthScene.earthOrbitVisible;
+  const solarContextVisible = viewMode === "earth" && earthScene.solarContextVisible;
+  const planetOrbitsAvailable = viewMode === "earth" && earthScene.planetOrbitsAvailable;
 
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
@@ -509,13 +512,13 @@ export default function WorldSelectApp() {
       Cesium: window.Cesium,
       container: containerRef.current,
       onViewChange: ({ latitude, longitude, height }) => {
-        setViewCenter({ latitude, longitude });
-        setCameraHeight(height);
-        setScaleTier(resolveEarthScaleTier(height));
-      },
-      onScaleTierChange: ({ tier, height }) => {
-        setScaleTier(tier);
-        setCameraHeight(height);
+        setEarthCamera((current) => (
+          current.latitude === latitude &&
+          current.longitude === longitude &&
+          current.height === height
+            ? current
+            : { latitude, longitude, height }
+        ));
       },
       onEntityClick: (id) => {
         const spatial = entityMapRef.current.get(id);
@@ -654,15 +657,21 @@ export default function WorldSelectApp() {
   }, [viewMode, mapMode, cesiumReady]);
 
   useEffect(() => {
-    if (viewMode !== "earth" || selected?.kind !== "celestial-body") return;
+    if (selected?.kind !== "celestial-body") return;
     const validSolarSelection =
-      scaleTier === "solar" &&
+      solarContextVisible &&
       selected.id.startsWith("bridge:");
     if (!validSolarSelection) {
       setSelected(null);
       setFollowAircraft(false);
     }
-  }, [viewMode, scaleTier, selected?.kind, selected?.id]);
+  }, [solarContextVisible, selected?.kind, selected?.id]);
+
+  useEffect(() => {
+    if (!planetOrbitsAvailable && planetOrbits) {
+      setPlanetOrbits(false);
+    }
+  }, [planetOrbitsAvailable, planetOrbits]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -1134,11 +1143,11 @@ export default function WorldSelectApp() {
       <header className="topbar glass">
         <div className="brand"><p className="eyebrow">SPATIAL INTELLIGENCE</p><h1>World Select</h1></div>
         <div className="modeSwitch" role="group" aria-label="View mode">
-          <button className={viewMode === "earth" && cameraHeight >= GROUND_TIER_MAX_HEIGHT_M ? "active" : ""} onClick={viewMode === "space" ? returnToEarthFromSpace : flyEarth}>EARTH</button>
-          <button className={viewMode === "earth" && cameraHeight < GROUND_TIER_MAX_HEIGHT_M ? "active" : ""} onClick={flyGround}>GROUND</button>
+          <button className={viewMode === "earth" && !earthScene.isGround ? "active" : ""} onClick={viewMode === "space" ? returnToEarthFromSpace : flyEarth}>EARTH</button>
+          <button className={viewMode === "earth" && earthScene.isGround ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={enterSpaceFromEarth}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" && cameraHeight < GROUND_TIER_MAX_HEIGHT_M ? "GROUND" : viewMode.toUpperCase()}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" ? earthScene.statusLabel : "SPACE"}</span></div>
       </header>
 
       {viewMode === "earth" && <div className="mapNav glass">
@@ -1234,13 +1243,13 @@ export default function WorldSelectApp() {
         <div className="layerGroupTitle">UTILITIES</div>
         <LayerToggle checked={radioLayer} onChange={setRadioLayer} onRetry={() => setRadioRetry((v) => v + 1)} title="Radio" subtitle="Radio Browser · geolocated HTTPS stations" state={radioState} count={filteredRadio.length} disabled={viewMode !== "earth"} error={layerErrors.radio} />
         {radioLayer && <div className="filterChips">{RADIO_FILTERS.map((filter) => <button key={filter} className={radioFilter === filter ? "active" : ""} onClick={() => setRadioFilter(filter)}>{filter.replace("-", " ").toUpperCase()}</button>)}</div>}
-        <label className={`layerRow ${viewMode !== "earth" ? "disabled" : ""}`}>
-          <input type="checkbox" checked={planetOrbits} disabled={viewMode !== "earth" || scaleTier !== "solar"} onChange={(event) => setPlanetOrbits(event.target.checked)} />
-          <span><strong>Planet orbits</strong><small>{scaleTier !== "solar" ? "Full-globe / orbital context only" : "Approximate JPL elements · fixed compressed solar scale"}</small></span>
+        <label className={`layerRow ${!planetOrbitsAvailable ? "disabled" : ""}`}>
+          <input type="checkbox" checked={planetOrbits} disabled={!planetOrbitsAvailable} onChange={(event) => setPlanetOrbits(event.target.checked)} />
+          <span><strong>Planet orbits</strong><small>{planetOrbitsAvailable ? "Approximate JPL elements · fixed compressed solar scale" : "Available in Earth solar context"}</small></span>
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">
-          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : scaleTier === "solar" ? "SOLAR · COMPRESSED" : scaleTier === "earth" ? "EARTH / ORBIT" : "GROUND"}</em>
+          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : earthScene.statusLabel}</em>
           <span>Ground map</span><em>ESRI STREET · WORLD SELECT LABELS EN</em>
           <span>Street imagery</span><em>GOOGLE + KARTAVIEW</em>
           <span>Annotations</span><em>LOCAL SESSION</em>
@@ -1305,7 +1314,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>{viewMode === "earth" && scaleTier === "solar" ? "EARTH → SOLAR · JPL direction + compressed distance" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
+        <span>{solarContextVisible ? "EARTH → SOLAR · JPL direction + compressed distance" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
       </footer>
     </main>
   );

@@ -1,5 +1,5 @@
 import { GEO_LABELS_DE } from '@/lib/geo-labels';
-import { resolveEarthScaleTier, type EarthScaleTier } from '@/lib/view-scale';
+import { resolveEarthScaleTier } from '@/lib/view-scale';
 import { holdContinuousRender, installRenderGovernor, releaseContinuousRender, uninstallRenderGovernor } from '@/runtime/gev/render-governor';
 import {
   createMapController,
@@ -26,7 +26,6 @@ export function createWorldViewer(input: {
   Cesium: any;
   container: HTMLElement;
   onViewChange: (view: { latitude: number; longitude: number; height: number }) => void;
-  onScaleTierChange?: (value: { tier: EarthScaleTier; height: number }) => void;
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
   onEmptyClick?: (point: { latitude: number; longitude: number; heightAboveSurfaceMeters?: number } | null) => void;
@@ -38,7 +37,6 @@ export function createWorldViewer(input: {
     Cesium,
     container,
     onViewChange,
-    onScaleTierChange = () => {},
     onEntityClick,
     onEntityHover,
     onEmptyClick,
@@ -78,18 +76,6 @@ export function createWorldViewer(input: {
 
   viewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(14.2, 47.6, 9_500_000),
-  });
-
-  let lastScaleTier: EarthScaleTier = resolveEarthScaleTier(
-    viewer.camera.positionCartographic?.height ?? 9_500_000,
-  );
-  const removeScaleTierMonitor = viewer.scene.preRender.addEventListener(() => {
-    const height = viewer.camera.positionCartographic?.height;
-    if (!Number.isFinite(height)) return;
-    const nextTier = resolveEarthScaleTier(height);
-    if (nextTier === lastScaleTier) return;
-    lastScaleTier = nextTier;
-    onScaleTierChange({ tier: nextTier, height });
   });
 
   const mapController = createMapController({
@@ -156,15 +142,31 @@ export function createWorldViewer(input: {
     return [latitude, longitude].every(Number.isFinite) ? { latitude, longitude, cartesian: hit } : null;
   };
 
+  let lastPublishedScaleTier = resolveEarthScaleTier(
+    viewer.camera.positionCartographic?.height ?? 9_500_000,
+  );
+
   const updateView = () => {
     const cameraCartographic = viewer.camera.positionCartographic;
     const ground = pickGroundCenter();
     if (ground) lastGroundCenter = { latitude: ground.latitude, longitude: ground.longitude };
     const height = cameraCartographic?.height;
     if (Number.isFinite(height)) {
+      lastPublishedScaleTier = resolveEarthScaleTier(height);
       onViewChange({ ...lastGroundCenter, height });
     }
   };
+
+  // React receives one coherent camera snapshot. During active zoom we publish
+  // only when the camera crosses a scale-tier boundary; moveEnd still publishes
+  // the final center/height. This avoids competing React writers for Solar state.
+  const removeScaleTierMonitor = viewer.scene.preRender.addEventListener(() => {
+    const height = viewer.camera.positionCartographic?.height;
+    if (!Number.isFinite(height)) return;
+    const nextTier = resolveEarthScaleTier(height);
+    if (nextTier === lastPublishedScaleTier) return;
+    updateView();
+  });
 
   const targetFrame = () => {
     const target = pickGroundCenter()?.cartesian
