@@ -645,44 +645,6 @@ export default function WorldSelectApp() {
   }, [viewMode, mapMode, cesiumReady]);
 
   useEffect(() => {
-    const viewer = viewerRef.current;
-    const Cesium = window.Cesium;
-    const markerId = "street-target-marker";
-    if (!viewer || !Cesium) return;
-
-    viewer.entities.removeById(markerId);
-    if (!streetTarget || !earthSurfaceVisible) return;
-
-    viewer.entities.add({
-      id: markerId,
-      position: Cesium.Cartesian3.fromDegrees(streetTarget.longitude, streetTarget.latitude, 0),
-      point: {
-        pixelSize: 11,
-        color: Cesium.Color.WHITE,
-        outlineColor: Cesium.Color.fromCssColorString("#0f172a"),
-        outlineWidth: 3,
-        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        disableDepthTestDistance: 10_000,
-      },
-      label: {
-        text: "STREET",
-        font: "600 11px sans-serif",
-        fillColor: Cesium.Color.WHITE,
-        outlineColor: Cesium.Color.fromCssColorString("#020617"),
-        outlineWidth: 3,
-        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-        pixelOffset: new Cesium.Cartesian2(0, -20),
-        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        disableDepthTestDistance: 10_000,
-      },
-    });
-
-    return () => {
-      if (viewerRef.current) viewerRef.current.entities.removeById(markerId);
-    };
-  }, [streetTarget?.latitude, streetTarget?.longitude, earthSurfaceVisible, cesiumReady]);
-
-  useEffect(() => {
     if (viewMode !== "earth" || selected?.kind !== "celestial-body") return;
     const validSolarSelection =
       scaleTier === "solar" &&
@@ -1601,7 +1563,6 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
         panoRef.current.replaceChildren();
         panorama = new streetView.StreetViewPanorama(panoRef.current, {
           pano: coverage.panoId,
-          position: { lat: coverage.latitude, lng: coverage.longitude },
           pov: { heading: 0, pitch: 0 },
           zoom: 1,
           addressControl: true,
@@ -1634,13 +1595,15 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
         const handleStatus = () => {
           if (disposed || failed) return;
           const status = panorama?.getStatus?.();
-          if (status == null) {
-            publishReady();
-            return;
-          }
+          if (status == null) return;
           const ok = status === streetView.StreetViewStatus?.OK || String(status) === "OK";
           if (!ok) {
-            fail(`Google Street View panorama failed (${String(status || "UNKNOWN_STATUS")})`);
+            // Once Google has confirmed a usable panorama, a later transient
+            // status during panorama navigation must not tear down Street View
+            // and force the entire surface over to KartaView.
+            if (!readyPublished) {
+              fail(`Google Street View panorama failed (${String(status || "UNKNOWN_STATUS")})`);
+            }
             return;
           }
           publishReady();
@@ -1648,9 +1611,8 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
 
         positionListener = panorama.addListener?.("position_changed", publishPosition);
         statusListener = panorama.addListener?.("status_changed", handleStatus);
-        panoListener = panorama.addListener?.("pano_changed", publishReady);
+        panoListener = panorama.addListener?.("pano_changed", publishPosition);
         publishPosition();
-        window.setTimeout(handleStatus, 0);
       })
       .catch((error: unknown) => {
         fail(`Google Street View failed: ${error instanceof Error ? error.message : String(error)}`);
