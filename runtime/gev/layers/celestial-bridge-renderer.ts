@@ -266,20 +266,20 @@ export function createCelestialBridgeRenderer(input: {
   const bodyScaleByDistance = new Cesium.NearFarScalar(
     20_000_000,
     1,
-    25_000_000_000,
-    0.16,
+    50_000_000_000,
+    0.82,
   );
   const bodyAlphaByDistance = new Cesium.NearFarScalar(
     50_000_000,
     1,
-    25_000_000_000,
-    0.14,
+    50_000_000_000,
+    0.9,
   );
   const labelAlphaByDistance = new Cesium.NearFarScalar(
     80_000_000,
     1,
-    12_000_000_000,
-    0.04,
+    50_000_000_000,
+    0.82,
   );
   const bodyIds = new Set<string>();
   const orbitIds = new Set<string>();

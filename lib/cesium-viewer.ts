@@ -7,8 +7,8 @@ import {
   FULL_SOLAR_CONTEXT_DISTANCE_M,
   FULL_SOLAR_EXIT_DISTANCE_M,
   logicalToDisplayDistanceM,
+  MOON_ORBIT_DISTANCE_M,
   resolveEarthScaleTier,
-  SOLAR_DEAD_SCROLL_TICKS,
 } from '@/lib/view-scale';
 import { holdContinuousRender, installRenderGovernor, releaseContinuousRender, uninstallRenderGovernor } from '@/runtime/gev/render-governor';
 import {
@@ -21,11 +21,9 @@ import {
 export type { GroundMapStyle, MapSwitchResult, WorldMapMode };
 
 const ORBIT_WHEEL_DAMPING_HEIGHT_M = 20_000_000;
-const ORBIT_WHEEL_PIXEL_REFERENCE = 100;
-const MAX_ORBIT_WHEEL_LOG_STEP = 0.12;
-const SOLAR_DEAD_SCROLL_PIXEL_STEP = 70;
-const SOLAR_DEAD_SCROLL_COOLDOWN_MS = 45;
-const SOLAR_FRAME_RANGE_STEP = 0.085;
+const ORBIT_GESTURE_SETTLE_MS = 180;
+const ORBIT_GESTURE_LOG_STEP = Math.log(1.22);
+const SOLAR_FRAME_RANGE_STEP = 0.025;
 
 type SolarFrameSnapshot = {
   center: any;
@@ -55,7 +53,6 @@ export function createWorldViewer(input: {
     longitude: number;
     height: number;
     solarFrame: boolean;
-    solarDeadScrollTick: number;
     solarZoomStep: number;
   }) => void;
   onEntityClick: (id: string) => void;
@@ -184,20 +181,29 @@ export function createWorldViewer(input: {
   );
   let solarFrameActive = false;
   let navigationLogicalHeight: number | null = null;
-  let solarDeadScrollTick = 0;
   let solarZoomStep = 0;
-  let solarDeadScrollAccumulator = 0;
-  let lastSolarDeadScrollAt = 0;
-  let solarDeadScrollDirection = 0;
+  let orbitGestureActive = false;
+  let orbitGestureReleaseTimer: number | null = null;
 
   const resetSolarNavigation = () => {
     solarFrameActive = false;
     navigationLogicalHeight = null;
-    solarDeadScrollTick = 0;
     solarZoomStep = 0;
-    solarDeadScrollAccumulator = 0;
-    lastSolarDeadScrollAt = 0;
-    solarDeadScrollDirection = 0;
+  };
+
+  // Mouse wheels and touchpads emit very different event bursts. One burst is
+  // one navigation step; inertial tail events only extend the settle lock.
+  const beginOrbitGesture = () => {
+    const isFirstEvent = !orbitGestureActive;
+    orbitGestureActive = true;
+    if (orbitGestureReleaseTimer != null) {
+      window.clearTimeout(orbitGestureReleaseTimer);
+    }
+    orbitGestureReleaseTimer = window.setTimeout(() => {
+      orbitGestureActive = false;
+      orbitGestureReleaseTimer = null;
+    }, ORBIT_GESTURE_SETTLE_MS);
+    return isFirstEvent;
   };
 
   const solarFrameFitRange = (frame: SolarFrameSnapshot) => {
@@ -302,7 +308,6 @@ export function createWorldViewer(input: {
         ...lastGroundCenter,
         height: logicalHeight,
         solarFrame: solarFrameActive,
-        solarDeadScrollTick,
         solarZoomStep,
       });
     }
@@ -334,65 +339,54 @@ export function createWorldViewer(input: {
       : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
         ? event.deltaY * Math.max(1, viewer.scene.canvas.clientHeight)
         : event.deltaY;
-    const normalized = Math.max(-1, Math.min(1, deltaPixels / ORBIT_WHEEL_PIXEL_REFERENCE));
-    const logStep = normalized * MAX_ORBIT_WHEEL_LOG_STEP;
+    if (!beginOrbitGesture()) return;
+    const wheelDirection = deltaPixels > 0 ? 1 : -1;
 
     if (solarFrameActive) {
-      const direction = normalized > 0 ? 1 : -1;
-      if (direction !== solarDeadScrollDirection) {
-        solarDeadScrollDirection = direction;
-        solarDeadScrollTick = 0;
-        solarDeadScrollAccumulator = 0;
-      }
-
-      solarDeadScrollAccumulator += Math.abs(deltaPixels);
-      const now = performance.now();
-      if (
-        solarDeadScrollAccumulator >= SOLAR_DEAD_SCROLL_PIXEL_STEP &&
-        now - lastSolarDeadScrollAt >= SOLAR_DEAD_SCROLL_COOLDOWN_MS
-      ) {
-        solarDeadScrollTick += 1;
-        solarDeadScrollAccumulator = 0;
-        lastSolarDeadScrollAt = now;
-
-        if (solarDeadScrollTick >= SOLAR_DEAD_SCROLL_TICKS) {
-          solarDeadScrollTick = 0;
-          if (direction > 0) {
-            solarZoomStep = Math.min(
-              CELESTIAL_NAVIGATION_MILESTONES_M.length - 1,
-              solarZoomStep + 1,
-            );
-          } else if (solarZoomStep > 0) {
-            solarZoomStep -= 1;
-          } else {
-            const exitHeight = FULL_SOLAR_EXIT_DISTANCE_M;
-            resetSolarNavigation();
-            applyEarthRadialFrame(exitHeight);
-            if (!pendingOrbitWheelFrame) {
-              pendingOrbitWheelFrame = window.requestAnimationFrame(
-                publishOrbitWheelView,
-              );
-            }
-            return;
-          }
-
-          navigationLogicalHeight =
-            CELESTIAL_NAVIGATION_MILESTONES_M[solarZoomStep];
-          if (!applySolarFrame(solarZoomStep)) {
-            const fallbackHeight = Math.min(
-              navigationLogicalHeight,
-              EARTH_VIEW_MAX_LOGICAL_DISTANCE_M,
-            );
-            resetSolarNavigation();
-            applyEarthRadialFrame(fallbackHeight);
-          }
-        }
-
+      if (wheelDirection > 0) {
+        solarZoomStep = Math.min(
+          CELESTIAL_NAVIGATION_MILESTONES_M.length - 1,
+          solarZoomStep + 1,
+        );
+      } else if (solarZoomStep > 0) {
+        solarZoomStep -= 1;
+      } else {
+        resetSolarNavigation();
+        applyEarthRadialFrame(FULL_SOLAR_EXIT_DISTANCE_M);
         if (!pendingOrbitWheelFrame) {
           pendingOrbitWheelFrame = window.requestAnimationFrame(
             publishOrbitWheelView,
           );
         }
+        return;
+      }
+
+      navigationLogicalHeight =
+        CELESTIAL_NAVIGATION_MILESTONES_M[solarZoomStep];
+      applySolarFrame(solarZoomStep);
+      if (!pendingOrbitWheelFrame) {
+        pendingOrbitWheelFrame = window.requestAnimationFrame(
+          publishOrbitWheelView,
+        );
+      }
+      return;
+    }
+
+    if (
+      wheelDirection > 0 &&
+      currentLogicalHeight >= MOON_ORBIT_DISTANCE_M
+    ) {
+      solarFrameActive = true;
+      navigationLogicalHeight = FULL_SOLAR_CONTEXT_DISTANCE_M;
+      solarZoomStep = 0;
+      // The first publish lets React build the Solar entities and bounding
+      // frame. refreshSolarFrame() then applies the frame in the same update;
+      // failure to have a frame on this first event must not cancel the state.
+      applySolarFrame(solarZoomStep);
+      if (!pendingOrbitWheelFrame) {
+        pendingOrbitWheelFrame = window.requestAnimationFrame(
+          publishOrbitWheelView,
+        );
       }
       return;
     }
@@ -400,31 +394,16 @@ export function createWorldViewer(input: {
     const nextLogicalHeight = Math.max(
       viewer.scene.screenSpaceCameraController.minimumZoomDistance ?? 2,
       Math.min(
-        EARTH_VIEW_MAX_LOGICAL_DISTANCE_M,
-        currentLogicalHeight * Math.exp(logStep),
+        wheelDirection > 0
+          ? MOON_ORBIT_DISTANCE_M
+          : EARTH_VIEW_MAX_LOGICAL_DISTANCE_M,
+        currentLogicalHeight * Math.exp(
+          wheelDirection * ORBIT_GESTURE_LOG_STEP,
+        ),
       ),
     );
     const nextDisplayHeight =
       logicalToDisplayDistanceM(nextLogicalHeight);
-
-    if (
-      !solarFrameActive &&
-      normalized > 0 &&
-      nextLogicalHeight >= FULL_SOLAR_CONTEXT_DISTANCE_M
-    ) {
-      solarFrameActive = true;
-      navigationLogicalHeight = FULL_SOLAR_CONTEXT_DISTANCE_M;
-      solarDeadScrollTick = 0;
-      solarZoomStep = 0;
-      solarDeadScrollDirection = 0;
-      if (applySolarFrame(solarZoomStep)) {
-        if (!pendingOrbitWheelFrame) {
-          pendingOrbitWheelFrame = window.requestAnimationFrame(publishOrbitWheelView);
-        }
-        return;
-      }
-      resetSolarNavigation();
-    }
 
     const currentPosition = viewer.camera.positionWC;
     const currentRadius = Cesium.Cartesian3.magnitude(currentPosition);
@@ -440,12 +419,12 @@ export function createWorldViewer(input: {
       targetRadius,
       new Cesium.Cartesian3(),
     );
-    const direction = Cesium.Cartesian3.clone(viewer.camera.directionWC);
+    const viewDirection = Cesium.Cartesian3.clone(viewer.camera.directionWC);
     const up = Cesium.Cartesian3.clone(viewer.camera.upWC);
 
     viewer.camera.setView({
       destination,
-      orientation: { direction, up },
+      orientation: { direction: viewDirection, up },
     });
     viewer.scene?.requestRender?.();
 
@@ -653,6 +632,10 @@ export function createWorldViewer(input: {
       );
     },
     destroy: () => {
+      if (orbitGestureReleaseTimer != null) {
+        window.clearTimeout(orbitGestureReleaseTimer);
+        orbitGestureReleaseTimer = null;
+      }
       removeOrientationAnimation?.();
       removeOrientationAnimation = null;
       releaseContinuousRender('camera-orientation');

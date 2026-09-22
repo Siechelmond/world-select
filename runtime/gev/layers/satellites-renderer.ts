@@ -6,7 +6,10 @@ import {
   type TleRecord,
 } from '@/lib/celestrak';
 import type { SpatialEntity } from '@/lib/spatial';
-import { SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M } from '@/lib/view-scale';
+import {
+  logicalToDisplayDistanceM,
+  SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M,
+} from '@/lib/view-scale';
 import {
   SATELLITE_CLASSES,
   satelliteClassForEntity,
@@ -221,7 +224,7 @@ export function createSatelliteRenderer(input: {
       const position = Cesium.Cartesian3.fromDegrees(
         spatial.position.longitude,
         spatial.position.latitude,
-        spatial.position.altitudeMeters,
+        logicalToDisplayDistanceM(spatial.position.altitudeMeters),
       );
       const isSelected = spatial.id === selectedId;
       const isIss = /ISS.*ZARYA|^ISS\b/i.test(spatial.name);

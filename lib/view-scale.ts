@@ -22,16 +22,16 @@ export type EarthSceneState = Readonly<{
 
 export const AU_METERS = 149_597_870_700;
 export const LIGHT_YEAR_METERS = 9_460_730_472_580_800;
+export const MOON_ORBIT_DISTANCE_M = 384_400_000;
 export const GROUND_TIER_MAX_HEIGHT_M = 120_000;
 export const EARTH_LAYER_CONTEXT_MAX_HEIGHT_M = 36_000_000;
-export const CELESTIAL_COMPRESSION_START_M = 60_000_000;
+export const CELESTIAL_COMPRESSION_START_M = 2_000_000;
 export const CISLUNAR_CONTEXT_HEIGHT_M = 80_000_000;
 export const SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M = 120_000_000;
 export const SOLAR_CONTEXT_HEIGHT_M = 1_200_000_000;
 export const SOLAR_HANDOFF_DISTANCE_M = AU_METERS;
 export const FULL_SOLAR_CONTEXT_DISTANCE_M = SOLAR_HANDOFF_DISTANCE_M;
-export const FULL_SOLAR_EXIT_DISTANCE_M = 0.82 * AU_METERS;
-export const SOLAR_DEAD_SCROLL_TICKS = 4;
+export const FULL_SOLAR_EXIT_DISTANCE_M = MOON_ORBIT_DISTANCE_M;
 export const CISLUNAR_GUIDE_FADE_START_M = 0.08 * AU_METERS;
 export const EARTH_REFERENCE_MIN_DISTANCE_M = 0.1 * AU_METERS;
 export const SOLAR_DISPLAY_MAX_DISTANCE_M = 30.1 * AU_METERS;
@@ -50,10 +50,12 @@ export const CELESTIAL_NAVIGATION_MILESTONES_M = [
 // A later Galactic frame can hand off before this safety ceiling.
 export const EARTH_VIEW_MAX_LOGICAL_DISTANCE_M = LIGHT_YEAR_METERS;
 
-// Calibrated once for a continuous monotonic display curve:
-// logical 384,400 km (Moon) -> display ~150,000 km
-// logical 1 AU -> display ~5,000,000 km.
-// These are display anchors only; data/provenance and DIST remain logical/true.
+// One declared display transform is shared by the camera, satellite shells and
+// the Moon: LEO remains literal, GEO is brought closer, the true 384,400 km
+// lunar orbit renders at 120,000 km, and the 1 AU bridge at about 5 million km.
+// The UI and entity metadata continue to report true/logical distances.
+const MOON_DISPLAY_DISTANCE_M = 120_000_000;
+const ORBIT_COMPRESSION_EXPONENT = 1;
 const CELESTIAL_LOG_REFERENCE_M = 5_041_269_009.54116;
 const CELESTIAL_LOG_SCALE_M = 1_443_158_110.2225685;
 
@@ -62,11 +64,21 @@ export function logicalToDisplayDistanceM(logicalDistanceM: number) {
     ? Math.max(0, logicalDistanceM)
     : 0;
   if (logical <= CELESTIAL_COMPRESSION_START_M) return logical;
+  if (logical <= MOON_ORBIT_DISTANCE_M) {
+    const normalized = (
+      logical - CELESTIAL_COMPRESSION_START_M
+    ) / (
+      MOON_ORBIT_DISTANCE_M - CELESTIAL_COMPRESSION_START_M
+    );
+    return CELESTIAL_COMPRESSION_START_M
+      + (MOON_DISPLAY_DISTANCE_M - CELESTIAL_COMPRESSION_START_M)
+        * Math.pow(normalized, ORBIT_COMPRESSION_EXPONENT);
+  }
 
-  return CELESTIAL_COMPRESSION_START_M
+  return MOON_DISPLAY_DISTANCE_M
     + CELESTIAL_LOG_SCALE_M
       * Math.log1p(
-        (logical - CELESTIAL_COMPRESSION_START_M)
+        (logical - MOON_ORBIT_DISTANCE_M)
         / CELESTIAL_LOG_REFERENCE_M,
       );
 }
@@ -76,11 +88,21 @@ export function displayToLogicalDistanceM(displayDistanceM: number) {
     ? Math.max(0, displayDistanceM)
     : 0;
   if (display <= CELESTIAL_COMPRESSION_START_M) return display;
+  if (display <= MOON_DISPLAY_DISTANCE_M) {
+    const normalized = (
+      display - CELESTIAL_COMPRESSION_START_M
+    ) / (
+      MOON_DISPLAY_DISTANCE_M - CELESTIAL_COMPRESSION_START_M
+    );
+    return CELESTIAL_COMPRESSION_START_M
+      + (MOON_ORBIT_DISTANCE_M - CELESTIAL_COMPRESSION_START_M)
+        * Math.pow(normalized, 1 / ORBIT_COMPRESSION_EXPONENT);
+  }
 
-  return CELESTIAL_COMPRESSION_START_M
+  return MOON_ORBIT_DISTANCE_M
     + CELESTIAL_LOG_REFERENCE_M
       * Math.expm1(
-        (display - CELESTIAL_COMPRESSION_START_M)
+        (display - MOON_DISPLAY_DISTANCE_M)
         / CELESTIAL_LOG_SCALE_M,
       );
 }

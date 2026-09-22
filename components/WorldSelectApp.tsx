@@ -39,8 +39,8 @@ import {
   AU_METERS,
   CISLUNAR_CONTEXT_HEIGHT_M,
   LIGHT_YEAR_METERS,
+  logicalToDisplayDistanceM,
   resolveEarthSceneState,
-  SOLAR_DEAD_SCROLL_TICKS,
 } from "@/lib/view-scale";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
@@ -244,7 +244,6 @@ export default function WorldSelectApp() {
     ...INITIAL_CENTER,
     height: 9_500_000,
     solarFrame: false,
-    solarDeadScrollTick: 0,
     solarZoomStep: 0,
   }));
   const [followAircraft, setFollowAircraft] = useState(false);
@@ -294,7 +293,7 @@ export default function WorldSelectApp() {
   const planetOrbitsAvailable = viewMode === "earth" && earthScene.planetOrbitsAvailable;
   const distanceLabel = useMemo(() => formatEarthDistance(cameraHeight), [cameraHeight]);
   const navigationStatusLabel = earthCamera.solarFrame
-    ? `SOLAR FRAME · ${SOLAR_STEP_LABELS[earthCamera.solarZoomStep] ?? "CELESTIAL"} · INPUT ${earthCamera.solarDeadScrollTick}/${SOLAR_DEAD_SCROLL_TICKS}`
+    ? `SOLAR FRAME · ${SOLAR_STEP_LABELS[earthCamera.solarZoomStep] ?? "CELESTIAL"} · SNAP`
     : earthScene.statusLabel;
 
   const selectedTime = useMemo(
@@ -613,7 +612,6 @@ export default function WorldSelectApp() {
         longitude,
         height,
         solarFrame,
-        solarDeadScrollTick,
         solarZoomStep,
       }) => {
         setEarthCamera((current) => (
@@ -621,7 +619,6 @@ export default function WorldSelectApp() {
           current.longitude === longitude &&
           current.height === height &&
           current.solarFrame === solarFrame &&
-          current.solarDeadScrollTick === solarDeadScrollTick &&
           current.solarZoomStep === solarZoomStep
             ? current
             : {
@@ -629,7 +626,6 @@ export default function WorldSelectApp() {
               longitude,
               height,
               solarFrame,
-              solarDeadScrollTick,
               solarZoomStep,
             }
         ));
@@ -1062,7 +1058,11 @@ export default function WorldSelectApp() {
   const focusSelected = useCallback(() => {
     if (!selected || selected.kind === "celestial-body" || !viewerRef.current || !window.Cesium) return;
     const Cesium = window.Cesium;
-    const altitude = selected.kind === "satellite" ? Math.max(1_000_000, selected.position.altitudeMeters * 1.8)
+    const altitude = selected.kind === "satellite"
+      ? Math.max(
+        1_000_000,
+        logicalToDisplayDistanceM(selected.position.altitudeMeters) * 1.8,
+      )
       : selected.kind === "aircraft" ? 180_000 : 700_000;
     viewerRef.current.camera.flyTo({
       destination: Cesium.Cartesian3.fromDegrees(selected.position.longitude, selected.position.latitude, altitude), duration: 1.2,
@@ -1289,8 +1289,8 @@ export default function WorldSelectApp() {
           onRetry={() => retryLayer("satellites")}
           title="Satellites"
           subtitle={satelliteCatalog === "dense"
-            ? `CelesTrak DENSE · SGP4 · Starlink ${satelliteClassCounts.starlink}${satelliteMeta?.failedGroups.includes("STARLINK") ? " · SOURCE FAILED" : ""}`
-            : "CelesTrak CORE · SGP4 · real altitude · horizon-aware"}
+            ? `CelesTrak DENSE · SGP4 · compressed display · Starlink ${satelliteClassCounts.starlink}${satelliteMeta?.failedGroups.includes("STARLINK") ? " · SOURCE FAILED" : ""}`
+            : "CelesTrak CORE · SGP4 · true altitude · compressed display"}
           state={satelliteState}
           count={satellites.length}
           disabled={viewMode !== "earth"}
