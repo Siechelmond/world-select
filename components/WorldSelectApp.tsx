@@ -58,6 +58,7 @@ const LIVE_MOTION_TICK_MS = 1_000;
 const MOBILE_LIVE_MOTION_TICK_MS = 2_000;
 const UI_CLOCK_TICK_MS = 10_000;
 const AIRCRAFT_REFRESH_MS = 15_000;
+const STREET_MAP_CLICK_MAX_HEIGHT_M = 100;
 const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const EVENT_FILTERS = ["all", "fire", "storm", "volcano", "flood", "ice", "other"] as const;
 const RADIO_FILTERS = ["all", "news", "talk", "weather", "public-safety", "aviation-marine", "traffic-transit", "music", "other"] as const;
@@ -99,6 +100,8 @@ export default function WorldSelectApp() {
   const coreRuntimeRef = useRef<ReturnType<typeof createCoreLiveWorld> | null>(null);
   const streetFallbackAbortRef = useRef<AbortController | null>(null);
   const streetPointRef = useRef<EarthPoint>(INITIAL_CENTER);
+  const streetOpenRef = useRef(false);
+  const streetProviderRef = useRef<StreetProvider>(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
 
   const [cesiumReady, setCesiumReady] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -173,6 +176,7 @@ export default function WorldSelectApp() {
   const [streetState, setStreetState] = useState<LoadState>("idle");
   const [streetOpen, setStreetOpen] = useState(false);
   const [streetTarget, setStreetTarget] = useState<EarthPoint | null>(null);
+  const [streetTargetRevision, setStreetTargetRevision] = useState(0);
   const [annotations, setAnnotations] = useState<Array<{ id: string; latitude: number; longitude: number; label: string }>>([]);
   const [streetProvider, setStreetProvider] = useState<StreetProvider>(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
   const [streetNotice, setStreetNotice] = useState<string | null>(null);
@@ -266,7 +270,7 @@ export default function WorldSelectApp() {
 
   const selectEntity = useCallback((entity: SpatialEntity) => {
     setSelected(entity);
-    setStreetTarget(null);
+    if (!streetOpenRef.current) setStreetTarget(null);
     setMobilePanel("inspector");
     if (entity.kind === "satellite" && /ISS.*ZARYA|^ISS\b/i.test(entity.name)) {
       setIssPreview({ entity, screen: null });
@@ -522,9 +526,19 @@ export default function WorldSelectApp() {
         setHovered(spatial);
         setHoveredScreen(spatial ? screen : null);
       },
-      onEmptyClick: () => {
+      onEmptyClick: (point) => {
         setSelected(null);
         setFollowAircraft(false);
+        if (!point || !GOOGLE_MAPS_API_KEY) return;
+        if (!streetOpenRef.current || streetProviderRef.current !== "google") return;
+        if (!Number.isFinite(point.heightAboveSurfaceMeters) || point.heightAboveSurfaceMeters! > STREET_MAP_CLICK_MAX_HEIGHT_M) return;
+        const target = { latitude: point.latitude, longitude: point.longitude };
+        streetPointRef.current = target;
+        setStreetTarget(target);
+        setStreetState("loading");
+        setStreetNotice(`Google Street View · searching near ${target.latitude.toFixed(5)}, ${target.longitude.toFixed(5)}`);
+        setLayerError("street");
+        setStreetTargetRevision((revision) => revision + 1);
       },
       onMapModeFallback: (error) => {
         setThreeDError(error);
@@ -686,6 +700,7 @@ export default function WorldSelectApp() {
   }, [searchTarget?.id, searchTarget?.latitude, searchTarget?.longitude, earthSurfaceVisible, cesiumReady]);
 
   const switchMapMode = useCallback((mode: WorldMapMode) => {
+    streetOpenRef.current = false;
     setStreetOpen(false);
     setThreeDError(mode === "photoreal"
       ? "Google Photorealistic 3D · loading and verifying live tiles…"
@@ -893,6 +908,12 @@ export default function WorldSelectApp() {
     setSearchTarget(place);
     streetPointRef.current = point;
     setStreetTarget(point);
+    if (streetOpenRef.current && streetProviderRef.current === "google") {
+      setStreetState("loading");
+      setStreetNotice(`Google Street View · searching near ${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`);
+      setLayerError("street");
+      setStreetTargetRevision((revision) => revision + 1);
+    }
     setViewMode("earth");
     setSelected(null);
     setFollowAircraft(false);
@@ -901,7 +922,7 @@ export default function WorldSelectApp() {
       longitude: place.longitude,
       height: place.heightMeters,
     });
-  }, []);
+  }, [setLayerError]);
 
   const runPlaceSearch = useCallback(async (event?: FormEvent) => {
     event?.preventDefault();
@@ -958,6 +979,7 @@ export default function WorldSelectApp() {
     streetFallbackAbortRef.current?.abort();
     const controller = new AbortController();
     streetFallbackAbortRef.current = controller;
+    streetProviderRef.current = "kartaview";
     setStreetProvider("kartaview");
     setStreetState("loading");
     setStreetIndex(0);
@@ -994,18 +1016,22 @@ export default function WorldSelectApp() {
 
   const openStreet = useCallback(() => {
     if (viewMode !== "earth") return;
+    const wasOpen = streetOpenRef.current;
     streetPointRef.current = streetPoint;
     streetFallbackAbortRef.current?.abort();
     streetFallbackAbortRef.current = null;
     setStreetTarget(streetPoint);
+    streetOpenRef.current = true;
     setStreetOpen(true);
     setMobilePanel("street");
     setStreetIndex(0);
     setStreetPhotos([]);
     setLayerError("street");
 
+    streetProviderRef.current = "google";
     setStreetProvider("google");
     if (GOOGLE_MAPS_API_KEY) {
+      if (wasOpen) setStreetTargetRevision((revision) => revision + 1);
       setStreetState("loading");
       setStreetNotice(`Google Street View · searching near ${streetPoint.latitude.toFixed(5)}, ${streetPoint.longitude.toFixed(5)}`);
     } else {
@@ -1038,11 +1064,13 @@ export default function WorldSelectApp() {
   const closeStreet = useCallback(() => {
     streetFallbackAbortRef.current?.abort();
     streetFallbackAbortRef.current = null;
+    streetOpenRef.current = false;
     setStreetOpen(false);
     setStreetPhotos([]);
     setStreetIndex(0);
     setStreetState("idle");
     setStreetNotice(null);
+    streetProviderRef.current = GOOGLE_MAPS_API_KEY ? "google" : "kartaview";
     setStreetProvider(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
     setLayerError("street");
     setMobilePanel("none");
@@ -1249,7 +1277,7 @@ export default function WorldSelectApp() {
       {streetOpen && <StreetViewer
         provider={streetProvider} googleApiKey={GOOGLE_MAPS_API_KEY} notice={streetNotice}
         state={streetState} photo={currentStreet} index={streetIndex} total={streetPhotos.length}
-        error={layerErrors.street} point={streetPoint} onClose={closeStreet}
+        error={layerErrors.street} point={streetPoint} targetRevision={streetTargetRevision} onClose={closeStreet}
         onGoogleReady={handleGoogleStreetReady} onGoogleFallback={handleGoogleStreetFallback}
         onGooglePositionChange={handleGoogleStreetPosition}
         onEarth={() => { closeStreet(); flyEarth(); }}
@@ -1406,7 +1434,7 @@ function IssLiveHoverCard({ entity, screen, onClose }: { entity: SpatialEntity; 
   </aside>;
 }
 
-function StreetViewer({ provider, googleApiKey, notice, state, photo, index, total, error, point, onClose, onEarth, onGround, onSpace, onPrevious, onNext, onUseGoogle, onUseKartaView, onGoogleReady, onGoogleFallback, onGooglePositionChange }: { provider: StreetProvider; googleApiKey: string; notice: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; onClose: () => void; onEarth: () => void; onGround: () => void; onSpace: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void; onGoogleReady: () => void; onGoogleFallback: (message: string) => void; onGooglePositionChange: (point: EarthPoint) => void }) {
+function StreetViewer({ provider, googleApiKey, notice, state, photo, index, total, error, point, targetRevision, onClose, onEarth, onGround, onSpace, onPrevious, onNext, onUseGoogle, onUseKartaView, onGoogleReady, onGoogleFallback, onGooglePositionChange }: { provider: StreetProvider; googleApiKey: string; notice: string | null; state: LoadState; photo: StreetPhoto | null; index: number; total: number; error?: string; point: EarthPoint; targetRevision: number; onClose: () => void; onEarth: () => void; onGround: () => void; onSpace: () => void; onPrevious: () => void; onNext: () => void; onUseGoogle: () => void; onUseKartaView: () => void; onGoogleReady: () => void; onGoogleFallback: (message: string) => void; onGooglePositionChange: (point: EarthPoint) => void }) {
   const surfaceRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -1447,7 +1475,7 @@ function StreetViewer({ provider, googleApiKey, notice, state, photo, index, tot
       {provider === "google"
         ? state === "error"
           ? <div className="streetMessage"><strong>GOOGLE STREET VIEW UNAVAILABLE</strong><span>{error ?? notice ?? "Google Street View could not be loaded."}</span></div>
-          : <GoogleStreetPanorama apiKey={googleApiKey} point={point} onReady={onGoogleReady} onFallback={onGoogleFallback} onPositionChange={onGooglePositionChange} />
+          : <GoogleStreetPanorama key={targetRevision} apiKey={googleApiKey} point={point} onReady={onGoogleReady} onFallback={onGoogleFallback} onPositionChange={onGooglePositionChange} />
         : <>
             {state === "loading" && <div className="streetMessage">Searching KartaView imagery…</div>}
             {state !== "loading" && !photo && <div className="streetMessage"><strong>NO IMAGERY</strong><span>{error ?? notice ?? "No KartaView imagery is available near this point."}</span></div>}

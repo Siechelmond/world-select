@@ -29,7 +29,7 @@ export function createWorldViewer(input: {
   onScaleTierChange?: (value: { tier: EarthScaleTier; height: number }) => void;
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
-  onEmptyClick?: (point: { latitude: number; longitude: number } | null) => void;
+  onEmptyClick?: (point: { latitude: number; longitude: number; heightAboveSurfaceMeters?: number } | null) => void;
   onMapModeFallback?: (error: string) => void;
   googleMapsApiKey?: string;
   cesiumIonToken?: string;
@@ -258,9 +258,14 @@ export function createWorldViewer(input: {
       const cartographic = Cesium.Cartographic.fromCartesian(earthPoint);
       const latitude = Cesium.Math.toDegrees(cartographic.latitude);
       const longitude = Cesium.Math.toDegrees(cartographic.longitude);
+      const cameraHeight = viewer.camera.positionCartographic?.height;
+      const surfaceHeight = cartographic.height;
+      const heightAboveSurfaceMeters = Number.isFinite(cameraHeight) && Number.isFinite(surfaceHeight)
+        ? Math.max(0, cameraHeight - surfaceHeight)
+        : undefined;
       onEmptyClick?.(
         Number.isFinite(latitude) && Number.isFinite(longitude)
-          ? { latitude, longitude }
+          ? { latitude, longitude, heightAboveSurfaceMeters }
           : null,
       );
     }
