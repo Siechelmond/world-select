@@ -3,6 +3,9 @@ import {
   displayToLogicalDistanceM,
   EARTH_VIEW_MAX_DISPLAY_DISTANCE_M,
   EARTH_VIEW_MAX_LOGICAL_DISTANCE_M,
+  FULL_SOLAR_CONTEXT_DISTANCE_M,
+  FULL_SOLAR_DWELL_STEPS,
+  FULL_SOLAR_EXIT_DISTANCE_M,
   logicalToDisplayDistanceM,
   resolveEarthScaleTier,
 } from '@/lib/view-scale';
@@ -19,12 +22,22 @@ export type { GroundMapStyle, MapSwitchResult, WorldMapMode };
 const ORBIT_WHEEL_DAMPING_HEIGHT_M = 20_000_000;
 const ORBIT_WHEEL_PIXEL_REFERENCE = 100;
 const MAX_ORBIT_WHEEL_LOG_STEP = 0.12;
+const FULL_SOLAR_DWELL_PIXEL_STEP = 80;
+const FULL_SOLAR_DWELL_COOLDOWN_MS = 180;
+
+type SolarFrameSnapshot = {
+  center: any;
+  radius: number;
+  normal: any;
+  up: any;
+};
 
 export type ViewerLifecycle = {
   viewer: any;
   setMapStyle: (style: GroundMapStyle) => void;
   setMapMode: (mode: WorldMapMode) => Promise<MapSwitchResult>;
   getPhotorealisticTileset: () => any | null;
+  refreshSolarFrame: () => void;
   home: () => void;
   toggleTilt: () => void;
   northUp: () => void;
@@ -35,13 +48,20 @@ export type ViewerLifecycle = {
 export function createWorldViewer(input: {
   Cesium: any;
   container: HTMLElement;
-  onViewChange: (view: { latitude: number; longitude: number; height: number }) => void;
+  onViewChange: (view: {
+    latitude: number;
+    longitude: number;
+    height: number;
+    fullSolarFrame: boolean;
+    fullSolarDwellStep: number;
+  }) => void;
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
   onEmptyClick?: (point: { latitude: number; longitude: number; heightAboveSurfaceMeters?: number } | null) => void;
   onMapModeFallback?: (error: string) => void;
   googleMapsApiKey?: string;
   cesiumIonToken?: string;
+  getSolarFrame?: () => SolarFrameSnapshot | null;
 }): ViewerLifecycle {
   const {
     Cesium,
@@ -53,6 +73,7 @@ export function createWorldViewer(input: {
     onMapModeFallback = () => {},
     googleMapsApiKey = '',
     cesiumIonToken = '',
+    getSolarFrame = () => null,
   } = input;
   Cesium.Ion.defaultAccessToken = cesiumIonToken.trim() || undefined;
 
@@ -158,6 +179,111 @@ export function createWorldViewer(input: {
       viewer.camera.positionCartographic?.height ?? 9_500_000,
     ),
   );
+  let solarFrameActive = false;
+  let navigationLogicalHeight: number | null = null;
+  let fullSolarDwellStep = 0;
+  let fullSolarDwellAccumulator = 0;
+  let lastFullSolarDwellAt = 0;
+
+  const resetSolarNavigation = () => {
+    solarFrameActive = false;
+    navigationLogicalHeight = null;
+    fullSolarDwellStep = 0;
+    fullSolarDwellAccumulator = 0;
+    lastFullSolarDwellAt = 0;
+  };
+
+  const solarFrameFitRange = (frame: SolarFrameSnapshot) => {
+    const canvas = viewer.scene.canvas;
+    const verticalFov = Number(viewer.camera.frustum?.fovy)
+      || Cesium.Math.toRadians(60);
+    const aspect = Math.max(0.25, canvas.clientWidth / Math.max(1, canvas.clientHeight));
+    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * aspect);
+    const limitingHalfFov = Math.max(
+      Cesium.Math.toRadians(8),
+      Math.min(verticalFov, horizontalFov) / 2,
+    );
+    return frame.radius / Math.sin(limitingHalfFov) * 1.12;
+  };
+
+  const applySolarFrame = (logicalHeight: number) => {
+    const frame = getSolarFrame();
+    if (
+      !frame ||
+      !Number.isFinite(frame.radius) ||
+      frame.radius <= 0
+    ) return false;
+
+    const displayBeyondEntry = Math.max(
+      0,
+      logicalToDisplayDistanceM(logicalHeight)
+        - logicalToDisplayDistanceM(FULL_SOLAR_CONTEXT_DISTANCE_M),
+    );
+    const range = solarFrameFitRange(frame) + displayBeyondEntry;
+    const destination = Cesium.Cartesian3.add(
+      frame.center,
+      Cesium.Cartesian3.multiplyByScalar(
+        frame.normal,
+        range,
+        new Cesium.Cartesian3(),
+      ),
+      new Cesium.Cartesian3(),
+    );
+    const direction = Cesium.Cartesian3.negate(
+      frame.normal,
+      new Cesium.Cartesian3(),
+    );
+
+    viewer.camera.setView({
+      destination,
+      orientation: {
+        direction,
+        up: Cesium.Cartesian3.clone(frame.up),
+      },
+    });
+    viewer.scene?.requestRender?.();
+    return true;
+  };
+
+  const applyEarthRadialFrame = (logicalHeight: number) => {
+    const displayHeight = logicalToDisplayDistanceM(logicalHeight);
+    const earthRadius = Cesium.Ellipsoid.WGS84.maximumRadius;
+    const currentPosition = viewer.camera.positionWC;
+    const radialDirection = Cesium.Cartesian3.magnitude(currentPosition) > 0
+      ? Cesium.Cartesian3.normalize(
+        currentPosition,
+        new Cesium.Cartesian3(),
+      )
+      : Cesium.Cartesian3.clone(Cesium.Cartesian3.UNIT_X);
+    const destination = Cesium.Cartesian3.multiplyByScalar(
+      radialDirection,
+      earthRadius + displayHeight,
+      new Cesium.Cartesian3(),
+    );
+    const direction = Cesium.Cartesian3.negate(
+      radialDirection,
+      new Cesium.Cartesian3(),
+    );
+    const right = Cesium.Cartesian3.cross(
+      direction,
+      Cesium.Cartesian3.UNIT_Z,
+      new Cesium.Cartesian3(),
+    );
+    if (Cesium.Cartesian3.magnitude(right) < 1e-6) {
+      Cesium.Cartesian3.cross(
+        direction,
+        Cesium.Cartesian3.UNIT_Y,
+        right,
+      );
+    }
+    Cesium.Cartesian3.normalize(right, right);
+    const up = Cesium.Cartesian3.normalize(
+      Cesium.Cartesian3.cross(right, direction, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3(),
+    );
+    viewer.camera.setView({ destination, orientation: { direction, up } });
+    viewer.scene?.requestRender?.();
+  };
 
   const updateView = () => {
     const cameraCartographic = viewer.camera.positionCartographic;
@@ -165,9 +291,16 @@ export function createWorldViewer(input: {
     if (ground) lastGroundCenter = { latitude: ground.latitude, longitude: ground.longitude };
     const displayHeight = cameraCartographic?.height;
     if (Number.isFinite(displayHeight)) {
-      const logicalHeight = displayToLogicalDistanceM(displayHeight);
+      const logicalHeight = solarFrameActive && navigationLogicalHeight != null
+        ? navigationLogicalHeight
+        : displayToLogicalDistanceM(displayHeight);
       lastPublishedScaleTier = resolveEarthScaleTier(logicalHeight);
-      onViewChange({ ...lastGroundCenter, height: logicalHeight });
+      onViewChange({
+        ...lastGroundCenter,
+        height: logicalHeight,
+        fullSolarFrame: solarFrameActive,
+        fullSolarDwellStep,
+      });
     }
   };
 
@@ -182,8 +315,9 @@ export function createWorldViewer(input: {
     const currentDisplayHeight = cameraCartographic?.height;
     if (!Number.isFinite(currentDisplayHeight)) return;
 
-    const currentLogicalHeight =
-      displayToLogicalDistanceM(currentDisplayHeight);
+    const currentLogicalHeight = solarFrameActive && navigationLogicalHeight != null
+      ? navigationLogicalHeight
+      : displayToLogicalDistanceM(currentDisplayHeight);
     if (currentLogicalHeight < ORBIT_WHEEL_DAMPING_HEIGHT_M) return;
     if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
 
@@ -198,6 +332,29 @@ export function createWorldViewer(input: {
         : event.deltaY;
     const normalized = Math.max(-1, Math.min(1, deltaPixels / ORBIT_WHEEL_PIXEL_REFERENCE));
     const logStep = normalized * MAX_ORBIT_WHEEL_LOG_STEP;
+
+    if (
+      solarFrameActive &&
+      normalized > 0 &&
+      fullSolarDwellStep < FULL_SOLAR_DWELL_STEPS
+    ) {
+      fullSolarDwellAccumulator += Math.abs(deltaPixels);
+      const now = performance.now();
+      if (
+        fullSolarDwellAccumulator >= FULL_SOLAR_DWELL_PIXEL_STEP &&
+        now - lastFullSolarDwellAt >= FULL_SOLAR_DWELL_COOLDOWN_MS
+      ) {
+        fullSolarDwellStep += 1;
+        fullSolarDwellAccumulator = 0;
+        lastFullSolarDwellAt = now;
+        if (!pendingOrbitWheelFrame) {
+          pendingOrbitWheelFrame = window.requestAnimationFrame(publishOrbitWheelView);
+        }
+      }
+      return;
+    }
+
+    fullSolarDwellAccumulator = 0;
     const nextLogicalHeight = Math.max(
       viewer.scene.screenSpaceCameraController.minimumZoomDistance ?? 2,
       Math.min(
@@ -207,6 +364,42 @@ export function createWorldViewer(input: {
     );
     const nextDisplayHeight =
       logicalToDisplayDistanceM(nextLogicalHeight);
+
+    if (
+      !solarFrameActive &&
+      normalized > 0 &&
+      nextLogicalHeight >= FULL_SOLAR_CONTEXT_DISTANCE_M
+    ) {
+      solarFrameActive = true;
+      navigationLogicalHeight = FULL_SOLAR_CONTEXT_DISTANCE_M;
+      fullSolarDwellStep = 0;
+      if (applySolarFrame(FULL_SOLAR_CONTEXT_DISTANCE_M)) {
+        if (!pendingOrbitWheelFrame) {
+          pendingOrbitWheelFrame = window.requestAnimationFrame(publishOrbitWheelView);
+        }
+        return;
+      }
+      resetSolarNavigation();
+    }
+
+    if (solarFrameActive) {
+      navigationLogicalHeight = nextLogicalHeight;
+      if (
+        normalized < 0 &&
+        nextLogicalHeight <= FULL_SOLAR_EXIT_DISTANCE_M
+      ) {
+        resetSolarNavigation();
+        applyEarthRadialFrame(nextLogicalHeight);
+      } else if (!applySolarFrame(nextLogicalHeight)) {
+        resetSolarNavigation();
+        applyEarthRadialFrame(nextLogicalHeight);
+      }
+
+      if (!pendingOrbitWheelFrame) {
+        pendingOrbitWheelFrame = window.requestAnimationFrame(publishOrbitWheelView);
+      }
+      return;
+    }
 
     const currentPosition = viewer.camera.positionWC;
     const currentRadius = Cesium.Cartesian3.magnitude(currentPosition);
@@ -247,7 +440,9 @@ export function createWorldViewer(input: {
   const removeScaleTierMonitor = viewer.scene.preRender.addEventListener(() => {
     const displayHeight = viewer.camera.positionCartographic?.height;
     if (!Number.isFinite(displayHeight)) return;
-    const logicalHeight = displayToLogicalDistanceM(displayHeight);
+    const logicalHeight = solarFrameActive && navigationLogicalHeight != null
+      ? navigationLogicalHeight
+      : displayToLogicalDistanceM(displayHeight);
     const nextTier = resolveEarthScaleTier(logicalHeight);
     if (nextTier === lastPublishedScaleTier) return;
     updateView();
@@ -387,7 +582,12 @@ export function createWorldViewer(input: {
       return result;
     },
     getPhotorealisticTileset: () => mapController.getPhotorealisticTileset(),
+    refreshSolarFrame: () => {
+      if (!solarFrameActive || navigationLogicalHeight == null) return;
+      applySolarFrame(navigationLogicalHeight);
+    },
     home: () => {
+      resetSolarNavigation();
       viewer.camera.flyTo({
         destination: Cesium.Cartesian3.fromDegrees(lastGroundCenter.longitude, lastGroundCenter.latitude, 6_500_000),
         orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
@@ -411,6 +611,7 @@ export function createWorldViewer(input: {
       animateFrame(frame, { pitch: frame.pitch, heading: 0 });
     },
     flyTo: (point) => {
+      resetSolarNavigation();
       lastGroundCenter = { latitude: point.latitude, longitude: point.longitude };
       removeOrientationAnimation?.();
       removeOrientationAnimation = null;

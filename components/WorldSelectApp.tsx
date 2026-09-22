@@ -37,6 +37,8 @@ import {
 import { loadInfrastructureBaseline } from "@/lib/infrastructure-local";
 import {
   AU_METERS,
+  CISLUNAR_CONTEXT_HEIGHT_M,
+  FULL_SOLAR_DWELL_STEPS,
   LIGHT_YEAR_METERS,
   resolveEarthSceneState,
 } from "@/lib/view-scale";
@@ -66,7 +68,7 @@ const INFRA_FILTERS: InfrastructureCategory[] = ["cable", "landing", "datacenter
 const DISTANCE_SCALE_REFERENCES = [
   { label: "LEO EDGE", distanceM: 2_000_000, value: "2,000 km ALT" },
   { label: "GEO", distanceM: 35_786_000, value: "35,786 km ALT" },
-  { label: "CISLUNAR", distanceM: 100_000_000, value: "100,000 km+" },
+  { label: "CISLUNAR", distanceM: CISLUNAR_CONTEXT_HEIGHT_M, value: "80,000 km+" },
   { label: "MOON", distanceM: 384_400_000, value: "384,400 km C/C" },
   { label: "1 AU", distanceM: AU_METERS, value: "149.6 M km" },
   { label: "JUPITER ORBIT", distanceM: 5.2 * AU_METERS, value: "5.2 AU" },
@@ -217,6 +219,8 @@ export default function WorldSelectApp() {
   const [earthCamera, setEarthCamera] = useState(() => ({
     ...INITIAL_CENTER,
     height: 9_500_000,
+    fullSolarFrame: false,
+    fullSolarDwellStep: 0,
   }));
   const [followAircraft, setFollowAircraft] = useState(false);
   const [selected, setSelected] = useState<SpatialEntity | null>(null);
@@ -264,6 +268,11 @@ export default function WorldSelectApp() {
   const satelliteContextVisible = viewMode === "earth" && earthScene.satelliteContextVisible;
   const planetOrbitsAvailable = viewMode === "earth" && earthScene.planetOrbitsAvailable;
   const distanceLabel = useMemo(() => formatEarthDistance(cameraHeight), [cameraHeight]);
+  const navigationStatusLabel = earthCamera.fullSolarFrame
+    ? `FULL SOLAR · COMPRESSED · ${earthCamera.fullSolarDwellStep < FULL_SOLAR_DWELL_STEPS
+      ? `HOLD ${earthCamera.fullSolarDwellStep}/${FULL_SOLAR_DWELL_STEPS}`
+      : "OUTER READY"}`
+    : earthScene.statusLabel;
 
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
@@ -576,13 +585,27 @@ export default function WorldSelectApp() {
     const lifecycle = createWorldViewer({
       Cesium: window.Cesium,
       container: containerRef.current,
-      onViewChange: ({ latitude, longitude, height }) => {
+      onViewChange: ({
+        latitude,
+        longitude,
+        height,
+        fullSolarFrame,
+        fullSolarDwellStep,
+      }) => {
         setEarthCamera((current) => (
           current.latitude === latitude &&
           current.longitude === longitude &&
-          current.height === height
+          current.height === height &&
+          current.fullSolarFrame === fullSolarFrame &&
+          current.fullSolarDwellStep === fullSolarDwellStep
             ? current
-            : { latitude, longitude, height }
+            : {
+              latitude,
+              longitude,
+              height,
+              fullSolarFrame,
+              fullSolarDwellStep,
+            }
         ));
       },
       onEntityClick: (id) => {
@@ -614,6 +637,8 @@ export default function WorldSelectApp() {
       },
       googleMapsApiKey: GOOGLE_MAPS_API_KEY,
       cesiumIonToken: CESIUM_ION_TOKEN,
+      getSolarFrame: () =>
+        celestialBridgeRendererRef.current?.getSolarFrame() ?? null,
     });
     viewerLifecycleRef.current = lifecycle;
     viewerRef.current = lifecycle.viewer;
@@ -824,10 +849,13 @@ export default function WorldSelectApp() {
       planets,
       visible: celestialContextVisible,
       showSolarBodies: solarContextVisible,
+      showEarthReference: earthScene.earthReferenceVisible,
+      cislunarGuideAlpha: earthScene.cislunarGuideAlpha,
       selectedId: selected?.kind === "celestial-body" ? selected.id : null,
       showOrbits: planetOrbits,
     });
-  }, [planets, celestialContextVisible, solarContextVisible, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
+    viewerLifecycleRef.current?.refreshSolarFrame();
+  }, [planets, celestialContextVisible, solarContextVisible, earthScene.earthReferenceVisible, earthScene.cislunarGuideAlpha, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
 
   useEffect(() => {
     trafficControllerRef.current?.sync({
@@ -1178,7 +1206,7 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && earthScene.isGround ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={enterSpaceFromEarth}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" ? `${earthScene.statusLabel} · DIST ${distanceLabel}` : "SPACE"}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" ? `${navigationStatusLabel} · DIST ${distanceLabel}` : "SPACE"}</span></div>
       </header>
 
       {viewMode === "earth" && cameraHeight >= 2_000_000 && (

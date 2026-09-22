@@ -12,9 +12,12 @@ export type EarthSceneState = Readonly<{
   cislunarContextVisible: boolean;
   celestialContextVisible: boolean;
   solarContextVisible: boolean;
+  fullSolarContextVisible: boolean;
+  earthReferenceVisible: boolean;
+  cislunarGuideAlpha: number;
   satelliteContextVisible: boolean;
   planetOrbitsAvailable: boolean;
-  statusLabel: "GROUND" | "EARTH / ORBIT" | "CISLUNAR" | "SOLAR · COMPRESSED";
+  statusLabel: "GROUND" | "EARTH / ORBIT" | "CISLUNAR" | "SOLAR · COMPRESSED" | "FULL SOLAR · COMPRESSED";
 }>;
 
 export const AU_METERS = 149_597_870_700;
@@ -25,6 +28,11 @@ export const CELESTIAL_COMPRESSION_START_M = 60_000_000;
 export const CISLUNAR_CONTEXT_HEIGHT_M = 80_000_000;
 export const SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M = 120_000_000;
 export const SOLAR_CONTEXT_HEIGHT_M = 1_200_000_000;
+export const FULL_SOLAR_CONTEXT_DISTANCE_M = 30.1 * AU_METERS;
+export const FULL_SOLAR_EXIT_DISTANCE_M = 24 * AU_METERS;
+export const FULL_SOLAR_DWELL_STEPS = 4;
+export const CISLUNAR_GUIDE_FADE_START_M = 20 * AU_METERS;
+export const EARTH_REFERENCE_MIN_DISTANCE_M = 0.25 * AU_METERS;
 // Keep the Earth/Celestial camera continuous well beyond the heliosphere.
 // A later Galactic frame can hand off before this safety ceiling.
 export const EARTH_VIEW_MAX_LOGICAL_DISTANCE_M = LIGHT_YEAR_METERS;
@@ -86,6 +94,19 @@ export function resolveEarthSceneState(cameraHeight: number): EarthSceneState {
   const isCislunar = tier === "cislunar";
   const isSolar = tier === "solar";
   const cislunarContextVisible = isCislunar || isSolar;
+  const fullSolarContextVisible =
+    normalizedHeight >= FULL_SOLAR_CONTEXT_DISTANCE_M;
+  const cislunarGuideAlpha = normalizedHeight <= CISLUNAR_GUIDE_FADE_START_M
+    ? 0.28
+    : normalizedHeight >= FULL_SOLAR_CONTEXT_DISTANCE_M
+      ? 0
+      : 0.28 * (
+        1 - (
+          normalizedHeight - CISLUNAR_GUIDE_FADE_START_M
+        ) / (
+          FULL_SOLAR_CONTEXT_DISTANCE_M - CISLUNAR_GUIDE_FADE_START_M
+        )
+      );
 
   return {
     cameraHeight: normalizedHeight,
@@ -100,13 +121,19 @@ export function resolveEarthSceneState(cameraHeight: number): EarthSceneState {
     cislunarContextVisible,
     celestialContextVisible: cislunarContextVisible,
     solarContextVisible: isSolar,
+    fullSolarContextVisible,
+    earthReferenceVisible:
+      normalizedHeight >= EARTH_REFERENCE_MIN_DISTANCE_M,
+    cislunarGuideAlpha,
     // Satellite points stay as spatial context after live propagation stops.
     // Their Cesium distance scaling makes them fade/shrink naturally instead of
     // disappearing at one logical-height switch.
     satelliteContextVisible: !isGround,
     planetOrbitsAvailable: isSolar,
-    statusLabel: isSolar
-      ? "SOLAR · COMPRESSED"
+    statusLabel: fullSolarContextVisible
+      ? "FULL SOLAR · COMPRESSED"
+      : isSolar
+        ? "SOLAR · COMPRESSED"
       : isCislunar
         ? "CISLUNAR"
         : isEarthOrbit

@@ -239,6 +239,12 @@ export function createCelestialBridgeRenderer(input: {
   const bodyIds = new Set<string>();
   const orbitIds = new Set<string>();
   const orbitCache = new Map<string, any[]>();
+  let solarFrame: {
+    center: any;
+    radius: number;
+    normal: any;
+    up: any;
+  } | null = null;
   let orbitEpochKey: string | null = null;
   let destroyed = false;
 
@@ -262,6 +268,7 @@ export function createCelestialBridgeRenderer(input: {
   const clear = () => {
     for (const id of Array.from(bodyIds)) removeBody(id);
     clearOrbits();
+    solarFrame = null;
     setNativeSunVisible(true);
     viewer.scene?.requestRender?.();
   };
@@ -426,6 +433,8 @@ export function createCelestialBridgeRenderer(input: {
     planets: PlanetPosition[];
     visible: boolean;
     showSolarBodies: boolean;
+    showEarthReference: boolean;
+    cislunarGuideAlpha: number;
     selectedId?: string | null;
     showOrbits?: boolean;
   }) => {
@@ -469,16 +478,18 @@ export function createCelestialBridgeRenderer(input: {
         displayFrame: "Earth-centered reference origin",
       },
     };
-    nextBodyIds.add(EARTH_REFERENCE_ID);
-    syncBody({
-      id: EARTH_REFERENCE_ID,
-      entity: earthReference,
-      position: Cesium.Cartesian3.ZERO,
-      name: "Earth",
-      selected: args.selectedId === EARTH_REFERENCE_ID,
-      colorHex: "#38bdf8",
-      showLabel: true,
-    });
+    if (args.showEarthReference) {
+      nextBodyIds.add(EARTH_REFERENCE_ID);
+      syncBody({
+        id: EARTH_REFERENCE_ID,
+        entity: earthReference,
+        position: Cesium.Cartesian3.ZERO,
+        name: "Earth",
+        selected: args.selectedId === EARTH_REFERENCE_ID,
+        colorHex: "#38bdf8",
+        showLabel: true,
+      });
+    }
 
     // Orbit geometry is persistent once created. The UI checkbox changes only
     // visibility; it never moves bodies or rebuilds/removes orbit entities.
@@ -555,15 +566,16 @@ export function createCelestialBridgeRenderer(input: {
         epoch,
       );
 
-      // Before Solar, the Moon-distance guide is navigation context rather than
-      // a user-selected planet orbit. In Solar, only the explicit orbit toggle
-      // may show the Moon orbit so ON/OFF has an unambiguous effect.
-      if (!args.showSolarBodies) {
+      // Keep the cislunar guide through the Earth/Moon -> Solar handoff. It
+      // fades only as the full-Solar frame takes ownership; the explicit orbit
+      // toggle remains the sole owner of persistent Solar orbit lines.
+      const guideAlpha = Math.max(0, Math.min(0.28, args.cislunarGuideAlpha));
+      if (guideAlpha > 0.005) {
         const guideId = "bridge-guide:earth-moon";
         const existingGuide = viewer.entities.getById(guideId);
         const guideMaterial = Cesium.Color
           .fromCssColorString(earthMoon.color)
-          .withAlpha(0.28);
+          .withAlpha(guideAlpha);
 
         if (!existingGuide) {
           viewer.entities.add({
@@ -661,6 +673,11 @@ export function createCelestialBridgeRenderer(input: {
         isSun: true,
       });
 
+      const solarFramePoints = [
+        Cesium.Cartesian3.clone(Cesium.Cartesian3.ZERO),
+        Cesium.Cartesian3.clone(sunPosition),
+      ];
+
       for (const planet of args.planets) {
         if (planet.entity.name === "Earth") continue;
 
@@ -671,6 +688,7 @@ export function createCelestialBridgeRenderer(input: {
           epoch,
         );
         if (!finiteCartesian(position)) continue;
+        solarFramePoints.push(Cesium.Cartesian3.clone(position));
 
         const id = `bridge:${planet.entity.id}`;
         const displayDistanceM = Cesium.Cartesian3.magnitude(position);
@@ -711,6 +729,48 @@ export function createCelestialBridgeRenderer(input: {
         }
       }
 
+      const bounds = Cesium.BoundingSphere.fromPoints(solarFramePoints);
+      const eclipticNorthEquatorial = eclipticJ2000ToEquatorial({
+        x: 0,
+        y: 0,
+        z: 1,
+      });
+      const eclipticUpEquatorial = eclipticJ2000ToEquatorial({
+        x: 0,
+        y: 1,
+        z: 0,
+      });
+      const eclipticNormal = inertialToFixed(
+        Cesium,
+        new Cesium.Cartesian3(
+          eclipticNorthEquatorial.x,
+          eclipticNorthEquatorial.y,
+          eclipticNorthEquatorial.z,
+        ),
+        epoch,
+      );
+      const eclipticUp = inertialToFixed(
+        Cesium,
+        new Cesium.Cartesian3(
+          eclipticUpEquatorial.x,
+          eclipticUpEquatorial.y,
+          eclipticUpEquatorial.z,
+        ),
+        epoch,
+      );
+      solarFrame = {
+        center: Cesium.Cartesian3.clone(bounds.center),
+        radius: bounds.radius,
+        normal: Cesium.Cartesian3.normalize(
+          eclipticNormal,
+          new Cesium.Cartesian3(),
+        ),
+        up: Cesium.Cartesian3.normalize(
+          eclipticUp,
+          new Cesium.Cartesian3(),
+        ),
+      };
+
       if (args.showOrbits) {
         for (const planet of args.planets) {
           const periodDays = ORBIT_PERIOD_DAYS[planet.entity.name];
@@ -748,6 +808,7 @@ export function createCelestialBridgeRenderer(input: {
         }
       }
     } else {
+      solarFrame = null;
       setNativeSunVisible(true);
     }
 
@@ -760,6 +821,15 @@ export function createCelestialBridgeRenderer(input: {
 
   return Object.freeze({
     sync,
+    getSolarFrame() {
+      if (!solarFrame) return null;
+      return {
+        center: Cesium.Cartesian3.clone(solarFrame.center),
+        radius: solarFrame.radius,
+        normal: Cesium.Cartesian3.clone(solarFrame.normal),
+        up: Cesium.Cartesian3.clone(solarFrame.up),
+      };
+    },
     clear,
     destroy() {
       if (destroyed) return;
