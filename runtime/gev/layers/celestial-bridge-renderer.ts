@@ -603,7 +603,11 @@ export function createCelestialBridgeRenderer(input: {
         selected: args.selectedId === id,
         radiusKm: moon.radiusKm,
         colorHex: moon.color,
-        showLabel: alwaysLabel || moon.radiusKm >= 1_000,
+        // The overview keeps every moon point selectable, but moon names only
+        // appear in the cislunar frame or on selection. Showing all featured
+        // moon labels in the full Solar frame creates unreadable name piles.
+        showLabel:
+          !args.solarFrameActive && (alwaysLabel || moon.radiusKm >= 1_000),
       });
     };
 

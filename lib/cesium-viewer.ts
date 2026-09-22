@@ -55,6 +55,11 @@ export function createWorldViewer(input: {
     solarFrame: boolean;
     solarZoomStep: number;
   }) => void;
+  onInterstellarHandoff: (view: {
+    latitude: number;
+    longitude: number;
+    height: number;
+  }) => void;
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
   onEmptyClick?: (point: { latitude: number; longitude: number; heightAboveSurfaceMeters?: number } | null) => void;
@@ -67,6 +72,7 @@ export function createWorldViewer(input: {
     Cesium,
     container,
     onViewChange,
+    onInterstellarHandoff,
     onEntityClick,
     onEntityHover,
     onEmptyClick,
@@ -344,10 +350,28 @@ export function createWorldViewer(input: {
 
     if (solarFrameActive) {
       if (wheelDirection > 0) {
+        const lastSolarZoomStep =
+          CELESTIAL_NAVIGATION_MILESTONES_M.length - 1;
         solarZoomStep = Math.min(
-          CELESTIAL_NAVIGATION_MILESTONES_M.length - 1,
+          lastSolarZoomStep,
           solarZoomStep + 1,
         );
+        if (solarZoomStep === lastSolarZoomStep) {
+          navigationLogicalHeight =
+            CELESTIAL_NAVIGATION_MILESTONES_M[lastSolarZoomStep];
+          applySolarFrame(solarZoomStep);
+          onViewChange({
+            ...lastGroundCenter,
+            height: navigationLogicalHeight,
+            solarFrame: true,
+            solarZoomStep,
+          });
+          onInterstellarHandoff({
+            ...lastGroundCenter,
+            height: navigationLogicalHeight,
+          });
+          return;
+        }
       } else if (solarZoomStep > 0) {
         solarZoomStep -= 1;
       } else {

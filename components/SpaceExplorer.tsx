@@ -13,7 +13,7 @@ import {
   type PlanetPosition,
 } from "@/lib/space";
 
-type SpaceLevel = "orbit" | "planet" | "solar" | "outer" | "galaxy";
+export type SpaceLevel = "orbit" | "planet" | "solar" | "outer" | "galaxy";
 
 type Props = {
   planets: PlanetPosition[];
@@ -25,6 +25,7 @@ type Props = {
   onSelect: (entity: SpatialEntity) => void;
   onReturnEarth: () => void;
   earthHandoff: { latitude: number; longitude: number; height: number } | null;
+  initialLevel: SpaceLevel;
 };
 
 const LEVELS: SpaceLevel[] = ["orbit", "planet", "solar", "outer", "galaxy"];
@@ -148,8 +149,8 @@ function deterministicGalaxyClouds() {
   return clouds;
 }
 
-export default function SpaceExplorer({ planets, satellites, sun, time, launches, launchState, onSelect, onReturnEarth, earthHandoff }: Props) {
-  const [level, setLevel] = useState<SpaceLevel>("orbit");
+export default function SpaceExplorer({ planets, satellites, sun, time, launches, launchState, onSelect, onReturnEarth, earthHandoff, initialLevel }: Props) {
+  const [level, setLevel] = useState<SpaceLevel>(initialLevel);
   const [focusedPlanet, setFocusedPlanet] = useState<string>("Earth");
   const lastWheelAt = useRef(0);
   const planet = planets.find((item) => item.entity.name === focusedPlanet) ?? planets[2] ?? planets[0];

@@ -20,7 +20,7 @@ import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
 import { loadGoogleStreetView, onGoogleMapsAuthFailure } from "@/lib/google-street";
 import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
 import { fetchRecentLaunches, type SpaceLaunch } from "@/lib/launches";
-import SpaceExplorer from "@/components/SpaceExplorer";
+import SpaceExplorer, { type SpaceLevel } from "@/components/SpaceExplorer";
 import { createWorldViewer, type WorldMapMode } from "@/lib/cesium-viewer";
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
 import { resolveLayerState, type LayerLoadState as LoadState } from "@/lib/layer-runtime";
@@ -185,6 +185,7 @@ export default function WorldSelectApp() {
   const streetPointRef = useRef<EarthPoint>(INITIAL_CENTER);
   const streetOpenRef = useRef(false);
   const streetProviderRef = useRef<StreetProvider>(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
+  const mapModeRef = useRef<WorldMapMode>("satellite");
 
   const [cesiumReady, setCesiumReady] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -209,6 +210,7 @@ export default function WorldSelectApp() {
   const [radioFilter, setRadioFilter] = useState<(typeof RADIO_FILTERS)[number]>("all");
   const [infraFilters, setInfraFilters] = useState<InfrastructureCategory[]>(INFRA_FILTERS);
   const [viewMode, setViewMode] = useState<ViewMode>("earth");
+  const [spaceEntryLevel, setSpaceEntryLevel] = useState<SpaceLevel>("orbit");
   const [earthquakeState, setEarthquakeState] = useState<LoadState>("idle");
   const [satelliteState, setSatelliteState] = useState<LoadState>("idle");
   const [aircraftState, setAircraftState] = useState<LoadState>("idle");
@@ -276,6 +278,10 @@ export default function WorldSelectApp() {
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [timeCollapsed, setTimeCollapsed] = useState(false);
   const [planetOrbits, setPlanetOrbits] = useState(false);
+
+  useEffect(() => {
+    mapModeRef.current = mapMode;
+  }, [mapMode]);
 
   const viewCenter = earthCamera;
   const cameraHeight = earthCamera.height;
@@ -630,6 +636,26 @@ export default function WorldSelectApp() {
             }
         ));
       },
+      onInterstellarHandoff: ({ latitude, longitude, height }) => {
+        const handoffMapMode = mapModeRef.current;
+        if (handoffMapMode === "photoreal") {
+          void viewerLifecycleRef.current?.setMapMode("satellite");
+          setMapMode("satellite");
+        }
+        setEarthHandoff({
+          latitude,
+          longitude,
+          height,
+          mapMode: handoffMapMode,
+        });
+        setSpaceEntryLevel("galaxy");
+        setFrameHandoff("earth-to-space");
+        setFollowAircraft(false);
+        setSelected(null);
+        setMobilePanel("none");
+        setViewMode("space");
+        window.setTimeout(() => setFrameHandoff(null), 520);
+      },
       onEntityClick: (id) => {
         const spatial = entityMapRef.current.get(id);
         if (spatial) selectEntity(spatial);
@@ -937,6 +963,7 @@ export default function WorldSelectApp() {
       height: cameraHeight,
       mapMode,
     });
+    setSpaceEntryLevel("orbit");
     setFrameHandoff("earth-to-space");
     setFollowAircraft(false);
     setSelected(null);
@@ -1224,6 +1251,7 @@ export default function WorldSelectApp() {
         onSelect={selectEntity}
         onReturnEarth={returnToEarthFromSpace}
         earthHandoff={earthHandoff}
+        initialLevel={spaceEntryLevel}
       />}
 
       <header className="topbar glass">
