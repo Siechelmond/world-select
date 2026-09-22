@@ -1,9 +1,16 @@
 import type { SpatialEntity } from "@/lib/spatial";
-import { computePlanetPositions, type PlanetPosition } from "@/lib/space";
+import {
+  computePlanetPositions,
+  getPlanetMoons,
+  moonEntity,
+  type MoonSpec,
+  type PlanetPosition,
+} from "@/lib/space";
 
-const SOLAR_DISPLAY_ONE_AU_M = 95_000_000;
+const SOLAR_DISPLAY_ONE_AU_M = 5_000_000_000;
 const SOLAR_DISPLAY_CURVE = 1.7;
 const ORBIT_SAMPLES = 96;
+const MOON_ORBIT_SAMPLES = 128;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
 const SUN_ID = "bridge:solar:sun";
 const SUN_GLOW_IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`
@@ -27,6 +34,7 @@ const BODY_RADIUS_KM: Record<string, number> = {
   Mercury: 2_439.7,
   Venus: 6_051.8,
   Earth: 6_371,
+  Moon: 1_737.4,
   Mars: 3_389.5,
   Jupiter: 69_911,
   Saturn: 58_232,
@@ -112,17 +120,18 @@ function earthCenteredPosition(
   return Cesium.Cartesian3.subtract(body, earth, new Cesium.Cartesian3());
 }
 
-function bodyPixelSize(name: string) {
+function bodyPixelSize(name: string, radiusKmOverride?: number) {
   const earthRadiusKm = BODY_RADIUS_KM.Earth;
-  const radiusKm = BODY_RADIUS_KM[name] ?? earthRadiusKm;
+  const radiusKm = radiusKmOverride ?? BODY_RADIUS_KM[name] ?? earthRadiusKm;
   const compressed = 5.5 * Math.pow(radiusKm / earthRadiusKm, 0.25);
   return Math.max(3.5, Math.min(19, compressed));
 }
 
 function bodyColor(name: string) {
   return name === "Earth" ? "#38bdf8"
-    : name === "Mercury" ? "#cbd5e1"
-      : name === "Venus" ? "#facc15"
+    : name === "Moon" ? "#d6d3d1"
+      : name === "Mercury" ? "#cbd5e1"
+        : name === "Venus" ? "#facc15"
       : name === "Mars" ? "#fb923c"
         : name === "Jupiter" ? "#d6b38a"
           : name === "Saturn" ? "#fde68a"
@@ -136,6 +145,57 @@ function finiteCartesian(position: any) {
     && Number.isFinite(position.x)
     && Number.isFinite(position.y)
     && Number.isFinite(position.z);
+}
+
+function phaseSeedRadians(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 33 + value.charCodeAt(index)) >>> 0;
+  }
+  return (hash % 360) * Math.PI / 180;
+}
+
+function moonLocalOffset(
+  Cesium: any,
+  moon: MoonSpec,
+  parentName: string,
+  date: Date,
+  phaseOverride?: number,
+) {
+  const radiusM = moon.orbitalRadiusKm * 1_000;
+  const elapsedDays = date.getTime() / 86_400_000;
+  const phase = phaseOverride ?? (
+    elapsedDays / moon.orbitalPeriodDays * Math.PI * 2
+    + phaseSeedRadians(`${parentName}:${moon.name}`)
+  );
+  const inclinationDeg = parentName === "Earth" && moon.name === "Moon"
+    ? 5.145
+    : 2 + ((phaseSeedRadians(parentName) * 180 / Math.PI) % 7);
+  const inclination = inclinationDeg * Math.PI / 180;
+  const inertial = new Cesium.Cartesian3(
+    Math.cos(phase) * radiusM,
+    Math.sin(phase) * radiusM * Math.cos(inclination),
+    Math.sin(phase) * radiusM * Math.sin(inclination),
+  );
+  return inertialToFixed(Cesium, inertial, date);
+}
+
+function moonOrbitPositions(
+  Cesium: any,
+  parentPosition: any,
+  moon: MoonSpec,
+  parentName: string,
+  date: Date,
+) {
+  const positions: any[] = [];
+  for (let index = 0; index <= MOON_ORBIT_SAMPLES; index += 1) {
+    const phase = index / MOON_ORBIT_SAMPLES * Math.PI * 2;
+    const local = moonLocalOffset(Cesium, moon, parentName, date, phase);
+    positions.push(
+      Cesium.Cartesian3.add(parentPosition, local, new Cesium.Cartesian3()),
+    );
+  }
+  return positions;
 }
 
 export function createCelestialBridgeRenderer(input: {
@@ -226,14 +286,29 @@ export function createCelestialBridgeRenderer(input: {
     name: string;
     selected: boolean;
     isSun?: boolean;
+    radiusKm?: number;
+    colorHex?: string;
+    showLabel?: boolean;
   }) => {
-    const { id, entity, position, name, selected, isSun = false } = args;
+    const {
+      id,
+      entity,
+      position,
+      name,
+      selected,
+      isSun = false,
+      radiusKm,
+      colorHex,
+      showLabel = true,
+    } = args;
     if (!finiteCartesian(position)) return;
 
     entityRegistry.set(id, entity);
     bodyIds.add(id);
-    const pixelSize = bodyPixelSize(isSun ? "Sun" : name);
-    const color = Cesium.Color.fromCssColorString(isSun ? "#fde047" : bodyColor(name));
+    const pixelSize = bodyPixelSize(isSun ? "Sun" : name, radiusKm);
+    const color = Cesium.Color.fromCssColorString(
+      colorHex ?? (isSun ? "#fde047" : bodyColor(name)),
+    );
 
     let item = viewer.entities.getById(id);
     if (!item) {
@@ -268,6 +343,7 @@ export function createCelestialBridgeRenderer(input: {
               },
             }),
         label: {
+          show: showLabel || selected,
           text: isSun ? "SUN · REF" : name.toUpperCase(),
           font: isSun
             ? '800 11px "Segoe UI", Arial, sans-serif'
@@ -292,9 +368,13 @@ export function createCelestialBridgeRenderer(input: {
       if (item.point) {
         const nextSize = isSun ? (selected ? 9 : 7) : (selected ? pixelSize + 4 : pixelSize);
         item.point.pixelSize = new Cesium.ConstantProperty(nextSize);
+        item.point.color = new Cesium.ConstantProperty(color);
         item.point.outlineWidth = new Cesium.ConstantProperty(
           isSun ? 2 : (selected ? 3 : 1.5),
         );
+      }
+      if (item.label) {
+        item.label.show = new Cesium.ConstantProperty(showLabel || selected);
       }
     }
   };
@@ -302,6 +382,7 @@ export function createCelestialBridgeRenderer(input: {
   const sync = (args: {
     planets: PlanetPosition[];
     visible: boolean;
+    showSolarBodies: boolean;
     selectedId?: string | null;
     showOrbits?: boolean;
   }) => {
@@ -318,89 +399,50 @@ export function createCelestialBridgeRenderer(input: {
       return;
     }
 
-    // The native Cesium Sun is an astronomical scene primitive at true sky
-    // direction. In the compressed bridge it would become a second, unrelated
-    // reference, so the bridge owns one explicit compressed Sun instead.
-    setNativeSunVisible(false);
-
     const epoch = new Date(earth.entity.observedAt);
     const epochKey = earth.entity.observedAt;
     if (orbitEpochKey !== epochKey) {
       orbitCache.clear();
       orbitEpochKey = epochKey;
     }
+
     const earthVector = { x: earth.xAu, y: earth.yAu, z: earth.zAu };
     const nextBodyIds = new Set<string>();
+    const wantedOrbitIds = new Set<string>();
 
-    const sunPosition = earthCenteredPosition(
-      Cesium,
-      { x: 0, y: 0, z: 0 },
-      earthVector,
-      epoch,
-    );
-    const sunDistanceM = Cesium.Cartesian3.magnitude(sunPosition);
-    const sunEntity: SpatialEntity = {
-      id: SUN_ID,
-      kind: "celestial-body",
-      name: "Sun",
-      position: { longitude: 0, latitude: 0, altitudeMeters: sunDistanceM },
-      observedAt: earth.entity.observedAt,
-      dataState: "CALCULATED",
-      source: {
-        id: "jpl-approx",
-        label: "NASA/JPL Solar System Dynamics",
-        url: "https://ssd.jpl.nasa.gov/planets/approx_pos.html",
-      },
-      properties: {
-        role: "compressed solar reference",
-        displayFrame: "Earth-centered compressed heliocentric J2000 context",
-        visualScale: "Fixed logarithmic AU distance scale",
-        displayDistanceKm: Math.round(sunDistanceM / 1000),
-      },
-    };
-    nextBodyIds.add(SUN_ID);
-    syncBody({
-      id: SUN_ID,
-      entity: sunEntity,
-      position: sunPosition,
-      name: "Sun",
-      selected: args.selectedId === SUN_ID,
-      isSun: true,
-    });
-
-    for (const planet of args.planets) {
-      if (planet.entity.name === "Earth") continue;
-
-      const position = earthCenteredPosition(
-        Cesium,
-        { x: planet.xAu, y: planet.yAu, z: planet.zAu },
-        earthVector,
-        epoch,
+    const syncMoonAtParent = (
+      parentName: string,
+      parentPosition: any,
+      moon: MoonSpec,
+      alwaysLabel = false,
+    ) => {
+      const base = moonEntity(parentName, moon, epoch);
+      const id = `bridge:${base.id}`;
+      const localOffset = moonLocalOffset(Cesium, moon, parentName, epoch);
+      const position = Cesium.Cartesian3.add(
+        parentPosition,
+        localOffset,
+        new Cesium.Cartesian3(),
       );
-      if (!finiteCartesian(position)) continue;
+      if (!finiteCartesian(position)) return;
 
-      const id = `bridge:${planet.entity.id}`;
       const displayDistanceM = Cesium.Cartesian3.magnitude(position);
       const entity: SpatialEntity = {
-        ...planet.entity,
+        ...base,
         id,
         position: {
-          ...planet.entity.position,
+          ...base.position,
           altitudeMeters: displayDistanceM,
         },
         properties: {
-          ...planet.entity.properties,
-          earthRelativeDistanceAu: Number(
-            Math.hypot(
-              planet.xAu - earth.xAu,
-              planet.yAu - earth.yAu,
-              planet.zAu - earth.zAu,
-            ).toFixed(4),
+          ...base.properties,
+          displayFrame: parentName === "Earth"
+            ? "Earth-centered cislunar reference"
+            : "Parent-relative moon orbit inside compressed solar context",
+          displayDistanceKm: Math.round(displayDistanceM / 1_000),
+          parentDisplayDistanceKm: Math.round(
+            Cesium.Cartesian3.magnitude(parentPosition) / 1_000,
           ),
-          displayFrame: "Earth-centered compressed heliocentric J2000 context",
-          visualScale: "Fixed logarithmic AU distance scale",
-          displayDistanceKm: Math.round(displayDistanceM / 1000),
-          sunRepresentation: "World Select compressed solar reference",
         },
       };
 
@@ -409,48 +451,183 @@ export function createCelestialBridgeRenderer(input: {
         id,
         entity,
         position,
-        name: planet.entity.name,
+        name: moon.name,
         selected: args.selectedId === id,
+        radiusKm: moon.radiusKm,
+        colorHex: moon.color,
+        showLabel: alwaysLabel || moon.radiusKm >= 1_000,
       });
+    };
+
+    // The Earth-Moon system is the cislunar bridge between GEO and Solar.
+    // Its mean 384,400 km orbital radius comes directly from lib/space.ts and
+    // is kept uncompressed so the next reference after GEO has a real scale.
+    const earthMoon = getPlanetMoons("Earth")[0];
+    if (earthMoon) {
+      syncMoonAtParent("Earth", Cesium.Cartesian3.ZERO, earthMoon, true);
+
+      const moonOrbitId = "bridge-orbit:earth-moon";
+      const positions = moonOrbitPositions(
+        Cesium,
+        Cesium.Cartesian3.ZERO,
+        earthMoon,
+        "Earth",
+        epoch,
+      );
+      wantedOrbitIds.add(moonOrbitId);
+      const existing = viewer.entities.getById(moonOrbitId);
+      const material = Cesium.Color
+        .fromCssColorString(earthMoon.color)
+        .withAlpha(0.22);
+
+      if (!existing) {
+        viewer.entities.add({
+          id: moonOrbitId,
+          polyline: {
+            positions,
+            width: 1.2,
+            material,
+            arcType: Cesium.ArcType.NONE,
+          },
+        });
+      } else if (existing.polyline) {
+        existing.polyline.positions = new Cesium.ConstantProperty(positions);
+        existing.polyline.material = new Cesium.ColorMaterialProperty(material);
+      }
+      orbitIds.add(moonOrbitId);
+    }
+
+    if (args.showSolarBodies) {
+      // The native Cesium Sun is an astronomical scene primitive at true sky
+      // direction. In the compressed bridge it would become a second, unrelated
+      // reference, so the bridge owns one explicit compressed Sun instead.
+      setNativeSunVisible(false);
+
+      const sunPosition = earthCenteredPosition(
+        Cesium,
+        { x: 0, y: 0, z: 0 },
+        earthVector,
+        epoch,
+      );
+      const sunDistanceM = Cesium.Cartesian3.magnitude(sunPosition);
+      const sunEntity: SpatialEntity = {
+        id: SUN_ID,
+        kind: "celestial-body",
+        name: "Sun",
+        position: { longitude: 0, latitude: 0, altitudeMeters: sunDistanceM },
+        observedAt: earth.entity.observedAt,
+        dataState: "CALCULATED",
+        source: {
+          id: "jpl-approx",
+          label: "NASA/JPL Solar System Dynamics",
+          url: "https://ssd.jpl.nasa.gov/planets/approx_pos.html",
+        },
+        properties: {
+          role: "compressed solar reference",
+          displayFrame: "Earth-centered compressed heliocentric J2000 context",
+          visualScale: "Fixed logarithmic AU distance scale",
+          displayDistanceKm: Math.round(sunDistanceM / 1_000),
+        },
+      };
+      nextBodyIds.add(SUN_ID);
+      syncBody({
+        id: SUN_ID,
+        entity: sunEntity,
+        position: sunPosition,
+        name: "Sun",
+        selected: args.selectedId === SUN_ID,
+        isSun: true,
+      });
+
+      for (const planet of args.planets) {
+        if (planet.entity.name === "Earth") continue;
+
+        const position = earthCenteredPosition(
+          Cesium,
+          { x: planet.xAu, y: planet.yAu, z: planet.zAu },
+          earthVector,
+          epoch,
+        );
+        if (!finiteCartesian(position)) continue;
+
+        const id = `bridge:${planet.entity.id}`;
+        const displayDistanceM = Cesium.Cartesian3.magnitude(position);
+        const entity: SpatialEntity = {
+          ...planet.entity,
+          id,
+          position: {
+            ...planet.entity.position,
+            altitudeMeters: displayDistanceM,
+          },
+          properties: {
+            ...planet.entity.properties,
+            earthRelativeDistanceAu: Number(
+              Math.hypot(
+                planet.xAu - earth.xAu,
+                planet.yAu - earth.yAu,
+                planet.zAu - earth.zAu,
+              ).toFixed(4),
+            ),
+            displayFrame: "Earth-centered compressed heliocentric J2000 context",
+            visualScale: "Fixed logarithmic AU distance scale with cislunar clearance",
+            displayDistanceKm: Math.round(displayDistanceM / 1_000),
+            sunRepresentation: "World Select compressed solar reference",
+          },
+        };
+
+        nextBodyIds.add(id);
+        syncBody({
+          id,
+          entity,
+          position,
+          name: planet.entity.name,
+          selected: args.selectedId === id,
+        });
+
+        for (const moon of getPlanetMoons(planet.entity.name)) {
+          syncMoonAtParent(planet.entity.name, position, moon);
+        }
+      }
+
+      if (args.showOrbits) {
+        for (const planet of args.planets) {
+          const periodDays = ORBIT_PERIOD_DAYS[planet.entity.name];
+          if (!periodDays) continue;
+
+          const positions = orbitPositions(planet.entity.name, periodDays, earth);
+          if (positions.length < 2) continue;
+
+          const orbitId = `bridge-orbit:${planet.entity.name.toLowerCase()}`;
+          wantedOrbitIds.add(orbitId);
+          const existing = viewer.entities.getById(orbitId);
+          const material = Cesium.Color
+            .fromCssColorString(bodyColor(planet.entity.name))
+            .withAlpha(0.22);
+
+          if (!existing) {
+            viewer.entities.add({
+              id: orbitId,
+              polyline: {
+                positions,
+                width: planet.entity.name === "Earth" ? 1.6 : 1,
+                material,
+                arcType: Cesium.ArcType.NONE,
+              },
+            });
+          } else if (existing.polyline) {
+            existing.polyline.positions = new Cesium.ConstantProperty(positions);
+            existing.polyline.material = new Cesium.ColorMaterialProperty(material);
+          }
+
+          orbitIds.add(orbitId);
+        }
+      }
+    } else {
+      setNativeSunVisible(true);
     }
 
     for (const id of Array.from(bodyIds)) {
       if (!nextBodyIds.has(id)) removeBody(id);
-    }
-
-    const wantedOrbitIds = new Set<string>();
-    if (args.showOrbits) {
-      for (const planet of args.planets) {
-        const periodDays = ORBIT_PERIOD_DAYS[planet.entity.name];
-        if (!periodDays) continue;
-
-        const positions = orbitPositions(planet.entity.name, periodDays, earth);
-        if (positions.length < 2) continue;
-
-        const orbitId = `bridge-orbit:${planet.entity.name.toLowerCase()}`;
-        wantedOrbitIds.add(orbitId);
-        const existing = viewer.entities.getById(orbitId);
-        const material = Cesium.Color
-          .fromCssColorString(bodyColor(planet.entity.name))
-          .withAlpha(0.22);
-
-        if (!existing) {
-          viewer.entities.add({
-            id: orbitId,
-            polyline: {
-              positions,
-              width: planet.entity.name === "Earth" ? 1.6 : 1,
-              material,
-              arcType: Cesium.ArcType.NONE,
-            },
-          });
-        } else if (existing.polyline) {
-          existing.polyline.positions = new Cesium.ConstantProperty(positions);
-          existing.polyline.material = new Cesium.ColorMaterialProperty(material);
-        }
-
-        orbitIds.add(orbitId);
-      }
     }
 
     for (const id of Array.from(orbitIds)) {

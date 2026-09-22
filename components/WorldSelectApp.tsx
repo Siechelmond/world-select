@@ -59,6 +59,21 @@ const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const EVENT_FILTERS = ["all", "fire", "storm", "volcano", "flood", "ice", "other"] as const;
 const RADIO_FILTERS = ["all", "news", "talk", "weather", "public-safety", "aviation-marine", "traffic-transit", "music", "other"] as const;
 const INFRA_FILTERS: InfrastructureCategory[] = ["cable", "landing", "datacenter", "dam"];
+const AU_METERS = 149_597_870_700;
+
+function formatEarthDistance(heightMeters: number) {
+  const meters = Number.isFinite(heightMeters) ? Math.max(0, heightMeters) : 0;
+  if (meters < 1_000) return `${Math.round(meters)} m`;
+
+  const km = meters / 1_000;
+  if (km < 10_000) return `${km.toFixed(km < 10 ? 1 : 0)} km`;
+  if (km < 1_000_000) return `${Math.round(km).toLocaleString("en-US")} km`;
+  if (meters < AU_METERS * 0.1) {
+    const millionKm = km / 1_000_000;
+    return `${millionKm.toFixed(millionKm < 10 ? 2 : 1)} M km`;
+  }
+  return `${(meters / AU_METERS).toFixed(2)} AU`;
+}
 
 function radioMatches(item: SpatialEntity, filter: string) {
   if (filter === "all") return true;
@@ -197,9 +212,12 @@ export default function WorldSelectApp() {
   const scaleTier = earthScene.tier;
   const earthSurfaceVisible = viewMode === "earth" && earthScene.surfaceVisible;
   const earthOrbitVisible = viewMode === "earth" && earthScene.earthOrbitVisible;
+  const cislunarContextVisible = viewMode === "earth" && earthScene.cislunarContextVisible;
+  const celestialContextVisible = viewMode === "earth" && earthScene.celestialContextVisible;
   const solarContextVisible = viewMode === "earth" && earthScene.solarContextVisible;
   const satelliteContextVisible = viewMode === "earth" && earthScene.satelliteContextVisible;
   const planetOrbitsAvailable = viewMode === "earth" && earthScene.planetOrbitsAvailable;
+  const distanceLabel = useMemo(() => formatEarthDistance(cameraHeight), [cameraHeight]);
 
   const selectedTime = useMemo(
     () => new Date((timeOffsetDays === 0 ? nowTick : Date.now()) + (timeOffsetDays + spacePlaybackDays) * DAY_MS),
@@ -659,14 +677,14 @@ export default function WorldSelectApp() {
 
   useEffect(() => {
     if (selected?.kind !== "celestial-body") return;
-    const validSolarSelection =
-      solarContextVisible &&
+    const validCelestialSelection =
+      celestialContextVisible &&
       selected.id.startsWith("bridge:");
-    if (!validSolarSelection) {
+    if (!validCelestialSelection) {
       setSelected(null);
       setFollowAircraft(false);
     }
-  }, [solarContextVisible, selected?.kind, selected?.id]);
+  }, [celestialContextVisible, selected?.kind, selected?.id]);
 
   useEffect(() => {
     if (!planetOrbitsAvailable && planetOrbits) {
@@ -758,11 +776,12 @@ export default function WorldSelectApp() {
   useEffect(() => {
     celestialBridgeRendererRef.current?.sync({
       planets,
-      visible: solarContextVisible,
+      visible: celestialContextVisible,
+      showSolarBodies: solarContextVisible,
       selectedId: selected?.kind === "celestial-body" ? selected.id : null,
       showOrbits: planetOrbits,
     });
-  }, [planets, solarContextVisible, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
+  }, [planets, celestialContextVisible, solarContextVisible, selected?.id, selected?.kind, planetOrbits, cesiumReady]);
 
   useEffect(() => {
     trafficControllerRef.current?.sync({
@@ -1113,7 +1132,7 @@ export default function WorldSelectApp() {
           <button className={viewMode === "earth" && earthScene.isGround ? "active" : ""} onClick={flyGround}>GROUND</button>
           <button className={viewMode === "space" ? "active" : ""} onClick={enterSpaceFromEarth}>SPACE</button>
         </div>
-        <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" ? earthScene.statusLabel : "SPACE"}</span></div>
+        <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" ? `${earthScene.statusLabel} · DIST ${distanceLabel}` : "SPACE"}</span></div>
       </header>
 
       {viewMode === "earth" && <div className="mapNav glass">
@@ -1215,7 +1234,7 @@ export default function WorldSelectApp() {
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">
-          <span>Sun + 8 planets</span><em>{viewMode === "space" ? "ACTIVE" : earthScene.statusLabel}</em>
+          <span>Moon + Sun + 8 planets + featured moons</span><em>{viewMode === "space" ? "ACTIVE" : earthScene.statusLabel}</em>
           <span>Ground map</span><em>ESRI STREET · WORLD SELECT LABELS EN</em>
           <span>Street imagery</span><em>GOOGLE + KARTAVIEW</em>
           <span>Annotations</span><em>LOCAL SESSION</em>
