@@ -15,8 +15,9 @@ const ORBIT_SAMPLES = 96;
 const MOON_ORBIT_SAMPLES = 128;
 // Cislunar navigation uses a local visual orbit radius so the Earth and Moon
 // can be read in one camera frame. The model still carries the true 384,400 km.
-const EARTH_MOON_DISPLAY_ORBIT_M = 60_000_000;
+const EARTH_MOON_DISPLAY_ORBIT_M = 120_000_000;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
+const EARTH_REFERENCE_ID = "bridge:earth:reference";
 const SUN_ID = "bridge:solar:sun";
 const SUN_GLOW_IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`
   <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
@@ -125,7 +126,7 @@ function earthRelativeDisplayPosition(
 }
 
 function bodyPixelSize(name: string, radiusKmOverride?: number) {
-  if (name === "Moon") return 8;
+  if (name === "Moon") return 6;
   const earthRadiusKm = BODY_RADIUS_KM.Earth;
   const radiusKm = radiusKmOverride ?? BODY_RADIUS_KM[name] ?? earthRadiusKm;
   const compressed = 5.5 * Math.pow(radiusKm / earthRadiusKm, 0.25);
@@ -217,6 +218,24 @@ export function createCelestialBridgeRenderer(input: {
   entityRegistry: Map<string, SpatialEntity>;
 }) {
   const { viewer, Cesium, entityRegistry } = input;
+  const bodyScaleByDistance = new Cesium.NearFarScalar(
+    20_000_000,
+    1,
+    25_000_000_000,
+    0.16,
+  );
+  const bodyAlphaByDistance = new Cesium.NearFarScalar(
+    50_000_000,
+    1,
+    25_000_000_000,
+    0.14,
+  );
+  const labelAlphaByDistance = new Cesium.NearFarScalar(
+    80_000_000,
+    1,
+    12_000_000_000,
+    0.04,
+  );
   const bodyIds = new Set<string>();
   const orbitIds = new Set<string>();
   const orbitCache = new Map<string, any[]>();
@@ -330,6 +349,8 @@ export function createCelestialBridgeRenderer(input: {
                 height: selected ? 58 : 50,
                 horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
                 verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                scaleByDistance: bodyScaleByDistance,
+                translucencyByDistance: bodyAlphaByDistance,
                 disableDepthTestDistance: Number.POSITIVE_INFINITY,
               },
               point: {
@@ -337,6 +358,8 @@ export function createCelestialBridgeRenderer(input: {
                 color: Cesium.Color.fromCssColorString("#fff7c2"),
                 outlineColor: Cesium.Color.fromCssColorString("#facc15"),
                 outlineWidth: 2,
+                scaleByDistance: bodyScaleByDistance,
+                translucencyByDistance: bodyAlphaByDistance,
                 disableDepthTestDistance: Number.POSITIVE_INFINITY,
               },
             }
@@ -346,6 +369,8 @@ export function createCelestialBridgeRenderer(input: {
                 color,
                 outlineColor: Cesium.Color.fromCssColorString("#020617"),
                 outlineWidth: selected ? 3 : 1.5,
+                scaleByDistance: bodyScaleByDistance,
+                translucencyByDistance: bodyAlphaByDistance,
                 disableDepthTestDistance: Number.POSITIVE_INFINITY,
               },
             }),
@@ -362,6 +387,7 @@ export function createCelestialBridgeRenderer(input: {
           outlineWidth: 3,
           style: Cesium.LabelStyle.FILL_AND_OUTLINE,
           pixelOffset: new Cesium.Cartesian2(10, -10),
+          translucencyByDistance: labelAlphaByDistance,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       });
@@ -371,6 +397,10 @@ export function createCelestialBridgeRenderer(input: {
         const glowSize = selected ? 58 : 50;
         item.billboard.width = new Cesium.ConstantProperty(glowSize);
         item.billboard.height = new Cesium.ConstantProperty(glowSize);
+        item.billboard.scaleByDistance =
+          new Cesium.ConstantProperty(bodyScaleByDistance);
+        item.billboard.translucencyByDistance =
+          new Cesium.ConstantProperty(bodyAlphaByDistance);
       }
       if (item.point) {
         const nextSize = isSun ? (selected ? 9 : 7) : (selected ? pixelSize + 4 : pixelSize);
@@ -379,9 +409,15 @@ export function createCelestialBridgeRenderer(input: {
         item.point.outlineWidth = new Cesium.ConstantProperty(
           isSun ? 2 : (selected ? 3 : 1.5),
         );
+        item.point.scaleByDistance =
+          new Cesium.ConstantProperty(bodyScaleByDistance);
+        item.point.translucencyByDistance =
+          new Cesium.ConstantProperty(bodyAlphaByDistance);
       }
       if (item.label) {
         item.label.show = new Cesium.ConstantProperty(showLabel || selected);
+        item.label.translucencyByDistance =
+          new Cesium.ConstantProperty(labelAlphaByDistance);
       }
     }
   };
@@ -415,6 +451,34 @@ export function createCelestialBridgeRenderer(input: {
 
     const earthVector = { x: earth.xAu, y: earth.yAu, z: earth.zAu };
     const nextBodyIds = new Set<string>();
+
+    // The native Cesium globe remains the only physical Earth. This tiny
+    // screen-space reference preserves Earth/Moon orientation as the globe
+    // becomes sub-pixel at cislunar and Solar scales.
+    const earthReference: SpatialEntity = {
+      ...earth.entity,
+      id: EARTH_REFERENCE_ID,
+      name: "Earth",
+      position: {
+        ...earth.entity.position,
+        altitudeMeters: 0,
+      },
+      properties: {
+        ...earth.entity.properties,
+        role: "screen-space Earth reference; native Cesium globe is the physical Earth",
+        displayFrame: "Earth-centered reference origin",
+      },
+    };
+    nextBodyIds.add(EARTH_REFERENCE_ID);
+    syncBody({
+      id: EARTH_REFERENCE_ID,
+      entity: earthReference,
+      position: Cesium.Cartesian3.ZERO,
+      name: "Earth",
+      selected: args.selectedId === EARTH_REFERENCE_ID,
+      colorHex: "#38bdf8",
+      showLabel: true,
+    });
 
     // Orbit geometry is persistent once created. The UI checkbox changes only
     // visibility; it never moves bodies or rebuilds/removes orbit entities.

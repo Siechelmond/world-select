@@ -35,7 +35,11 @@ import {
   type InfrastructureCategory,
 } from "@/lib/keyless";
 import { loadInfrastructureBaseline } from "@/lib/infrastructure-local";
-import { resolveEarthSceneState } from "@/lib/view-scale";
+import {
+  AU_METERS,
+  LIGHT_YEAR_METERS,
+  resolveEarthSceneState,
+} from "@/lib/view-scale";
 
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
 
@@ -59,7 +63,17 @@ const INITIAL_CENTER: EarthPoint = { latitude: 48.2082, longitude: 16.3738 };
 const EVENT_FILTERS = ["all", "fire", "storm", "volcano", "flood", "ice", "other"] as const;
 const RADIO_FILTERS = ["all", "news", "talk", "weather", "public-safety", "aviation-marine", "traffic-transit", "music", "other"] as const;
 const INFRA_FILTERS: InfrastructureCategory[] = ["cable", "landing", "datacenter", "dam"];
-const AU_METERS = 149_597_870_700;
+const DISTANCE_SCALE_REFERENCES = [
+  { label: "LEO EDGE", distanceM: 2_000_000, value: "2,000 km ALT" },
+  { label: "GEO", distanceM: 35_786_000, value: "35,786 km ALT" },
+  { label: "CISLUNAR", distanceM: 100_000_000, value: "100,000 km+" },
+  { label: "MOON", distanceM: 384_400_000, value: "384,400 km C/C" },
+  { label: "1 AU", distanceM: AU_METERS, value: "149.6 M km" },
+  { label: "JUPITER ORBIT", distanceM: 5.2 * AU_METERS, value: "5.2 AU" },
+  { label: "NEPTUNE ORBIT", distanceM: 30.1 * AU_METERS, value: "30.1 AU" },
+  { label: "HELIOPAUSE", distanceM: 120 * AU_METERS, value: "~120 AU" },
+  { label: "1 LIGHT-YEAR", distanceM: LIGHT_YEAR_METERS, value: "63,241 AU" },
+] as const;
 
 function formatEarthDistance(heightMeters: number) {
   const meters = Number.isFinite(heightMeters) ? Math.max(0, heightMeters) : 0;
@@ -73,6 +87,38 @@ function formatEarthDistance(heightMeters: number) {
     return `${millionKm.toFixed(millionKm < 10 ? 2 : 1)} M km`;
   }
   return `${(meters / AU_METERS).toFixed(2)} AU`;
+}
+
+function DistanceLadder({ heightMeters }: { heightMeters: number }) {
+  let activeIndex = 0;
+  for (let index = 0; index < DISTANCE_SCALE_REFERENCES.length; index += 1) {
+    if (heightMeters >= DISTANCE_SCALE_REFERENCES[index].distanceM) {
+      activeIndex = index;
+    } else {
+      break;
+    }
+  }
+
+  return (
+    <aside className="distanceLadder glass" aria-label="Earth distance scale">
+      <div className="distanceLadderHead">
+        <span>EARTH ALT</span>
+        <strong>{formatEarthDistance(heightMeters)}</strong>
+        <small>TRUE / LOGICAL · DISPLAY COMPRESSED</small>
+      </div>
+      <div className="distanceLadderRail">
+        {DISTANCE_SCALE_REFERENCES.map((reference, index) => (
+          <div
+            key={reference.label}
+            className={index === activeIndex ? "active" : index < activeIndex ? "passed" : ""}
+          >
+            <i />
+            <span><b>{reference.label}</b><small>{reference.value}</small></span>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
 }
 
 function radioMatches(item: SpatialEntity, filter: string) {
@@ -1134,6 +1180,10 @@ export default function WorldSelectApp() {
         </div>
         <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" ? `${earthScene.statusLabel} · DIST ${distanceLabel}` : "SPACE"}</span></div>
       </header>
+
+      {viewMode === "earth" && cameraHeight >= 2_000_000 && (
+        <DistanceLadder heightMeters={cameraHeight} />
+      )}
 
       {viewMode === "earth" && <div className="mapNav glass">
         <form className="placeSearch" onSubmit={runPlaceSearch}>

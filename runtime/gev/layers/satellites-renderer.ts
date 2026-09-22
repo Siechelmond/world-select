@@ -6,7 +6,7 @@ import {
   type TleRecord,
 } from '@/lib/celestrak';
 import type { SpatialEntity } from '@/lib/spatial';
-import { SATELLITE_CONTEXT_MAX_HEIGHT_M } from '@/lib/view-scale';
+import { SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M } from '@/lib/view-scale';
 import {
   SATELLITE_CLASSES,
   satelliteClassForEntity,
@@ -55,8 +55,8 @@ export function createSatelliteRenderer(input: {
   const points = new Map<string, any>();
   const detailIds = new Set<string>();
   const trails = new Map<string, any[]>();
-  const pointScale = new Cesium.NearFarScalar(50_000, 1.35, 250_000_000, 0.18);
-  const pointAlpha = new Cesium.NearFarScalar(2_000_000, 1, 500_000_000, 0.12);
+  const pointScale = new Cesium.NearFarScalar(50_000, 1.35, 5_000_000_000, 0.04);
+  const pointAlpha = new Cesium.NearFarScalar(2_000_000, 1, 8_000_000_000, 0.02);
   const baseColor = Cesium.Color.fromCssColorString('#67e8f9');
   const scratchRingRotation = new Cesium.Matrix3();
   let orbit: OrbitRecord | null = null;
@@ -226,11 +226,10 @@ export function createSatelliteRenderer(input: {
       const isSelected = spatial.id === selectedId;
       const isIss = /ISS.*ZARYA|^ISS\b/i.test(spatial.name);
       const labelContextVisible = cameraHeight < SOLAR_CONTEXT_LABEL_CUTOFF_M;
-      const satelliteContextVisible = cameraHeight < SATELLITE_CONTEXT_MAX_HEIGHT_M;
       const persistentLabel = labelContextVisible && (isIss || spatial.name.includes('TIANHE'));
       const klass = satelliteClassForEntity(spatial);
       const spec = SATELLITE_CLASSES[klass];
-      const filteredIn = satelliteContextVisible && satelliteMatchesFilter(spatial, activeFilter);
+      const filteredIn = satelliteMatchesFilter(spatial, activeFilter);
       const horizonVisible = !occluder || occluder.isPointVisible(position);
       const pixelSize = isIss ? Math.max(8, spec.pixelSize) : spec.pixelSize;
       const pointColor = Cesium.Color.fromCssColorString(spec.color);
@@ -356,22 +355,30 @@ export function createSatelliteRenderer(input: {
       cameraHeight = nextCameraHeight;
       activeFilter = nextFilter;
       enabled = visible;
-      const deepSolarContext = cameraHeight >= SATELLITE_CONTEXT_MAX_HEIGHT_M;
-      continuous = visible && !deepSolarContext && nextContinuous && nextRecords.length > 0;
-      pointCollection.show = visible && !deepSolarContext;
+      const livePropagation =
+        cameraHeight < SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M;
+      continuous =
+        visible && livePropagation && nextContinuous && nextRecords.length > 0;
+      pointCollection.show = visible;
       setHold(continuous);
-      if (!visible || deepSolarContext) {
+      if (!visible) {
         hideDetails();
         if (orbit?.primitive) orbit.primitive.show = false;
         viewer.scene?.requestRender?.();
         return;
       }
-      if (orbit?.primitive) orbit.primitive.show = cameraHeight < SATELLITE_CONTEXT_MAX_HEIGHT_M;
+
+      // Crossing out of live-propagation range freezes the latest snapshot.
+      // Points and the reference orbit remain rendered and then become
+      // naturally negligible through Cesium distance scaling.
       renderSnapshot(satellites, time, true);
-      if (orbit?.primitive) orbit.primitive.show = cameraHeight < SATELLITE_CONTEXT_MAX_HEIGHT_M;
+      if (!livePropagation) hideDetails();
+      if (orbit?.primitive) orbit.primitive.show = true;
       lastPropagation = continuous ? time.getTime() : 0;
-      updateOrbitRotation(time);
-      lastRingRotation = time.getTime();
+      if (livePropagation) {
+        updateOrbitRotation(time);
+        lastRingRotation = time.getTime();
+      }
     },
     clear,
     destroy() {

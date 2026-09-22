@@ -18,13 +18,16 @@ export type EarthSceneState = Readonly<{
 }>;
 
 export const AU_METERS = 149_597_870_700;
+export const LIGHT_YEAR_METERS = 9_460_730_472_580_800;
 export const GROUND_TIER_MAX_HEIGHT_M = 120_000;
 export const EARTH_LAYER_CONTEXT_MAX_HEIGHT_M = 36_000_000;
 export const CELESTIAL_COMPRESSION_START_M = 60_000_000;
 export const CISLUNAR_CONTEXT_HEIGHT_M = 80_000_000;
-export const SATELLITE_CONTEXT_MAX_HEIGHT_M = 120_000_000;
+export const SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M = 120_000_000;
 export const SOLAR_CONTEXT_HEIGHT_M = 1_200_000_000;
-export const EARTH_VIEW_MAX_LOGICAL_DISTANCE_M = 100 * AU_METERS;
+// Keep the Earth/Celestial camera continuous well beyond the heliosphere.
+// A later Galactic frame can hand off before this safety ceiling.
+export const EARTH_VIEW_MAX_LOGICAL_DISTANCE_M = LIGHT_YEAR_METERS;
 
 // Calibrated once for a continuous monotonic display curve:
 // logical 384,400 km (Moon) -> display ~150,000 km
@@ -97,8 +100,10 @@ export function resolveEarthSceneState(cameraHeight: number): EarthSceneState {
     cislunarContextVisible,
     celestialContextVisible: cislunarContextVisible,
     solarContextVisible: isSolar,
-    satelliteContextVisible:
-      !isGround && normalizedHeight < SATELLITE_CONTEXT_MAX_HEIGHT_M,
+    // Satellite points stay as spatial context after live propagation stops.
+    // Their Cesium distance scaling makes them fade/shrink naturally instead of
+    // disappearing at one logical-height switch.
+    satelliteContextVisible: !isGround,
     planetOrbitsAvailable: isSolar,
     statusLabel: isSolar
       ? "SOLAR · COMPRESSED"

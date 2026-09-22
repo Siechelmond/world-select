@@ -34,6 +34,25 @@ h1 { font-size: 22px; margin: 0; letter-spacing: -.03em; }
 .statusDot.bad { background: #f87171; box-shadow: 0 0 12px #f87171; }
 
 .layers { position: fixed; top: 102px; left: 18px; width: 260px; max-height: calc(100vh - 190px); overflow-y: auto; overscroll-behavior: contain; padding: 16px; border-radius: 16px; z-index: 5; }
+.distanceLadder {
+  position: fixed; top: 220px; left: 294px; width: 170px; z-index: 4;
+  padding: 11px 12px; border-radius: 13px; pointer-events: none;
+}
+.distanceLadderHead { display: grid; gap: 2px; padding-bottom: 9px; border-bottom: 1px solid rgba(103,232,249,.14); }
+.distanceLadderHead span { color: #67e8f9; font-size: 8px; font-weight: 900; letter-spacing: .14em; }
+.distanceLadderHead strong { color: #e2e8f0; font-size: 12px; font-weight: 700; }
+.distanceLadderHead small { color: #64748b; font-size: 7px; letter-spacing: .06em; line-height: 1.35; }
+.distanceLadderRail { display: grid; gap: 5px; margin-top: 9px; }
+.distanceLadderRail > div { display: grid; grid-template-columns: 9px 1fr; gap: 7px; align-items: center; opacity: .34; }
+.distanceLadderRail > div i { width: 5px; height: 5px; border-radius: 50%; background: #475569; box-shadow: 0 0 0 1px rgba(148,163,184,.18); }
+.distanceLadderRail > div span { display: grid; gap: 1px; min-width: 0; }
+.distanceLadderRail > div b { color: #94a3b8; font-size: 8px; letter-spacing: .06em; font-weight: 800; }
+.distanceLadderRail > div small { color: #64748b; font-size: 7px; }
+.distanceLadderRail > div.passed { opacity: .5; }
+.distanceLadderRail > div.active { opacity: 1; }
+.distanceLadderRail > div.active i { width: 7px; height: 7px; margin-left: -1px; background: #22d3ee; box-shadow: 0 0 10px rgba(34,211,238,.8); }
+.distanceLadderRail > div.active b { color: #cffafe; }
+.distanceLadderRail > div.active small { color: #94a3b8; }
 .layerRow { margin-top: 12px; display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 12px; border: 1px solid rgba(103,232,249,.16); border-radius: 12px; background: rgba(8,47,73,.22); }
 .layerRow input { accent-color: #22d3ee; }
 .layerRow span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
@@ -1395,4 +1414,10 @@ dd { margin: 0; font-size: 11px; text-align: right; overflow-wrap: anywhere; }
   .telescopeGallery { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .telescopeDetail { grid-template-columns: 1fr; grid-template-rows: minmax(260px,1fr) auto; overflow: auto; }
   .telescopeMeta { max-height: none; }
+}
+
+
+/* Distance scale is desktop context; compact screens already use the top DIST readout. */
+@media (max-width: 1180px) {
+  .distanceLadder { display: none; }
 }
