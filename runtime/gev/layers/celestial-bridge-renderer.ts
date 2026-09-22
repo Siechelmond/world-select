@@ -13,6 +13,9 @@ import {
 
 const ORBIT_SAMPLES = 96;
 const MOON_ORBIT_SAMPLES = 128;
+// Cislunar navigation uses a local visual orbit radius so the Earth and Moon
+// can be read in one camera frame. The model still carries the true 384,400 km.
+const EARTH_MOON_DISPLAY_ORBIT_M = 60_000_000;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
 const SUN_ID = "bridge:solar:sun";
 const SUN_GLOW_IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`
@@ -122,6 +125,7 @@ function earthRelativeDisplayPosition(
 }
 
 function bodyPixelSize(name: string, radiusKmOverride?: number) {
+  if (name === "Moon") return 8;
   const earthRadiusKm = BODY_RADIUS_KM.Earth;
   const radiusKm = radiusKmOverride ?? BODY_RADIUS_KM[name] ?? earthRadiusKm;
   const compressed = 5.5 * Math.pow(radiusKm / earthRadiusKm, 0.25);
@@ -156,6 +160,14 @@ function phaseSeedRadians(value: string) {
   return (hash % 360) * Math.PI / 180;
 }
 
+function moonDisplayOrbitRadiusM(parentName: string, moon: MoonSpec) {
+  const trueRadiusM = moon.orbitalRadiusKm * 1_000;
+  const sharedDisplayRadiusM = logicalToDisplayDistanceM(trueRadiusM);
+  return parentName === "Earth" && moon.name === "Moon"
+    ? Math.min(sharedDisplayRadiusM, EARTH_MOON_DISPLAY_ORBIT_M)
+    : sharedDisplayRadiusM;
+}
+
 function moonLocalOffset(
   Cesium: any,
   moon: MoonSpec,
@@ -163,8 +175,7 @@ function moonLocalOffset(
   date: Date,
   phaseOverride?: number,
 ) {
-  const trueRadiusM = moon.orbitalRadiusKm * 1_000;
-  const radiusM = logicalToDisplayDistanceM(trueRadiusM);
+  const radiusM = moonDisplayOrbitRadiusM(parentName, moon);
   const elapsedDays = date.getTime() / 86_400_000;
   const phase = phaseOverride ?? (
     elapsedDays / moon.orbitalPeriodDays * Math.PI * 2
@@ -443,7 +454,7 @@ export function createCelestialBridgeRenderer(input: {
             : "Parent-relative moon orbit inside compressed solar context",
           trueOrbitalRadiusKm: moon.orbitalRadiusKm,
           displayOrbitalRadiusKm: Math.round(
-            logicalToDisplayDistanceM(moon.orbitalRadiusKm * 1_000) / 1_000,
+            moonDisplayOrbitRadiusM(parentName, moon) / 1_000,
           ),
           displayDistanceKm: Math.round(displayDistanceM / 1_000),
           parentDisplayDistanceKm: Math.round(
@@ -472,15 +483,49 @@ export function createCelestialBridgeRenderer(input: {
     if (earthMoon) {
       syncMoonAtParent("Earth", Cesium.Cartesian3.ZERO, earthMoon, true);
 
+      const moonOrbitPositionsNow = moonOrbitPositions(
+        Cesium,
+        Cesium.Cartesian3.ZERO,
+        earthMoon,
+        "Earth",
+        epoch,
+      );
+
+      // Before Solar, the Moon-distance guide is navigation context rather than
+      // a user-selected planet orbit. In Solar, only the explicit orbit toggle
+      // may show the Moon orbit so ON/OFF has an unambiguous effect.
+      if (!args.showSolarBodies) {
+        const guideId = "bridge-guide:earth-moon";
+        const existingGuide = viewer.entities.getById(guideId);
+        const guideMaterial = Cesium.Color
+          .fromCssColorString(earthMoon.color)
+          .withAlpha(0.28);
+
+        if (!existingGuide) {
+          viewer.entities.add({
+            id: guideId,
+            show: true,
+            polyline: {
+              positions: moonOrbitPositionsNow,
+              width: 1.2,
+              material: guideMaterial,
+              arcType: Cesium.ArcType.NONE,
+            },
+          });
+        } else {
+          existingGuide.show = true;
+          if (existingGuide.polyline) {
+            existingGuide.polyline.positions =
+              new Cesium.ConstantProperty(moonOrbitPositionsNow);
+            existingGuide.polyline.material =
+              new Cesium.ColorMaterialProperty(guideMaterial);
+          }
+        }
+        orbitIds.add(guideId);
+      }
+
       if (args.showOrbits && args.showSolarBodies) {
         const moonOrbitId = "bridge-orbit:earth-moon";
-        const positions = moonOrbitPositions(
-          Cesium,
-          Cesium.Cartesian3.ZERO,
-          earthMoon,
-          "Earth",
-          epoch,
-        );
         const existing = viewer.entities.getById(moonOrbitId);
         const material = Cesium.Color
           .fromCssColorString(earthMoon.color)
@@ -491,7 +536,7 @@ export function createCelestialBridgeRenderer(input: {
             id: moonOrbitId,
             show: true,
             polyline: {
-              positions,
+              positions: moonOrbitPositionsNow,
               width: 1.4,
               material,
               arcType: Cesium.ArcType.NONE,
@@ -500,8 +545,10 @@ export function createCelestialBridgeRenderer(input: {
         } else {
           existing.show = true;
           if (existing.polyline) {
-            existing.polyline.positions = new Cesium.ConstantProperty(positions);
-            existing.polyline.material = new Cesium.ColorMaterialProperty(material);
+            existing.polyline.positions =
+              new Cesium.ConstantProperty(moonOrbitPositionsNow);
+            existing.polyline.material =
+              new Cesium.ColorMaterialProperty(material);
           }
         }
         orbitIds.add(moonOrbitId);
