@@ -11,6 +11,9 @@ const SOLAR_DISPLAY_ONE_AU_M = 5_000_000_000;
 const SOLAR_DISPLAY_CURVE = 1.7;
 const ORBIT_SAMPLES = 96;
 const MOON_ORBIT_SAMPLES = 128;
+const GEO_REFERENCE_ORBIT_RADIUS_M = 42_164_000;
+const MOON_MEAN_ORBIT_RADIUS_M = 384_400_000;
+const MOON_DISPLAY_ORBIT_RADIUS_M = 150_000_000;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
 const SUN_ID = "bridge:solar:sun";
 const SUN_GLOW_IMAGE = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`
@@ -155,6 +158,22 @@ function phaseSeedRadians(value: string) {
   return (hash % 360) * Math.PI / 180;
 }
 
+function cislunarDisplayRadiusMeters(realRadiusM: number) {
+  if (!Number.isFinite(realRadiusM) || realRadiusM <= 0) return 0;
+  if (realRadiusM <= GEO_REFERENCE_ORBIT_RADIUS_M) return realRadiusM;
+
+  // Keep GEO untouched, then compress only the post-GEO leg. The true
+  // 384,400 km Moon radius remains in the entity model/telemetry, while its
+  // display radius lands at 150,000 km so Earth, GEO and Moon stay readable
+  // in one continuous camera journey.
+  const postGeoDisplayScale =
+    (MOON_DISPLAY_ORBIT_RADIUS_M - GEO_REFERENCE_ORBIT_RADIUS_M)
+    / (MOON_MEAN_ORBIT_RADIUS_M - GEO_REFERENCE_ORBIT_RADIUS_M);
+
+  return GEO_REFERENCE_ORBIT_RADIUS_M
+    + (realRadiusM - GEO_REFERENCE_ORBIT_RADIUS_M) * postGeoDisplayScale;
+}
+
 function moonLocalOffset(
   Cesium: any,
   moon: MoonSpec,
@@ -162,7 +181,10 @@ function moonLocalOffset(
   date: Date,
   phaseOverride?: number,
 ) {
-  const radiusM = moon.orbitalRadiusKm * 1_000;
+  const trueRadiusM = moon.orbitalRadiusKm * 1_000;
+  const radiusM = parentName === "Earth"
+    ? cislunarDisplayRadiusMeters(trueRadiusM)
+    : trueRadiusM;
   const elapsedDays = date.getTime() / 86_400_000;
   const phase = phaseOverride ?? (
     elapsedDays / moon.orbitalPeriodDays * Math.PI * 2
@@ -439,6 +461,12 @@ export function createCelestialBridgeRenderer(input: {
           displayFrame: parentName === "Earth"
             ? "Earth-centered cislunar reference"
             : "Parent-relative moon orbit inside compressed solar context",
+          trueOrbitalRadiusKm: moon.orbitalRadiusKm,
+          displayOrbitalRadiusKm: Math.round(
+            (parentName === "Earth"
+              ? cislunarDisplayRadiusMeters(moon.orbitalRadiusKm * 1_000)
+              : moon.orbitalRadiusKm * 1_000) / 1_000,
+          ),
           displayDistanceKm: Math.round(displayDistanceM / 1_000),
           parentDisplayDistanceKm: Math.round(
             Cesium.Cartesian3.magnitude(parentPosition) / 1_000,
@@ -460,8 +488,9 @@ export function createCelestialBridgeRenderer(input: {
     };
 
     // The Earth-Moon system is the cislunar bridge between GEO and Solar.
-    // Its mean 384,400 km orbital radius comes directly from lib/space.ts and
-    // is kept uncompressed so the next reference after GEO has a real scale.
+    // Its true mean 384,400 km orbital radius comes directly from lib/space.ts.
+    // Rendering keeps GEO at real scale, then compresses only the post-GEO leg
+    // so the native Earth remains visually useful while DIST stays truthful.
     const earthMoon = getPlanetMoons("Earth")[0];
     if (earthMoon) {
       syncMoonAtParent("Earth", Cesium.Cartesian3.ZERO, earthMoon, true);

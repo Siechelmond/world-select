@@ -10,6 +10,10 @@ import {
 
 export type { GroundMapStyle, MapSwitchResult, WorldMapMode };
 
+const ORBIT_WHEEL_DAMPING_HEIGHT_M = 20_000_000;
+const ORBIT_WHEEL_PIXEL_REFERENCE = 100;
+const MAX_ORBIT_WHEEL_LOG_STEP = 0.12;
+
 export type ViewerLifecycle = {
   viewer: any;
   setMapStyle: (style: GroundMapStyle) => void;
@@ -65,9 +69,10 @@ export function createWorldViewer(input: {
   viewer.scene.globe.depthTestAgainstTerrain = true;
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#020617');
 
-  // Keep one Earth viewer usable from ground scale out to the outer planets.
-  // Positions stay in real meters; logarithmic depth preserves precision across
-  // the extreme near/far range without changing physical object coordinates.
+  // Keep one native Earth viewer usable from ground scale out to the outer
+  // planets. Camera height remains real Earth-relative telemetry; celestial
+  // overlays may use explicit display compression while logarithmic depth
+  // preserves precision across the extreme near/far range.
   viewer.scene.logarithmicDepthBuffer = true;
   viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
   viewer.scene.screenSpaceCameraController.maximumZoomDistance = 6_000_000_000_000;
@@ -156,6 +161,71 @@ export function createWorldViewer(input: {
       onViewChange({ ...lastGroundCenter, height });
     }
   };
+
+  let pendingOrbitWheelFrame = 0;
+  const publishOrbitWheelView = () => {
+    pendingOrbitWheelFrame = 0;
+    updateView();
+  };
+
+  const onOrbitScaleWheel = (event: WheelEvent) => {
+    const cameraCartographic = viewer.camera.positionCartographic;
+    const currentHeight = cameraCartographic?.height;
+    if (!Number.isFinite(currentHeight) || currentHeight < ORBIT_WHEEL_DAMPING_HEIGHT_M) {
+      return;
+    }
+    if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    viewer.camera.cancelFlight?.();
+
+    const deltaPixels = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? event.deltaY * 16
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? event.deltaY * Math.max(1, viewer.scene.canvas.clientHeight)
+        : event.deltaY;
+    const normalized = Math.max(-1, Math.min(1, deltaPixels / ORBIT_WHEEL_PIXEL_REFERENCE));
+    const logStep = normalized * MAX_ORBIT_WHEEL_LOG_STEP;
+    const minHeight = viewer.scene.screenSpaceCameraController.minimumZoomDistance ?? 2;
+    const maxHeight = viewer.scene.screenSpaceCameraController.maximumZoomDistance ?? 6_000_000_000_000;
+    const nextHeight = Math.max(
+      minHeight,
+      Math.min(maxHeight, currentHeight * Math.exp(logStep)),
+    );
+
+    const currentPosition = viewer.camera.positionWC;
+    const currentRadius = Cesium.Cartesian3.magnitude(currentPosition);
+    if (!Number.isFinite(currentRadius) || currentRadius <= 0) return;
+    const surfaceRadius = Math.max(1, currentRadius - currentHeight);
+    const targetRadius = surfaceRadius + nextHeight;
+    const radialDirection = Cesium.Cartesian3.normalize(
+      currentPosition,
+      new Cesium.Cartesian3(),
+    );
+    const destination = Cesium.Cartesian3.multiplyByScalar(
+      radialDirection,
+      targetRadius,
+      new Cesium.Cartesian3(),
+    );
+    const direction = Cesium.Cartesian3.clone(viewer.camera.directionWC);
+    const up = Cesium.Cartesian3.clone(viewer.camera.upWC);
+
+    viewer.camera.setView({
+      destination,
+      orientation: { direction, up },
+    });
+    viewer.scene?.requestRender?.();
+
+    if (!pendingOrbitWheelFrame) {
+      pendingOrbitWheelFrame = window.requestAnimationFrame(publishOrbitWheelView);
+    }
+  };
+
+  viewer.scene.canvas.addEventListener('wheel', onOrbitScaleWheel, {
+    capture: true,
+    passive: false,
+  });
 
   // React receives one coherent camera snapshot. During active zoom we publish
   // only when the camera crosses a scale-tier boundary; moveEnd still publishes
@@ -346,6 +416,11 @@ export function createWorldViewer(input: {
       removeOrientationAnimation = null;
       releaseContinuousRender('camera-orientation');
       viewer.camera.moveEnd.removeEventListener(updateView);
+      viewer.scene.canvas.removeEventListener('wheel', onOrbitScaleWheel, true);
+      if (pendingOrbitWheelFrame) {
+        window.cancelAnimationFrame(pendingOrbitWheelFrame);
+        pendingOrbitWheelFrame = 0;
+      }
       if (typeof removeScaleTierMonitor === 'function') removeScaleTierMonitor();
       handler.destroy();
       mapController.destroy();
