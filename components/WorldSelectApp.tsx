@@ -522,14 +522,9 @@ export default function WorldSelectApp() {
         setHovered(spatial);
         setHoveredScreen(spatial ? screen : null);
       },
-      onEmptyClick: (point) => {
+      onEmptyClick: () => {
         setSelected(null);
         setFollowAircraft(false);
-        if (point) {
-          streetPointRef.current = point;
-          setStreetTarget(point);
-          setStreetNotice(`Street target set · ${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`);
-        }
       },
       onMapModeFallback: (error) => {
         setThreeDError(error);
@@ -1009,14 +1004,17 @@ export default function WorldSelectApp() {
     setStreetPhotos([]);
     setLayerError("street");
 
+    setStreetProvider("google");
     if (GOOGLE_MAPS_API_KEY) {
-      setStreetProvider("google");
       setStreetState("loading");
       setStreetNotice(`Google Street View · searching near ${streetPoint.latitude.toFixed(5)}, ${streetPoint.longitude.toFixed(5)}`);
     } else {
-      loadKartaViewStreet("Google Street View is not configured for this preview · using KartaView");
+      const message = "Google Street View is not configured for this preview. KartaView can be selected manually.";
+      setStreetState("error");
+      setStreetNotice(message);
+      setLayerError("street", message);
     }
-  }, [viewMode, setLayerError, streetPoint.latitude, streetPoint.longitude, loadKartaViewStreet]);
+  }, [viewMode, setLayerError, streetPoint.latitude, streetPoint.longitude]);
 
   const handleGoogleStreetReady = useCallback(() => {
     setStreetState("ready");
@@ -1025,8 +1023,12 @@ export default function WorldSelectApp() {
   }, [setLayerError]);
 
   const handleGoogleStreetFallback = useCallback((message: string) => {
-    loadKartaViewStreet(`${message} · using KartaView fallback`);
-  }, [loadKartaViewStreet]);
+    // Keep the actual Google failure visible. KartaView is available only as a
+    // deliberate user choice until its own runtime path is proven reliable.
+    setStreetState("error");
+    setStreetNotice(message);
+    setLayerError("street", message);
+  }, [setLayerError]);
 
   const handleGoogleStreetPosition = useCallback((point: EarthPoint) => {
     streetPointRef.current = point;
@@ -1222,7 +1224,7 @@ export default function WorldSelectApp() {
         <div className="panelHead"><p className="panelLabel">INSPECTOR</p><div className="panelHeadActions"><button className="panelCollapse" type="button" aria-expanded={!inspectorCollapsed} onClick={() => setInspectorCollapsed((value) => !value)}>{inspectorCollapsed ? "‹" : "›"}</button><button className="sheetClose" onClick={() => setMobilePanel("none")}>×</button></div></div>
         {selected
           ? <Inspector entity={selected} onFocus={focusSelected} onStreet={openStreet} onAnnotate={addAnnotation} onClear={clearSelection} followAircraft={followAircraft} onToggleFollow={() => setFollowAircraft((v) => !v)} />
-          : <div className="emptyState"><div className="reticle">+</div><p>Street View opens at the current focus/view center. Click the map only when you want to refine the target.</p><div className="emptyActions"><button className="streetButton" onClick={openStreet} disabled={viewMode !== "earth"}>Open street level here</button><button className="annotationButton" onClick={addAnnotation} disabled={viewMode !== "earth"}>Mark this location</button></div></div>}
+          : <div className="emptyState"><div className="reticle">+</div><p>Street View opens at the current focus/view center.</p><div className="emptyActions"><button className="streetButton" onClick={openStreet} disabled={viewMode !== "earth"}>Open street level here</button><button className="annotationButton" onClick={addAnnotation} disabled={viewMode !== "earth"}>Mark this location</button></div></div>}
       </section>
 
       <section className={`timebar glass ${viewMode === "space" ? "spaceTimebar" : ""} ${mobilePanel === "time" ? "mobileOpen" : ""} ${!isMobile && timeCollapsed ? "panelCollapsed" : ""}`}>
