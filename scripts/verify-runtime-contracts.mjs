@@ -18,6 +18,7 @@ const infrastructureLocal = fs.readFileSync(path.join(root, 'lib/infrastructure-
 const keyless = fs.readFileSync(path.join(root, 'lib/keyless.ts'), 'utf8');
 const viewScale = fs.readFileSync(path.join(root, 'lib/view-scale.ts'), 'utf8');
 const viewerLifecycle = fs.readFileSync(path.join(root, 'lib/cesium-viewer.ts'), 'utf8');
+const geocodeApi = fs.readFileSync(path.join(root, 'functions/api/geocode.ts'), 'utf8');
 const mapController = fs.readFileSync(path.join(root, 'runtime/gev/map-controller.ts'), 'utf8');
 
 const checks = [
@@ -44,16 +45,18 @@ const checks = [
   ['native Earth is the only Earth across Earth and solar tiers', !celestialBridge.includes('EARTH_PROXY_ID') && !component.includes('viewer.scene.globe.show = globeVisible')],
   ['map controller exclusively owns globe versus Google 3D surface', mapController.includes('viewer.scene.globe.show = !in3d') && !component.includes('viewer.scene?.globe.show')],
   ['planet display sizes preserve radius ordering on a compressed visual scale', celestialBridge.includes('BODY_RADIUS_KM') && celestialBridge.includes('Math.pow(radiusKm / earthRadiusKm, 0.25)')],
-  ['three-tier contract uses one solar boundary', viewScale.includes('"ground" | "earth" | "solar"') && viewScale.includes('GROUND_TIER_MAX_HEIGHT_M = 120_000') && viewScale.includes('SOLAR_CONTEXT_HEIGHT_M = 36_000_000') && viewScale.includes('resolveEarthSceneState') && !viewScale.includes('SOLAR_GLOBE_HANDOFF_HEIGHT_M')],
+  ['three-tier contract uses one solar boundary', viewScale.includes('"ground" | "earth" | "solar"') && viewScale.includes('GROUND_TIER_MAX_HEIGHT_M = 120_000') && viewScale.includes('SOLAR_CONTEXT_HEIGHT_M = 36_000_000') && viewScale.includes('SATELLITE_CONTEXT_MAX_HEIGHT_M = 120_000_000') && viewScale.includes('resolveEarthSceneState') && !viewScale.includes('SOLAR_GLOBE_HANDOFF_HEIGHT_M')],
   ['React has one camera-scale owner', component.includes('const [earthCamera, setEarthCamera]') && component.includes('const earthScene = useMemo') && !component.includes('setScaleTier(') && !component.includes('setCameraHeight(')],
   ['camera tier crossings publish through the same view callback before moveEnd', viewerLifecycle.includes('scene.preRender.addEventListener') && viewerLifecycle.includes('lastPublishedScaleTier') && viewerLifecycle.includes('updateView();') && !viewerLifecycle.includes('onScaleTierChange')],
   ['Solar renderer toggle and status share one scene contract', component.includes('const solarContextVisible = viewMode === "earth" && earthScene.solarContextVisible') && component.includes('const planetOrbitsAvailable = viewMode === "earth" && earthScene.planetOrbitsAvailable') && component.includes('visible: solarContextVisible') && component.includes('disabled={!planetOrbitsAvailable}') && component.includes('earthScene.statusLabel')],
   ['leaving Solar clears orbit UI intent', component.includes('if (!planetOrbitsAvailable && planetOrbits)') && component.includes('setPlanetOrbits(false)')],
   ['orbit cache is invalidated by the exact selected-time epoch', celestialBridge.includes('const key = `${epoch.getTime()}:${name}`') && celestialBridge.includes('orbitEpochKey !== epochKey')],
   ['compressed Sun uses a glow while Cesium lighting remains separate', celestialBridge.includes('SUN_GLOW_IMAGE') && celestialBridge.includes('setNativeSunVisible(false)')],
-  ['satellites and aircraft render only in the Earth/orbit tier', component.includes('visible: earthOrbitVisible && satelliteLayer') && component.includes('visible: earthOrbitVisible && (aircraftLayer || militaryLayer)')],
+  ['satellites bridge through GEO into early Solar while aircraft stay Earth/orbit', component.includes('const satelliteContextVisible = viewMode === "earth" && earthScene.satelliteContextVisible') && component.includes('visible: satelliteContextVisible && satelliteLayer') && component.includes('visible: earthOrbitVisible && (aircraftLayer || militaryLayer)')],
   ['surface layers leave the scene in solar tier', component.includes('earthVisible: earthSurfaceVisible') && component.includes('earthSurfaceVisible && earthquakeLayer')],
-  ['deep solar context retains renderer-level satellite fallback cutoff', satelliteRenderer.includes('SOLAR_CONTEXT_SATELLITE_CUTOFF_M = 120_000_000') && satelliteRenderer.includes('deepSolarContext')],
+  ['deep solar satellite cutoff is shared by scene contract and renderer', viewScale.includes('SATELLITE_CONTEXT_MAX_HEIGHT_M = 120_000_000') && satelliteRenderer.includes("import { SATELLITE_CONTEXT_MAX_HEIGHT_M } from '@/lib/view-scale'") && satelliteRenderer.includes('deepSolarContext')],
+  ['search navigation has no redundant Cesium target marker', !component.includes('search-target') && !component.includes('markerId = "search-target"')],
+  ['search arrival is closer for addresses villages towns and cities', geocodeApi.includes('return 2_500') && geocodeApi.includes('return 8_000') && geocodeApi.includes('return 12_000') && geocodeApi.includes('return 20_000') && viewerLifecycle.includes('Math.max(2_000, point.height ?? 55_000)')],
   ['radio markers stay donor-sized, earth-anchored and horizon-occluded', radioRenderer.includes('NORMAL_PIXEL_SIZE = 13') && radioRenderer.includes('RADIO_COLOR = "#34d399"') && radioRenderer.includes('Number.POSITIVE_INFINITY') && radioRenderer.includes('SELECTED_PIXEL_SIZE = 16') && radioRenderer.includes('EllipsoidalOccluder') && radioRenderer.includes('preRender') && component.includes('createRadioRenderer')],
   ['infrastructure preserves cable source colors and operator-based point colors', keyless.includes('visualColor?: string') && infrastructureLocal.includes('visualColor: sourceColor') && infrastructureRenderer.includes('OPERATOR_PALETTE') && infrastructureRenderer.includes("item.visualColor ?? '#64748b'") && infrastructureRenderer.includes('stableOperatorColor(item.operator)')],
 ];

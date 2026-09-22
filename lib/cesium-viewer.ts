@@ -330,7 +330,7 @@ export function createWorldViewer(input: {
       removeOrientationAnimation?.();
       removeOrientationAnimation = null;
       const target = Cesium.Cartesian3.fromDegrees(point.longitude, point.latitude, 0);
-      const range = Math.max(4_000, point.height ?? 55_000);
+      const range = Math.max(2_000, point.height ?? 55_000);
       // Fly around the destination target rather than placing the camera above
       // it and pitching away from it. This keeps the searched place centered.
       viewer.camera.flyToBoundingSphere(

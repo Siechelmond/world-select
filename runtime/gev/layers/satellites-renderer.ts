@@ -6,6 +6,7 @@ import {
   type TleRecord,
 } from '@/lib/celestrak';
 import type { SpatialEntity } from '@/lib/spatial';
+import { SATELLITE_CONTEXT_MAX_HEIGHT_M } from '@/lib/view-scale';
 import {
   SATELLITE_CLASSES,
   satelliteClassForEntity,
@@ -38,7 +39,6 @@ const TRACKED_PROPAGATION_MS = 200;
 const RING_ROTATION_MS = 1_000;
 const DENSE_REFRESH_FRAMES = 300;
 const SOLAR_CONTEXT_LABEL_CUTOFF_M = 30_000_000;
-const SOLAR_CONTEXT_SATELLITE_CUTOFF_M = 120_000_000;
 
 function isDenseExtra(record: TleRecord) {
   return /STARLINK|ONEWEB|IRIDIUM/i.test(record.name);
@@ -226,7 +226,7 @@ export function createSatelliteRenderer(input: {
       const isSelected = spatial.id === selectedId;
       const isIss = /ISS.*ZARYA|^ISS\b/i.test(spatial.name);
       const labelContextVisible = cameraHeight < SOLAR_CONTEXT_LABEL_CUTOFF_M;
-      const satelliteContextVisible = cameraHeight < SOLAR_CONTEXT_SATELLITE_CUTOFF_M;
+      const satelliteContextVisible = cameraHeight < SATELLITE_CONTEXT_MAX_HEIGHT_M;
       const persistentLabel = labelContextVisible && (isIss || spatial.name.includes('TIANHE'));
       const klass = satelliteClassForEntity(spatial);
       const spec = SATELLITE_CLASSES[klass];
@@ -356,7 +356,7 @@ export function createSatelliteRenderer(input: {
       cameraHeight = nextCameraHeight;
       activeFilter = nextFilter;
       enabled = visible;
-      const deepSolarContext = cameraHeight >= SOLAR_CONTEXT_SATELLITE_CUTOFF_M;
+      const deepSolarContext = cameraHeight >= SATELLITE_CONTEXT_MAX_HEIGHT_M;
       continuous = visible && !deepSolarContext && nextContinuous && nextRecords.length > 0;
       pointCollection.show = visible && !deepSolarContext;
       setHold(continuous);
@@ -366,9 +366,9 @@ export function createSatelliteRenderer(input: {
         viewer.scene?.requestRender?.();
         return;
       }
-      if (orbit?.primitive) orbit.primitive.show = cameraHeight < SOLAR_CONTEXT_SATELLITE_CUTOFF_M;
+      if (orbit?.primitive) orbit.primitive.show = cameraHeight < SATELLITE_CONTEXT_MAX_HEIGHT_M;
       renderSnapshot(satellites, time, true);
-      if (orbit?.primitive) orbit.primitive.show = cameraHeight < SOLAR_CONTEXT_SATELLITE_CUTOFF_M;
+      if (orbit?.primitive) orbit.primitive.show = cameraHeight < SATELLITE_CONTEXT_MAX_HEIGHT_M;
       lastPropagation = continuous ? time.getTime() : 0;
       updateOrbitRotation(time);
       lastRingRotation = time.getTime();

@@ -198,6 +198,7 @@ export default function WorldSelectApp() {
   const earthSurfaceVisible = viewMode === "earth" && earthScene.surfaceVisible;
   const earthOrbitVisible = viewMode === "earth" && earthScene.earthOrbitVisible;
   const solarContextVisible = viewMode === "earth" && earthScene.solarContextVisible;
+  const satelliteContextVisible = viewMode === "earth" && earthScene.satelliteContextVisible;
   const planetOrbitsAvailable = viewMode === "earth" && earthScene.planetOrbitsAvailable;
 
   const selectedTime = useMemo(
@@ -673,41 +674,6 @@ export default function WorldSelectApp() {
     }
   }, [planetOrbitsAvailable, planetOrbits]);
 
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    const Cesium = window.Cesium;
-    const markerId = "search-target";
-    if (!viewer || !Cesium) return;
-    viewer.entities.removeById(markerId);
-    if (!searchTarget || !earthSurfaceVisible) return;
-
-    viewer.entities.add({
-      id: markerId,
-      position: Cesium.Cartesian3.fromDegrees(searchTarget.longitude, searchTarget.latitude, 0),
-      point: {
-        pixelSize: 13,
-        color: Cesium.Color.fromCssColorString("#22d3ee"),
-        outlineColor: Cesium.Color.WHITE,
-        outlineWidth: 2,
-        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        disableDepthTestDistance: 25_000,
-      },
-      label: {
-        text: searchTarget.label.split(",")[0],
-        font: "700 14px sans-serif",
-        fillColor: Cesium.Color.WHITE,
-        outlineColor: Cesium.Color.fromCssColorString("#020617"),
-        outlineWidth: 4,
-        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-        pixelOffset: new Cesium.Cartesian2(0, -24),
-        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        disableDepthTestDistance: 25_000,
-      },
-    });
-
-    return () => { viewer.entities.removeById(markerId); };
-  }, [searchTarget?.id, searchTarget?.latitude, searchTarget?.longitude, earthSurfaceVisible, cesiumReady]);
-
   const switchMapMode = useCallback((mode: WorldMapMode) => {
     streetOpenRef.current = false;
     setStreetOpen(false);
@@ -729,7 +695,7 @@ export default function WorldSelectApp() {
       satellites,
       tleRecords,
       catalog: satelliteCatalog,
-      visible: earthOrbitVisible && satelliteLayer,
+      visible: satelliteContextVisible && satelliteLayer,
       selectedId: selected?.kind === "satellite" ? selected.id : null,
       isMobile,
       cameraHeight,
@@ -740,7 +706,7 @@ export default function WorldSelectApp() {
         activeMapMode !== "photoreal",
       filter: satelliteFilter,
     });
-  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, earthOrbitVisible, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays, activeMapMode]);
+  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, satelliteContextVisible, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays, activeMapMode]);
 
 
 
