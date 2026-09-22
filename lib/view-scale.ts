@@ -28,11 +28,24 @@ export const CELESTIAL_COMPRESSION_START_M = 60_000_000;
 export const CISLUNAR_CONTEXT_HEIGHT_M = 80_000_000;
 export const SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M = 120_000_000;
 export const SOLAR_CONTEXT_HEIGHT_M = 1_200_000_000;
-export const FULL_SOLAR_CONTEXT_DISTANCE_M = 30.1 * AU_METERS;
-export const FULL_SOLAR_EXIT_DISTANCE_M = 24 * AU_METERS;
-export const FULL_SOLAR_DWELL_STEPS = 4;
-export const CISLUNAR_GUIDE_FADE_START_M = 20 * AU_METERS;
-export const EARTH_REFERENCE_MIN_DISTANCE_M = 0.25 * AU_METERS;
+export const SOLAR_HANDOFF_DISTANCE_M = AU_METERS;
+export const FULL_SOLAR_CONTEXT_DISTANCE_M = SOLAR_HANDOFF_DISTANCE_M;
+export const FULL_SOLAR_EXIT_DISTANCE_M = 0.82 * AU_METERS;
+export const SOLAR_DEAD_SCROLL_TICKS = 4;
+export const CISLUNAR_GUIDE_FADE_START_M = 0.08 * AU_METERS;
+export const EARTH_REFERENCE_MIN_DISTANCE_M = 0.1 * AU_METERS;
+export const SOLAR_DISPLAY_MAX_DISTANCE_M = 30.1 * AU_METERS;
+export const SOLAR_DISPLAY_RADIUS_M = 4_000_000_000;
+export const CELESTIAL_NAVIGATION_MILESTONES_M = [
+  AU_METERS,
+  5.2 * AU_METERS,
+  9.5 * AU_METERS,
+  19.2 * AU_METERS,
+  30.1 * AU_METERS,
+  120 * AU_METERS,
+  0.1 * LIGHT_YEAR_METERS,
+  LIGHT_YEAR_METERS,
+] as const;
 // Keep the Earth/Celestial camera continuous well beyond the heliosphere.
 // A later Galactic frame can hand off before this safety ceiling.
 export const EARTH_VIEW_MAX_LOGICAL_DISTANCE_M = LIGHT_YEAR_METERS;
@@ -75,6 +88,19 @@ export function displayToLogicalDistanceM(displayDistanceM: number) {
 export const EARTH_VIEW_MAX_DISPLAY_DISTANCE_M =
   logicalToDisplayDistanceM(EARTH_VIEW_MAX_LOGICAL_DISTANCE_M);
 
+// Solar bodies share one heliocentric radial transform before the whole
+// system is translated into the Earth-fixed Cesium frame. This preserves
+// angular relationships and radial ordering; compressing each Earth-relative
+// vector independently would distort the Solar-system geometry.
+const SOLAR_LOG_STRENGTH = 24;
+
+export function heliocentricToSolarDisplayDistanceM(distanceM: number) {
+  const normalized = Math.max(0, distanceM) / SOLAR_DISPLAY_MAX_DISTANCE_M;
+  return SOLAR_DISPLAY_RADIUS_M
+    * Math.log1p(SOLAR_LOG_STRENGTH * normalized)
+    / Math.log1p(SOLAR_LOG_STRENGTH);
+}
+
 export function resolveEarthScaleTier(cameraHeight: number): EarthScaleTier {
   if (!Number.isFinite(cameraHeight) || cameraHeight < GROUND_TIER_MAX_HEIGHT_M) {
     return "ground";
@@ -98,13 +124,13 @@ export function resolveEarthSceneState(cameraHeight: number): EarthSceneState {
     normalizedHeight >= FULL_SOLAR_CONTEXT_DISTANCE_M;
   const cislunarGuideAlpha = normalizedHeight <= CISLUNAR_GUIDE_FADE_START_M
     ? 0.28
-    : normalizedHeight >= FULL_SOLAR_CONTEXT_DISTANCE_M
+    : normalizedHeight >= SOLAR_HANDOFF_DISTANCE_M
       ? 0
       : 0.28 * (
         1 - (
           normalizedHeight - CISLUNAR_GUIDE_FADE_START_M
         ) / (
-          FULL_SOLAR_CONTEXT_DISTANCE_M - CISLUNAR_GUIDE_FADE_START_M
+          SOLAR_HANDOFF_DISTANCE_M - CISLUNAR_GUIDE_FADE_START_M
         )
       );
 

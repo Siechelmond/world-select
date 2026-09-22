@@ -1,13 +1,14 @@
 import { GEO_LABELS_DE } from '@/lib/geo-labels';
 import {
+  CELESTIAL_NAVIGATION_MILESTONES_M,
   displayToLogicalDistanceM,
   EARTH_VIEW_MAX_DISPLAY_DISTANCE_M,
   EARTH_VIEW_MAX_LOGICAL_DISTANCE_M,
   FULL_SOLAR_CONTEXT_DISTANCE_M,
-  FULL_SOLAR_DWELL_STEPS,
   FULL_SOLAR_EXIT_DISTANCE_M,
   logicalToDisplayDistanceM,
   resolveEarthScaleTier,
+  SOLAR_DEAD_SCROLL_TICKS,
 } from '@/lib/view-scale';
 import { holdContinuousRender, installRenderGovernor, releaseContinuousRender, uninstallRenderGovernor } from '@/runtime/gev/render-governor';
 import {
@@ -22,8 +23,9 @@ export type { GroundMapStyle, MapSwitchResult, WorldMapMode };
 const ORBIT_WHEEL_DAMPING_HEIGHT_M = 20_000_000;
 const ORBIT_WHEEL_PIXEL_REFERENCE = 100;
 const MAX_ORBIT_WHEEL_LOG_STEP = 0.12;
-const FULL_SOLAR_DWELL_PIXEL_STEP = 80;
-const FULL_SOLAR_DWELL_COOLDOWN_MS = 180;
+const SOLAR_DEAD_SCROLL_PIXEL_STEP = 70;
+const SOLAR_DEAD_SCROLL_COOLDOWN_MS = 45;
+const SOLAR_FRAME_RANGE_STEP = 0.085;
 
 type SolarFrameSnapshot = {
   center: any;
@@ -52,8 +54,9 @@ export function createWorldViewer(input: {
     latitude: number;
     longitude: number;
     height: number;
-    fullSolarFrame: boolean;
-    fullSolarDwellStep: number;
+    solarFrame: boolean;
+    solarDeadScrollTick: number;
+    solarZoomStep: number;
   }) => void;
   onEntityClick: (id: string) => void;
   onEntityHover?: (id: string | null, screen: { x: number; y: number } | null) => void;
@@ -181,16 +184,20 @@ export function createWorldViewer(input: {
   );
   let solarFrameActive = false;
   let navigationLogicalHeight: number | null = null;
-  let fullSolarDwellStep = 0;
-  let fullSolarDwellAccumulator = 0;
-  let lastFullSolarDwellAt = 0;
+  let solarDeadScrollTick = 0;
+  let solarZoomStep = 0;
+  let solarDeadScrollAccumulator = 0;
+  let lastSolarDeadScrollAt = 0;
+  let solarDeadScrollDirection = 0;
 
   const resetSolarNavigation = () => {
     solarFrameActive = false;
     navigationLogicalHeight = null;
-    fullSolarDwellStep = 0;
-    fullSolarDwellAccumulator = 0;
-    lastFullSolarDwellAt = 0;
+    solarDeadScrollTick = 0;
+    solarZoomStep = 0;
+    solarDeadScrollAccumulator = 0;
+    lastSolarDeadScrollAt = 0;
+    solarDeadScrollDirection = 0;
   };
 
   const solarFrameFitRange = (frame: SolarFrameSnapshot) => {
@@ -206,7 +213,7 @@ export function createWorldViewer(input: {
     return frame.radius / Math.sin(limitingHalfFov) * 1.12;
   };
 
-  const applySolarFrame = (logicalHeight: number) => {
+  const applySolarFrame = (zoomStep: number) => {
     const frame = getSolarFrame();
     if (
       !frame ||
@@ -214,12 +221,8 @@ export function createWorldViewer(input: {
       frame.radius <= 0
     ) return false;
 
-    const displayBeyondEntry = Math.max(
-      0,
-      logicalToDisplayDistanceM(logicalHeight)
-        - logicalToDisplayDistanceM(FULL_SOLAR_CONTEXT_DISTANCE_M),
-    );
-    const range = solarFrameFitRange(frame) + displayBeyondEntry;
+    const range = solarFrameFitRange(frame)
+      * (1 + Math.max(0, zoomStep) * SOLAR_FRAME_RANGE_STEP);
     const destination = Cesium.Cartesian3.add(
       frame.center,
       Cesium.Cartesian3.multiplyByScalar(
@@ -298,8 +301,9 @@ export function createWorldViewer(input: {
       onViewChange({
         ...lastGroundCenter,
         height: logicalHeight,
-        fullSolarFrame: solarFrameActive,
-        fullSolarDwellStep,
+        solarFrame: solarFrameActive,
+        solarDeadScrollTick,
+        solarZoomStep,
       });
     }
   };
@@ -333,28 +337,66 @@ export function createWorldViewer(input: {
     const normalized = Math.max(-1, Math.min(1, deltaPixels / ORBIT_WHEEL_PIXEL_REFERENCE));
     const logStep = normalized * MAX_ORBIT_WHEEL_LOG_STEP;
 
-    if (
-      solarFrameActive &&
-      normalized > 0 &&
-      fullSolarDwellStep < FULL_SOLAR_DWELL_STEPS
-    ) {
-      fullSolarDwellAccumulator += Math.abs(deltaPixels);
+    if (solarFrameActive) {
+      const direction = normalized > 0 ? 1 : -1;
+      if (direction !== solarDeadScrollDirection) {
+        solarDeadScrollDirection = direction;
+        solarDeadScrollTick = 0;
+        solarDeadScrollAccumulator = 0;
+      }
+
+      solarDeadScrollAccumulator += Math.abs(deltaPixels);
       const now = performance.now();
       if (
-        fullSolarDwellAccumulator >= FULL_SOLAR_DWELL_PIXEL_STEP &&
-        now - lastFullSolarDwellAt >= FULL_SOLAR_DWELL_COOLDOWN_MS
+        solarDeadScrollAccumulator >= SOLAR_DEAD_SCROLL_PIXEL_STEP &&
+        now - lastSolarDeadScrollAt >= SOLAR_DEAD_SCROLL_COOLDOWN_MS
       ) {
-        fullSolarDwellStep += 1;
-        fullSolarDwellAccumulator = 0;
-        lastFullSolarDwellAt = now;
+        solarDeadScrollTick += 1;
+        solarDeadScrollAccumulator = 0;
+        lastSolarDeadScrollAt = now;
+
+        if (solarDeadScrollTick >= SOLAR_DEAD_SCROLL_TICKS) {
+          solarDeadScrollTick = 0;
+          if (direction > 0) {
+            solarZoomStep = Math.min(
+              CELESTIAL_NAVIGATION_MILESTONES_M.length - 1,
+              solarZoomStep + 1,
+            );
+          } else if (solarZoomStep > 0) {
+            solarZoomStep -= 1;
+          } else {
+            const exitHeight = FULL_SOLAR_EXIT_DISTANCE_M;
+            resetSolarNavigation();
+            applyEarthRadialFrame(exitHeight);
+            if (!pendingOrbitWheelFrame) {
+              pendingOrbitWheelFrame = window.requestAnimationFrame(
+                publishOrbitWheelView,
+              );
+            }
+            return;
+          }
+
+          navigationLogicalHeight =
+            CELESTIAL_NAVIGATION_MILESTONES_M[solarZoomStep];
+          if (!applySolarFrame(solarZoomStep)) {
+            const fallbackHeight = Math.min(
+              navigationLogicalHeight,
+              EARTH_VIEW_MAX_LOGICAL_DISTANCE_M,
+            );
+            resetSolarNavigation();
+            applyEarthRadialFrame(fallbackHeight);
+          }
+        }
+
         if (!pendingOrbitWheelFrame) {
-          pendingOrbitWheelFrame = window.requestAnimationFrame(publishOrbitWheelView);
+          pendingOrbitWheelFrame = window.requestAnimationFrame(
+            publishOrbitWheelView,
+          );
         }
       }
       return;
     }
 
-    fullSolarDwellAccumulator = 0;
     const nextLogicalHeight = Math.max(
       viewer.scene.screenSpaceCameraController.minimumZoomDistance ?? 2,
       Math.min(
@@ -372,33 +414,16 @@ export function createWorldViewer(input: {
     ) {
       solarFrameActive = true;
       navigationLogicalHeight = FULL_SOLAR_CONTEXT_DISTANCE_M;
-      fullSolarDwellStep = 0;
-      if (applySolarFrame(FULL_SOLAR_CONTEXT_DISTANCE_M)) {
+      solarDeadScrollTick = 0;
+      solarZoomStep = 0;
+      solarDeadScrollDirection = 0;
+      if (applySolarFrame(solarZoomStep)) {
         if (!pendingOrbitWheelFrame) {
           pendingOrbitWheelFrame = window.requestAnimationFrame(publishOrbitWheelView);
         }
         return;
       }
       resetSolarNavigation();
-    }
-
-    if (solarFrameActive) {
-      navigationLogicalHeight = nextLogicalHeight;
-      if (
-        normalized < 0 &&
-        nextLogicalHeight <= FULL_SOLAR_EXIT_DISTANCE_M
-      ) {
-        resetSolarNavigation();
-        applyEarthRadialFrame(nextLogicalHeight);
-      } else if (!applySolarFrame(nextLogicalHeight)) {
-        resetSolarNavigation();
-        applyEarthRadialFrame(nextLogicalHeight);
-      }
-
-      if (!pendingOrbitWheelFrame) {
-        pendingOrbitWheelFrame = window.requestAnimationFrame(publishOrbitWheelView);
-      }
-      return;
     }
 
     const currentPosition = viewer.camera.positionWC;
@@ -584,7 +609,7 @@ export function createWorldViewer(input: {
     getPhotorealisticTileset: () => mapController.getPhotorealisticTileset(),
     refreshSolarFrame: () => {
       if (!solarFrameActive || navigationLogicalHeight == null) return;
-      applySolarFrame(navigationLogicalHeight);
+      applySolarFrame(solarZoomStep);
     },
     home: () => {
       resetSolarNavigation();

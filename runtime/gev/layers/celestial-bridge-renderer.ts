@@ -8,6 +8,7 @@ import {
 } from "@/lib/space";
 import {
   AU_METERS,
+  heliocentricToSolarDisplayDistanceM,
   logicalToDisplayDistanceM,
 } from "@/lib/view-scale";
 
@@ -16,6 +17,8 @@ const MOON_ORBIT_SAMPLES = 128;
 // Cislunar navigation uses a local visual orbit radius so the Earth and Moon
 // can be read in one camera frame. The model still carries the true 384,400 km.
 const EARTH_MOON_DISPLAY_ORBIT_M = 120_000_000;
+const SOLAR_MOON_SYSTEM_MIN_RADIUS_M = 7_000_000;
+const SOLAR_MOON_SYSTEM_MAX_RADIUS_M = 36_000_000;
 const OBLIQUITY_J2000_RAD = 23.43928 * Math.PI / 180;
 const EARTH_REFERENCE_ID = "bridge:earth:reference";
 const SUN_ID = "bridge:solar:sun";
@@ -83,27 +86,21 @@ function inertialToFixed(Cesium: any, vector: any, date: Date) {
   );
 }
 
-function earthRelativeDisplayPosition(
+function heliocentricDisplayPosition(
   Cesium: any,
   bodyVectorAu: { x: number; y: number; z: number },
-  earthVectorAu: { x: number; y: number; z: number },
   date: Date,
 ) {
-  const relativeAu = {
-    x: bodyVectorAu.x - earthVectorAu.x,
-    y: bodyVectorAu.y - earthVectorAu.y,
-    z: bodyVectorAu.z - earthVectorAu.z,
-  };
   const magnitudeAu = Math.hypot(
-    relativeAu.x,
-    relativeAu.y,
-    relativeAu.z,
+    bodyVectorAu.x,
+    bodyVectorAu.y,
+    bodyVectorAu.z,
   );
   if (!Number.isFinite(magnitudeAu) || magnitudeAu < 1e-12) {
-    return Cesium.Cartesian3.ZERO;
+    return Cesium.Cartesian3.clone(Cesium.Cartesian3.ZERO);
   }
 
-  const equatorial = eclipticJ2000ToEquatorial(relativeAu);
+  const equatorial = eclipticJ2000ToEquatorial(bodyVectorAu);
   const inertialDirection = new Cesium.Cartesian3(
     equatorial.x / magnitudeAu,
     equatorial.y / magnitudeAu,
@@ -116,11 +113,34 @@ function earthRelativeDisplayPosition(
   );
   const logicalDistanceM = magnitudeAu * AU_METERS;
   const displayDistanceM =
-    logicalToDisplayDistanceM(logicalDistanceM);
+    heliocentricToSolarDisplayDistanceM(logicalDistanceM);
 
   return Cesium.Cartesian3.multiplyByScalar(
     normalized,
     displayDistanceM,
+    new Cesium.Cartesian3(),
+  );
+}
+
+function earthRelativeDisplayPosition(
+  Cesium: any,
+  bodyVectorAu: { x: number; y: number; z: number },
+  earthVectorAu: { x: number; y: number; z: number },
+  date: Date,
+) {
+  const bodyPosition = heliocentricDisplayPosition(
+    Cesium,
+    bodyVectorAu,
+    date,
+  );
+  const earthPosition = heliocentricDisplayPosition(
+    Cesium,
+    earthVectorAu,
+    date,
+  );
+  return Cesium.Cartesian3.subtract(
+    bodyPosition,
+    earthPosition,
     new Cesium.Cartesian3(),
   );
 }
@@ -161,9 +181,25 @@ function phaseSeedRadians(value: string) {
   return (hash % 360) * Math.PI / 180;
 }
 
-function moonDisplayOrbitRadiusM(parentName: string, moon: MoonSpec) {
+function moonDisplayOrbitRadiusM(
+  parentName: string,
+  moon: MoonSpec,
+  solarContext: boolean,
+) {
   const trueRadiusM = moon.orbitalRadiusKm * 1_000;
   const sharedDisplayRadiusM = logicalToDisplayDistanceM(trueRadiusM);
+  if (solarContext) {
+    const siblings = getPlanetMoons(parentName);
+    const largestOrbitKm = Math.max(
+      moon.orbitalRadiusKm,
+      ...siblings.map((item) => item.orbitalRadiusKm),
+    );
+    const ratio = Math.max(0, Math.min(1, moon.orbitalRadiusKm / largestOrbitKm));
+    const normalized = Math.log1p(9 * ratio) / Math.log(10);
+    return SOLAR_MOON_SYSTEM_MIN_RADIUS_M
+      + (SOLAR_MOON_SYSTEM_MAX_RADIUS_M - SOLAR_MOON_SYSTEM_MIN_RADIUS_M)
+        * normalized;
+  }
   return parentName === "Earth" && moon.name === "Moon"
     ? Math.min(sharedDisplayRadiusM, EARTH_MOON_DISPLAY_ORBIT_M)
     : sharedDisplayRadiusM;
@@ -174,9 +210,10 @@ function moonLocalOffset(
   moon: MoonSpec,
   parentName: string,
   date: Date,
+  solarContext: boolean,
   phaseOverride?: number,
 ) {
-  const radiusM = moonDisplayOrbitRadiusM(parentName, moon);
+  const radiusM = moonDisplayOrbitRadiusM(parentName, moon, solarContext);
   const elapsedDays = date.getTime() / 86_400_000;
   const phase = phaseOverride ?? (
     elapsedDays / moon.orbitalPeriodDays * Math.PI * 2
@@ -200,11 +237,19 @@ function moonOrbitPositions(
   moon: MoonSpec,
   parentName: string,
   date: Date,
+  solarContext: boolean,
 ) {
   const positions: any[] = [];
   for (let index = 0; index <= MOON_ORBIT_SAMPLES; index += 1) {
     const phase = index / MOON_ORBIT_SAMPLES * Math.PI * 2;
-    const local = moonLocalOffset(Cesium, moon, parentName, date, phase);
+    const local = moonLocalOffset(
+      Cesium,
+      moon,
+      parentName,
+      date,
+      solarContext,
+      phase,
+    );
     positions.push(
       Cesium.Cartesian3.add(parentPosition, local, new Cesium.Cartesian3()),
     );
@@ -433,6 +478,7 @@ export function createCelestialBridgeRenderer(input: {
     planets: PlanetPosition[];
     visible: boolean;
     showSolarBodies: boolean;
+    solarFrameActive: boolean;
     showEarthReference: boolean;
     cislunarGuideAlpha: number;
     selectedId?: string | null;
@@ -506,7 +552,13 @@ export function createCelestialBridgeRenderer(input: {
     ) => {
       const base = moonEntity(parentName, moon, epoch);
       const id = `bridge:${base.id}`;
-      const localOffset = moonLocalOffset(Cesium, moon, parentName, epoch);
+      const localOffset = moonLocalOffset(
+        Cesium,
+        moon,
+        parentName,
+        epoch,
+        args.solarFrameActive,
+      );
       const position = Cesium.Cartesian3.add(
         parentPosition,
         localOffset,
@@ -529,7 +581,11 @@ export function createCelestialBridgeRenderer(input: {
             : "Parent-relative moon orbit inside compressed solar context",
           trueOrbitalRadiusKm: moon.orbitalRadiusKm,
           displayOrbitalRadiusKm: Math.round(
-            moonDisplayOrbitRadiusM(parentName, moon) / 1_000,
+            moonDisplayOrbitRadiusM(
+              parentName,
+              moon,
+              args.solarFrameActive,
+            ) / 1_000,
           ),
           displayDistanceKm: Math.round(displayDistanceM / 1_000),
           parentDisplayDistanceKm: Math.round(
@@ -564,6 +620,7 @@ export function createCelestialBridgeRenderer(input: {
         earthMoon,
         "Earth",
         epoch,
+        args.solarFrameActive,
       );
 
       // Keep the cislunar guide through the Earth/Moon -> Solar handoff. It
