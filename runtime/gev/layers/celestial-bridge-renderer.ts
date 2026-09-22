@@ -790,6 +790,21 @@ export function createCelestialBridgeRenderer(input: {
         }
       }
 
+      const solarOrbitPositions = new Map<string, ReturnType<typeof orbitPositions>>();
+      if (args.showOrbits) {
+        for (const planet of args.planets) {
+          const periodDays = ORBIT_PERIOD_DAYS[planet.entity.name];
+          if (!periodDays) continue;
+
+          const positions = orbitPositions(planet.entity.name, periodDays, earth);
+          if (positions.length < 2) continue;
+          solarOrbitPositions.set(planet.entity.name, positions);
+          for (const orbitPosition of positions) {
+            solarFramePoints.push(Cesium.Cartesian3.clone(orbitPosition));
+          }
+        }
+      }
+
       const bounds = Cesium.BoundingSphere.fromPoints(solarFramePoints);
       const eclipticNorthEquatorial = eclipticJ2000ToEquatorial({
         x: 0,
@@ -834,11 +849,8 @@ export function createCelestialBridgeRenderer(input: {
 
       if (args.showOrbits) {
         for (const planet of args.planets) {
-          const periodDays = ORBIT_PERIOD_DAYS[planet.entity.name];
-          if (!periodDays) continue;
-
-          const positions = orbitPositions(planet.entity.name, periodDays, earth);
-          if (positions.length < 2) continue;
+          const positions = solarOrbitPositions.get(planet.entity.name);
+          if (!positions) continue;
 
           const orbitId = `bridge-orbit:${planet.entity.name.toLowerCase()}`;
           const existing = viewer.entities.getById(orbitId);

@@ -722,7 +722,7 @@ function OuterSystemView({ time, onSelect, onSolar }: { time: Date; onSelect: (e
   );
 }
 
-function GalaxyView({ onSolar }: { onSolar: () => void }) {
+export function GalaxyView({ onSolar }: { onSolar: () => void }) {
   const stars = useMemo(() => deterministicGalaxyStars(), []);
   const clouds = useMemo(() => deterministicGalaxyClouds(), []);
   const solarAngle = 0.22 + 0.63 * 5.15 + 0.48;

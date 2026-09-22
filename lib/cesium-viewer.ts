@@ -38,6 +38,7 @@ export type ViewerLifecycle = {
   setMapMode: (mode: WorldMapMode) => Promise<MapSwitchResult>;
   getPhotorealisticTileset: () => any | null;
   refreshSolarFrame: () => void;
+  leaveSolarFrame: () => void;
   home: () => void;
   toggleTilt: () => void;
   northUp: () => void;
@@ -191,10 +192,20 @@ export function createWorldViewer(input: {
   let orbitGestureActive = false;
   let orbitGestureReleaseTimer: number | null = null;
 
+  const setSolarCameraLock = (locked: boolean) => {
+    const controller = viewer.scene.screenSpaceCameraController;
+    controller.enableRotate = !locked;
+    controller.enableTilt = !locked;
+    controller.enableLook = !locked;
+    controller.enableTranslate = !locked;
+    controller.enableZoom = !locked;
+  };
+
   const resetSolarNavigation = () => {
     solarFrameActive = false;
     navigationLogicalHeight = null;
     solarZoomStep = 0;
+    setSolarCameraLock(false);
   };
 
   // Mouse wheels and touchpads emit very different event bursts. One burst is
@@ -232,6 +243,8 @@ export function createWorldViewer(input: {
       !Number.isFinite(frame.radius) ||
       frame.radius <= 0
     ) return false;
+
+    setSolarCameraLock(true);
 
     const range = solarFrameFitRange(frame)
       * (1 + Math.max(0, zoomStep) * SOLAR_FRAME_RANGE_STEP);
@@ -401,6 +414,7 @@ export function createWorldViewer(input: {
       currentLogicalHeight >= MOON_ORBIT_DISTANCE_M
     ) {
       solarFrameActive = true;
+      setSolarCameraLock(true);
       navigationLogicalHeight = FULL_SOLAR_CONTEXT_DISTANCE_M;
       solarZoomStep = 0;
       // The first publish lets React build the Solar entities and bounding
@@ -614,6 +628,7 @@ export function createWorldViewer(input: {
       if (!solarFrameActive || navigationLogicalHeight == null) return;
       applySolarFrame(solarZoomStep);
     },
+    leaveSolarFrame: resetSolarNavigation,
     home: () => {
       resetSolarNavigation();
       viewer.camera.flyTo({
@@ -623,6 +638,10 @@ export function createWorldViewer(input: {
       });
     },
     toggleTilt: () => {
+      if (solarFrameActive) {
+        applySolarFrame(solarZoomStep);
+        return;
+      }
       const frame = targetFrame();
       if (!frame) return;
       const tilted = frame.pitch > Cesium.Math.toRadians(-60);
@@ -634,6 +653,10 @@ export function createWorldViewer(input: {
       });
     },
     northUp: () => {
+      if (solarFrameActive) {
+        applySolarFrame(solarZoomStep);
+        return;
+      }
       const frame = targetFrame();
       if (!frame) return;
       animateFrame(frame, { pitch: frame.pitch, heading: 0 });
