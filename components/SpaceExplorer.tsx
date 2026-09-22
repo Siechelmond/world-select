@@ -558,16 +558,18 @@ function OrbitView({ satellites, onSelect, onReturnEarth }: {
   );
 }
 
-function SolarSystemView({
+export function SolarSystemView({
   planets,
   sun,
   onSelect,
   onOpenPlanet,
+  showOrbits = true,
 }: {
   planets: PlanetPosition[];
   sun: SpatialEntity;
   onSelect: (entity: SpatialEntity) => void;
   onOpenPlanet: (planet: PlanetPosition) => void;
+  showOrbits?: boolean;
 }) {
   const size = 1000;
   const center = size / 2;
@@ -584,7 +586,7 @@ function SolarSystemView({
       <defs>
         <radialGradient id="sunGlow"><stop offset="0%" stopColor="#fef08a"/><stop offset="45%" stopColor="#f59e0b"/><stop offset="100%" stopColor="#f59e0b" stopOpacity="0"/></radialGradient>
       </defs>
-      {[0.39, 0.72, 1, 1.52, 5.2, 9.54, 19.2, 30.1].map((au) => <circle key={au} cx={center} cy={center} r={radiusForAu(au)} className="orbitRing" />)}
+      {showOrbits && [0.39, 0.72, 1, 1.52, 5.2, 9.54, 19.2, 30.1].map((au) => <circle key={au} cx={center} cy={center} r={radiusForAu(au)} className="orbitRing" />)}
       <circle cx={center} cy={center} r="36" fill="url(#sunGlow)" className="spaceObject" onClick={() => onSelect(sun)} />
       <circle cx={center} cy={center} r="13" fill="#fde68a" pointerEvents="none"/>
       <text x={center} y={center + 54} className="planetLabel" textAnchor="middle">Sun</text>

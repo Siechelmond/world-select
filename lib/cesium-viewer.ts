@@ -191,6 +191,12 @@ export function createWorldViewer(input: {
   let solarZoomStep = 0;
   let orbitGestureActive = false;
   let orbitGestureReleaseTimer: number | null = null;
+  const solarPanOffset = new Cesium.Cartesian3();
+  let solarPanPointerId: number | null = null;
+  let solarPanLastX = 0;
+  let solarPanLastY = 0;
+  let solarPanDistance = 0;
+  let suppressSolarClickUntil = 0;
 
   const setSolarCameraLock = (locked: boolean) => {
     const controller = viewer.scene.screenSpaceCameraController;
@@ -205,6 +211,8 @@ export function createWorldViewer(input: {
     solarFrameActive = false;
     navigationLogicalHeight = null;
     solarZoomStep = 0;
+    Cesium.Cartesian3.clone(Cesium.Cartesian3.ZERO, solarPanOffset);
+    solarPanPointerId = null;
     setSolarCameraLock(false);
   };
 
@@ -248,8 +256,13 @@ export function createWorldViewer(input: {
 
     const range = solarFrameFitRange(frame)
       * (1 + Math.max(0, zoomStep) * SOLAR_FRAME_RANGE_STEP);
-    const destination = Cesium.Cartesian3.add(
+    const targetCenter = Cesium.Cartesian3.add(
       frame.center,
+      solarPanOffset,
+      new Cesium.Cartesian3(),
+    );
+    const destination = Cesium.Cartesian3.add(
+      targetCenter,
       Cesium.Cartesian3.multiplyByScalar(
         frame.normal,
         range,
@@ -476,6 +489,82 @@ export function createWorldViewer(input: {
     passive: false,
   });
 
+  const onSolarPanPointerDown = (event: PointerEvent) => {
+    if (!solarFrameActive || event.button !== 0 || !event.isPrimary) return;
+    solarPanPointerId = event.pointerId;
+    solarPanLastX = event.clientX;
+    solarPanLastY = event.clientY;
+    solarPanDistance = 0;
+    try {
+      viewer.scene.canvas.setPointerCapture(event.pointerId);
+    } catch {}
+  };
+
+  const onSolarPanPointerMove = (event: PointerEvent) => {
+    if (!solarFrameActive || solarPanPointerId !== event.pointerId) return;
+    const deltaX = event.clientX - solarPanLastX;
+    const deltaY = event.clientY - solarPanLastY;
+    solarPanLastX = event.clientX;
+    solarPanLastY = event.clientY;
+    solarPanDistance += Math.hypot(deltaX, deltaY);
+    if (solarPanDistance < 3) return;
+
+    const frame = getSolarFrame();
+    if (!frame || !Number.isFinite(frame.radius) || frame.radius <= 0) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    const canvas = viewer.scene.canvas;
+    const verticalFov = Number(viewer.camera.frustum?.fovy)
+      || Cesium.Math.toRadians(60);
+    const range = solarFrameFitRange(frame)
+      * (1 + Math.max(0, solarZoomStep) * SOLAR_FRAME_RANGE_STEP);
+    const metersPerPixel = (
+      2 * range * Math.tan(verticalFov / 2)
+    ) / Math.max(1, canvas.clientHeight);
+    const horizontalShift = Cesium.Cartesian3.multiplyByScalar(
+      viewer.camera.rightWC,
+      -deltaX * metersPerPixel,
+      new Cesium.Cartesian3(),
+    );
+    const verticalShift = Cesium.Cartesian3.multiplyByScalar(
+      viewer.camera.upWC,
+      deltaY * metersPerPixel,
+      new Cesium.Cartesian3(),
+    );
+    Cesium.Cartesian3.add(solarPanOffset, horizontalShift, solarPanOffset);
+    Cesium.Cartesian3.add(solarPanOffset, verticalShift, solarPanOffset);
+
+    const maxOffset = frame.radius * 0.85;
+    const offsetMagnitude = Cesium.Cartesian3.magnitude(solarPanOffset);
+    if (offsetMagnitude > maxOffset) {
+      Cesium.Cartesian3.multiplyByScalar(
+        solarPanOffset,
+        maxOffset / offsetMagnitude,
+        solarPanOffset,
+      );
+    }
+    applySolarFrame(solarZoomStep);
+  };
+
+  const finishSolarPan = (event: PointerEvent) => {
+    if (solarPanPointerId !== event.pointerId) return;
+    if (solarPanDistance >= 3) suppressSolarClickUntil = performance.now() + 250;
+    try {
+      viewer.scene.canvas.releasePointerCapture(event.pointerId);
+    } catch {}
+    solarPanPointerId = null;
+    solarPanDistance = 0;
+  };
+
+  viewer.scene.canvas.addEventListener('pointerdown', onSolarPanPointerDown);
+  viewer.scene.canvas.addEventListener('pointermove', onSolarPanPointerMove, {
+    capture: true,
+    passive: false,
+  });
+  viewer.scene.canvas.addEventListener('pointerup', finishSolarPan);
+  viewer.scene.canvas.addEventListener('pointercancel', finishSolarPan);
+
   // React receives one coherent camera snapshot. During active zoom we publish
   // only when the camera crosses a scale-tier boundary; moveEnd still publishes
   // the final center/height. This avoids competing React writers for Solar state.
@@ -555,6 +644,7 @@ export function createWorldViewer(input: {
 
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   handler.setInputAction((movement: any) => {
+    if (solarFrameActive && performance.now() < suppressSolarClickUntil) return;
     const picked = viewer.scene.pick(movement.position);
     const id = pickedObjectId(picked);
     if (typeof id === 'string') {
@@ -688,6 +778,10 @@ export function createWorldViewer(input: {
       releaseContinuousRender('camera-orientation');
       viewer.camera.moveEnd.removeEventListener(updateView);
       viewer.scene.canvas.removeEventListener('wheel', onOrbitScaleWheel, true);
+      viewer.scene.canvas.removeEventListener('pointerdown', onSolarPanPointerDown);
+      viewer.scene.canvas.removeEventListener('pointermove', onSolarPanPointerMove, true);
+      viewer.scene.canvas.removeEventListener('pointerup', finishSolarPan);
+      viewer.scene.canvas.removeEventListener('pointercancel', finishSolarPan);
       if (pendingOrbitWheelFrame) {
         window.cancelAnimationFrame(pendingOrbitWheelFrame);
         pendingOrbitWheelFrame = 0;

@@ -18,9 +18,9 @@ import type { AircraftFeedMeta } from "@/lib/aircraft";
 import type { MilitaryFeedMeta } from "@/lib/military";
 import { fetchStreetPhotos, type StreetPhoto } from "@/lib/street";
 import { loadGoogleStreetView, onGoogleMapsAuthFailure } from "@/lib/google-street";
-import { computePlanetPositions, sunEntity, type PlanetPosition } from "@/lib/space";
+import { computePlanetPositions, sunEntity } from "@/lib/space";
 import { fetchRecentLaunches, type SpaceLaunch } from "@/lib/launches";
-import SpaceExplorer, { GalaxyView } from "@/components/SpaceExplorer";
+import SpaceExplorer, { GalaxyView, SolarSystemView } from "@/components/SpaceExplorer";
 import { createWorldViewer, type WorldMapMode } from "@/lib/cesium-viewer";
 import { GEO_LABELS_DE } from "@/lib/geo-labels";
 import { resolveLayerState, type LayerLoadState as LoadState } from "@/lib/layer-runtime";
@@ -46,6 +46,7 @@ import {
 declare global { interface Window { Cesium?: any; google?: any; __worldSelectGoogleMapsPromise?: Promise<any>; __worldSelectGoogleMapsReady?: () => void; gm_authFailure?: () => void } }
 
 type ViewMode = "earth" | "space";
+type EarthDeepSpaceFrame = "solar" | "galaxy" | null;
 type MobilePanel = "none" | "layers" | "inspector" | "time" | "street";
 type StreetProvider = "google" | "kartaview";
 type EarthPoint = { latitude: number; longitude: number };
@@ -185,7 +186,8 @@ export default function WorldSelectApp() {
   const streetPointRef = useRef<EarthPoint>(INITIAL_CENTER);
   const streetOpenRef = useRef(false);
   const streetProviderRef = useRef<StreetProvider>(GOOGLE_MAPS_API_KEY ? "google" : "kartaview");
-  const galaxyWheelAtRef = useRef(0);
+  const deepSpaceWheelAtRef = useRef(0);
+  const deepSpaceOutwardStepsRef = useRef(0);
 
   const [cesiumReady, setCesiumReady] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -210,7 +212,7 @@ export default function WorldSelectApp() {
   const [radioFilter, setRadioFilter] = useState<(typeof RADIO_FILTERS)[number]>("all");
   const [infraFilters, setInfraFilters] = useState<InfrastructureCategory[]>(INFRA_FILTERS);
   const [viewMode, setViewMode] = useState<ViewMode>("earth");
-  const [earthGalaxyFrame, setEarthGalaxyFrame] = useState(false);
+  const [earthDeepSpaceFrame, setEarthDeepSpaceFrame] = useState<EarthDeepSpaceFrame>(null);
   const [earthquakeState, setEarthquakeState] = useState<LoadState>("idle");
   const [satelliteState, setSatelliteState] = useState<LoadState>("idle");
   const [aircraftState, setAircraftState] = useState<LoadState>("idle");
@@ -292,11 +294,17 @@ export default function WorldSelectApp() {
   const celestialContextVisible = viewMode === "earth" && earthScene.celestialContextVisible;
   const solarContextVisible = viewMode === "earth" && earthScene.solarContextVisible;
   const satelliteContextVisible = viewMode === "earth" && earthScene.satelliteContextVisible;
-  const planetOrbitsAvailable = viewMode === "earth" && earthScene.planetOrbitsAvailable;
+  const planetOrbitsAvailable = viewMode === "earth" && earthScene.planetOrbitsAvailable && earthDeepSpaceFrame !== "galaxy";
   const earthDistanceLabel = useMemo(() => formatEarthDistance(cameraHeight), [cameraHeight]);
-  const distanceLabel = earthGalaxyFrame ? "~100,000 ly" : earthDistanceLabel;
-  const navigationStatusLabel = earthGalaxyFrame
+  const distanceLabel = earthDeepSpaceFrame === "galaxy"
+    ? "~100,000 ly"
+    : earthDeepSpaceFrame === "solar"
+      ? "30.1 AU"
+      : earthDistanceLabel;
+  const navigationStatusLabel = earthDeepSpaceFrame === "galaxy"
     ? "GALAXY FRAME · MILKY WAY"
+    : earthDeepSpaceFrame === "solar"
+      ? "SOLAR SYSTEM FRAME · COMPRESSED"
     : earthCamera.solarFrame
       ? `SOLAR FRAME · ${SOLAR_STEP_LABELS[earthCamera.solarZoomStep] ?? "CELESTIAL"} · SNAP`
       : earthScene.statusLabel;
@@ -642,7 +650,8 @@ export default function WorldSelectApp() {
           longitude,
           height,
         }));
-        setEarthGalaxyFrame(true);
+        deepSpaceOutwardStepsRef.current = 0;
+        setEarthDeepSpaceFrame("solar");
         setFollowAircraft(false);
         setSelected(null);
         setMobilePanel("none");
@@ -954,7 +963,7 @@ export default function WorldSelectApp() {
       height: cameraHeight,
       mapMode,
     });
-    setEarthGalaxyFrame(false);
+    setEarthDeepSpaceFrame(null);
     viewerLifecycleRef.current?.leaveSolarFrame();
     setFrameHandoff("earth-to-space");
     setFollowAircraft(false);
@@ -972,7 +981,7 @@ export default function WorldSelectApp() {
       mapMode,
     };
     setFrameHandoff("space-to-earth");
-    setEarthGalaxyFrame(false);
+    setEarthDeepSpaceFrame(null);
     setViewMode("earth");
     setFollowAircraft(false);
     setSelected(null);
@@ -999,32 +1008,49 @@ export default function WorldSelectApp() {
 
   const flyEarth = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
-    setViewMode("earth"); setEarthGalaxyFrame(false); setFollowAircraft(false); setSelected(null);
+    setViewMode("earth"); setEarthDeepSpaceFrame(null); setFollowAircraft(false); setSelected(null);
     viewerLifecycleRef.current?.setMapStyle("earth");
     viewerLifecycleRef.current?.home();
   }, [viewCenter.latitude, viewCenter.longitude]);
 
   const flyGround = useCallback(() => {
     if (!viewerRef.current || !window.Cesium) return;
-    setViewMode("earth"); setEarthGalaxyFrame(false); setFollowAircraft(false); setSelected(null);
+    setViewMode("earth"); setEarthDeepSpaceFrame(null); setFollowAircraft(false); setSelected(null);
     viewerLifecycleRef.current?.setMapStyle("ground");
     viewerLifecycleRef.current?.flyTo({ latitude: viewCenter.latitude, longitude: viewCenter.longitude, height: 18_000 });
   }, [viewCenter.latitude, viewCenter.longitude]);
 
-  const returnToSolarFromGalaxy = useCallback(() => {
-    setEarthGalaxyFrame(false);
+  const returnToCesiumSolar = useCallback(() => {
+    deepSpaceOutwardStepsRef.current = 0;
+    setEarthDeepSpaceFrame(null);
     window.requestAnimationFrame(() => viewerLifecycleRef.current?.refreshSolarFrame());
   }, []);
 
-  const handleEarthGalaxyWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+  const handleEarthDeepSpaceWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    if (event.deltaY >= 0 || Math.abs(event.deltaY) < 18) return;
+    if (Math.abs(event.deltaY) < 18) return;
     const now = Date.now();
-    if (now - galaxyWheelAtRef.current < 320) return;
-    galaxyWheelAtRef.current = now;
-    returnToSolarFromGalaxy();
-  }, [returnToSolarFromGalaxy]);
+    if (now - deepSpaceWheelAtRef.current < 320) return;
+    deepSpaceWheelAtRef.current = now;
+
+    if (earthDeepSpaceFrame === "galaxy") {
+      if (event.deltaY < 0) {
+        deepSpaceOutwardStepsRef.current = 0;
+        setEarthDeepSpaceFrame("solar");
+      }
+      return;
+    }
+    if (event.deltaY < 0) {
+      returnToCesiumSolar();
+      return;
+    }
+    deepSpaceOutwardStepsRef.current += 1;
+    if (deepSpaceOutwardStepsRef.current >= 3) {
+      deepSpaceOutwardStepsRef.current = 0;
+      setEarthDeepSpaceFrame("galaxy");
+    }
+  }, [earthDeepSpaceFrame, returnToCesiumSolar]);
 
   const goToPlace = useCallback((place: PlaceSearchResult, keepAlternatives = false) => {
     const point = { latitude: place.latitude, longitude: place.longitude };
@@ -1248,10 +1274,22 @@ export default function WorldSelectApp() {
       <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Widgets/widgets.css" />
       <Script src="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Cesium.js" strategy="afterInteractive" onLoad={() => setCesiumReady(true)} onError={() => setLayerError("earthquakes", "CesiumJS could not be loaded")} />
 
-      <div ref={containerRef} className={`globe ${viewMode === "space" || earthGalaxyFrame ? "globeHidden" : ""}`} aria-label="Interactive 3D globe" />
-      {viewMode === "earth" && earthGalaxyFrame && (
-        <div className="spaceScene earthGalaxyFrame" onWheel={handleEarthGalaxyWheel} aria-label="Milky Way scale within Earth zoom navigation">
-          <GalaxyView onSolar={returnToSolarFromGalaxy} />
+      <div ref={containerRef} className={`globe ${viewMode === "space" || earthDeepSpaceFrame ? "globeHidden" : ""}`} aria-label="Interactive 3D globe" />
+      {viewMode === "earth" && earthDeepSpaceFrame && (
+        <div className="spaceScene earthGalaxyFrame" onWheel={handleEarthDeepSpaceWheel} aria-label={`${earthDeepSpaceFrame === "solar" ? "Solar System" : "Milky Way"} scale within Earth zoom navigation`}>
+          {earthDeepSpaceFrame === "solar" ? <>
+            <button className="spaceBackButton" onClick={returnToCesiumSolar}>← Cesium Solar</button>
+            <div className="spaceTitle"><span>SOLAR SYSTEM</span><small>JPL approximate heliocentric positions · logarithmic display scale · scroll outward 3× for Milky Way</small></div>
+            <SolarSystemView
+              planets={planets}
+              sun={sun}
+              onSelect={selectEntity}
+              onOpenPlanet={(planet) => selectEntity(planet.entity)}
+              showOrbits={planetOrbits}
+            />
+          </> : (
+            <GalaxyView onSolar={() => setEarthDeepSpaceFrame("solar")} />
+          )}
         </div>
       )}
       {viewMode === "space" && <SpaceExplorer
@@ -1277,7 +1315,7 @@ export default function WorldSelectApp() {
         <div className="statusRow"><span className="statusDot" /><span>ws-pv · GEV F1 · {viewMode === "earth" ? `${navigationStatusLabel} · ${earthCamera.solarFrame ? "SCALE" : "DIST"} ${distanceLabel}` : "SPACE"}</span></div>
       </header>
 
-      {viewMode === "earth" && !earthGalaxyFrame && cameraHeight >= 2_000_000 && (
+      {viewMode === "earth" && !earthDeepSpaceFrame && cameraHeight >= 2_000_000 && (
         <DistanceLadder
           heightMeters={cameraHeight}
           solarFrame={earthCamera.solarFrame}
@@ -1379,7 +1417,7 @@ export default function WorldSelectApp() {
         {radioLayer && <div className="filterChips">{RADIO_FILTERS.map((filter) => <button key={filter} className={radioFilter === filter ? "active" : ""} onClick={() => setRadioFilter(filter)}>{filter.replace("-", " ").toUpperCase()}</button>)}</div>}
         <label className={`layerRow ${!planetOrbitsAvailable ? "disabled" : ""}`}>
           <input type="checkbox" checked={planetOrbits} disabled={!planetOrbitsAvailable} onChange={(event) => setPlanetOrbits(event.target.checked)} />
-          <span><strong>Planet orbits</strong><small>{planetOrbitsAvailable ? "Approximate JPL elements · fixed compressed solar scale" : "Available in Earth solar context"}</small></span>
+          <span><strong>Planet orbits</strong><small>{planetOrbitsAvailable ? "Approximate JPL elements · fixed compressed solar scale" : earthDeepSpaceFrame === "galaxy" ? "Unavailable in Milky Way frame" : "Available in Earth solar context"}</small></span>
           <b>{planetOrbits ? "ON" : ""}</b>
         </label>
         <div className="spaceLayerSummary">
@@ -1448,7 +1486,7 @@ export default function WorldSelectApp() {
 
       <footer className="legend glass">
         <span><i className="legendDot observed" /> OBSERVED</span><span><i className="legendDot calculated" /> CALCULATED</span>
-        <span>{earthGalaxyFrame ? "EARTH → GALAXY · scientific orientation view" : solarContextVisible ? "EARTH → SOLAR · JPL direction + compressed distance" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
+        <span>{earthDeepSpaceFrame === "galaxy" ? "EARTH → GALAXY · scientific orientation view" : earthDeepSpaceFrame === "solar" ? "EARTH → SOLAR SYSTEM · logarithmic overview" : solarContextVisible ? "EARTH → SOLAR · JPL direction + compressed distance" : "Earth · Ground · Orbit · Solar System"}</span><span>ws-pv · GEV-derived core lifecycle · independent live sources</span>
       </footer>
     </main>
   );
@@ -1805,11 +1843,4 @@ function GoogleStreetPanorama({ apiKey, point, onReady, onFallback, onPositionCh
   }, [apiKey, onReady, onFallback, onPositionChange]);
 
   return <div ref={panoRef} className="googleStreetPano"><div className="streetMessage">Loading Google Street View…</div></div>;
-}
-
-function SolarSystemView({ planets, sun, onSelect }: { planets: PlanetPosition[]; sun: SpatialEntity; onSelect: (entity: SpatialEntity) => void }) {
-  const size = 1000, center = size / 2, maxRadius = 420;
-  const radiusForAu = (au: number) => au <= 0 ? 0 : 42 + (Math.log10(au + 0.28) / Math.log10(30.5 + 0.28)) * (maxRadius - 42);
-  const points = planets.map((p) => { const orbitRadius = radiusForAu(p.radiusAu); const angle = Math.atan2(p.yAu, p.xAu); return { ...p, px: center + Math.cos(angle) * orbitRadius, py: center + Math.sin(angle) * orbitRadius }; });
-  return <div className="spaceScene"><div className="spaceTitle"><span>SOLAR SYSTEM</span><small>JPL approximate heliocentric positions · visual distances logarithmically scaled</small></div><svg viewBox={`0 0 ${size} ${size}`} className="solarSvg" role="img" aria-label="Calculated solar system positions"><defs><radialGradient id="sunGlow"><stop offset="0%" stopColor="#fef08a"/><stop offset="45%" stopColor="#f59e0b"/><stop offset="100%" stopColor="#f59e0b" stopOpacity="0"/></radialGradient></defs>{[0.39,0.72,1,1.52,5.2,9.54,19.2,30.1].map((au) => <circle key={au} cx={center} cy={center} r={radiusForAu(au)} className="orbitRing" />)}<circle cx={center} cy={center} r="36" fill="url(#sunGlow)" className="spaceObject" onClick={() => onSelect(sun)} /><circle cx={center} cy={center} r="13" fill="#fde68a" pointerEvents="none"/><text x={center} y={center + 54} className="planetLabel" textAnchor="middle">Sun</text>{points.map((p) => <g key={p.entity.id} className="planetGroup" onClick={() => onSelect(p.entity)}><circle cx={p.px} cy={p.py} r={p.entity.name === "Earth" ? 9 : p.entity.name === "Jupiter" ? 12 : 7} className={`planetDot planet-${p.entity.name.toLowerCase()}`} /><text x={p.px + 13} y={p.py - 10} className="planetLabel">{p.entity.name}</text></g>)}</svg></div>;
 }

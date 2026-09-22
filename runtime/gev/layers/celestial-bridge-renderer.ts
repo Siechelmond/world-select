@@ -844,7 +844,7 @@ export function createCelestialBridgeRenderer(input: {
           const existing = viewer.entities.getById(orbitId);
           const material = Cesium.Color
             .fromCssColorString(bodyColor(planet.entity.name))
-            .withAlpha(0.42);
+            .withAlpha(0.7);
 
           if (!existing) {
             viewer.entities.add({
@@ -852,7 +852,7 @@ export function createCelestialBridgeRenderer(input: {
               show: true,
               polyline: {
                 positions,
-                width: planet.entity.name === "Earth" ? 2 : 1.6,
+                width: planet.entity.name === "Earth" ? 2.6 : 2.2,
                 material,
                 depthFailMaterial: material,
                 arcType: Cesium.ArcType.NONE,
