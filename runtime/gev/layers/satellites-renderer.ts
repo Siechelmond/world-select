@@ -23,6 +23,7 @@ type SyncInput = {
   tleRecords: TleRecord[];
   catalog: SatelliteCatalog;
   visible: boolean;
+  fleetVisible: boolean;
   selectedId: string | null;
   isMobile: boolean;
   cameraHeight: number;
@@ -47,6 +48,10 @@ function isDenseExtra(record: TleRecord) {
   return /STARLINK|ONEWEB|IRIDIUM/i.test(record.name);
 }
 
+function isIssName(name: string) {
+  return /ISS.*ZARYA|^ISS\b/i.test(name);
+}
+
 export function createSatelliteRenderer(input: {
   viewer: any;
   Cesium: any;
@@ -64,6 +69,7 @@ export function createSatelliteRenderer(input: {
   const scratchRingRotation = new Cesium.Matrix3();
   let orbit: OrbitRecord | null = null;
   let enabled = false;
+  let fleetVisible = true;
   let continuous = false;
   let selectedId: string | null = null;
   let isMobile = false;
@@ -97,6 +103,16 @@ export function createSatelliteRenderer(input: {
     for (const id of detailIds) viewer.entities.removeById(id);
     detailIds.clear();
     trails.clear();
+  };
+
+  const hideNonIssDetails = () => {
+    for (const id of [...detailIds]) {
+      const spatial = entityRegistry.get(id);
+      if (spatial && isIssName(spatial.name)) continue;
+      viewer.entities.removeById(id);
+      detailIds.delete(id);
+      trails.delete(id);
+    }
   };
 
   const clear = () => {
@@ -165,7 +181,7 @@ export function createSatelliteRenderer(input: {
   };
 
   const ensureIssOrbit = (records: TleRecord[], time: Date) => {
-    const iss = records.find((record) => /ISS.*ZARYA|^ISS\b/i.test(record.name));
+    const iss = records.find((record) => isIssName(record.name));
     if (!iss) {
       clearOrbit();
       return;
@@ -219,6 +235,8 @@ export function createSatelliteRenderer(input: {
       : null;
 
     for (const spatial of satellites) {
+      const isIss = isIssName(spatial.name);
+      if (!isIss && !fleetVisible) continue;
       live.add(spatial.id);
       entityRegistry.set(spatial.id, spatial);
       const position = Cesium.Cartesian3.fromDegrees(
@@ -227,12 +245,11 @@ export function createSatelliteRenderer(input: {
         logicalToDisplayDistanceM(spatial.position.altitudeMeters),
       );
       const isSelected = spatial.id === selectedId;
-      const isIss = /ISS.*ZARYA|^ISS\b/i.test(spatial.name);
       const labelContextVisible = cameraHeight < SOLAR_CONTEXT_LABEL_CUTOFF_M;
-      const persistentLabel = labelContextVisible && (isIss || spatial.name.includes('TIANHE'));
+      const persistentLabel = isIss || (labelContextVisible && spatial.name.includes('TIANHE'));
       const klass = satelliteClassForEntity(spatial);
       const spec = SATELLITE_CLASSES[klass];
-      const filteredIn = satelliteMatchesFilter(spatial, activeFilter);
+      const filteredIn = isIss || satelliteMatchesFilter(spatial, activeFilter);
       const horizonVisible = !occluder || occluder.isPointVisible(position);
       // Preserve the historic ISS hero contract: generic satellites obey the
       // camera-horizon cull, while ISS keeps its persistent point + label.
@@ -307,11 +324,14 @@ export function createSatelliteRenderer(input: {
 
   const propagateCore = (time: Date) => {
     const records = catalog === 'dense' ? coreRecords : tleRecords;
-    renderSnapshot(propagateTles(records, time), time, catalog !== 'dense', true);
+    const visibleRecords = fleetVisible
+      ? records
+      : records.filter((record) => isIssName(record.name));
+    renderSnapshot(propagateTles(visibleRecords, time), time, catalog !== 'dense', true);
   };
 
   const propagateDenseChunk = (time: Date) => {
-    if (catalog !== 'dense' || !denseRecords.length) return;
+    if (!fleetVisible || catalog !== 'dense' || !denseRecords.length) return;
     const chunkSize = Math.max(1, Math.ceil(denseRecords.length / DENSE_REFRESH_FRAMES));
     const chunk: TleRecord[] = [];
     for (let index = 0; index < chunkSize; index += 1) {
@@ -353,7 +373,7 @@ export function createSatelliteRenderer(input: {
   };
 
   return Object.freeze({
-    sync({ satellites, tleRecords: nextRecords, catalog: nextCatalog, visible, selectedId: nextSelectedId, isMobile: nextIsMobile, cameraHeight: nextCameraHeight, time, continuous: nextContinuous, filter: nextFilter }: SyncInput) {
+    sync({ satellites, tleRecords: nextRecords, catalog: nextCatalog, visible, fleetVisible: nextFleetVisible, selectedId: nextSelectedId, isMobile: nextIsMobile, cameraHeight: nextCameraHeight, time, continuous: nextContinuous, filter: nextFilter }: SyncInput) {
       if (destroyed) return;
       configureRecords(nextRecords, nextCatalog);
       selectedId = nextSelectedId;
@@ -361,6 +381,7 @@ export function createSatelliteRenderer(input: {
       cameraHeight = nextCameraHeight;
       activeFilter = nextFilter;
       enabled = visible;
+      fleetVisible = nextFleetVisible;
       const livePropagation =
         cameraHeight < SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M;
       continuous =
@@ -378,7 +399,7 @@ export function createSatelliteRenderer(input: {
       // Points and the reference orbit remain rendered and then become
       // naturally negligible through Cesium distance scaling.
       renderSnapshot(satellites, time, true);
-      if (!livePropagation) hideDetails();
+      if (!livePropagation) hideNonIssDetails();
       if (orbit?.primitive) orbit.primitive.show = true;
       lastPropagation = continuous ? time.getTime() : 0;
       if (livePropagation) {

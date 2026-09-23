@@ -173,10 +173,9 @@ export function resolveEarthSceneState(cameraHeight: number): EarthSceneState {
     earthReferenceVisible:
       normalizedHeight >= EARTH_REFERENCE_MIN_DISTANCE_M,
     cislunarGuideAlpha,
-    // Layer enablement owns satellite visibility at Ground/Earth scale.
-    // The renderer already owns live-propagation and far-distance fading, so
-    // the Solar tier contract must not hide ISS or satellites near the ground.
-    satelliteContextVisible: true,
+    // Fleet context stays out of Ground while the renderer preserves ISS as
+    // the single persistent Earth-mode hero.
+    satelliteContextVisible: !isGround,
     planetOrbitsAvailable: isSolar,
     statusLabel: fullSolarContextVisible
       ? "FULL SOLAR · COMPRESSED"

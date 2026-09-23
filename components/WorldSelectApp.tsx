@@ -830,7 +830,8 @@ export default function WorldSelectApp() {
       satellites,
       tleRecords,
       catalog: satelliteCatalog,
-      visible: satelliteContextVisible && satelliteLayer,
+      visible: viewMode === "earth" && satelliteLayer,
+      fleetVisible: satelliteContextVisible,
       selectedId: selected?.kind === "satellite" ? selected.id : null,
       isMobile,
       cameraHeight,
@@ -841,7 +842,7 @@ export default function WorldSelectApp() {
         activeMapMode !== "photoreal",
       filter: satelliteFilter,
     });
-  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, satelliteContextVisible, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays, activeMapMode]);
+  }, [satellites, tleRecords, satelliteCatalog, satelliteFilter, satelliteLayer, satelliteContextVisible, viewMode, cesiumReady, isMobile, cameraHeight, selected?.id, selected?.kind, selectedTime, timeOffsetDays, spacePlaybackDays, activeMapMode]);
 
 
 
