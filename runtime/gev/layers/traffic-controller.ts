@@ -426,9 +426,9 @@ export function createTrafficController(input: {
       if (!current || (flow.level ?? 1) < (current.level ?? 1)) flowMap.set(flow.roadId, flow);
     }
     const roadMap = new Map(visibleRoads.map((road) => [road.id, road]));
-    const surfaceProfiles = new Map(
-      visibleRoads.map((road) => [road.id, surface.profileForRoad(road, road.coordinates)]),
-    );
+    const surfaceProfiles = photoreal
+      ? new Map(visibleRoads.map((road) => [road.id, surface.profileForRoad(road, road.coordinates)]))
+      : new Map();
     const liveTomTomDrape = photoreal && Boolean(flowLayer && liveLayerCollection);
     const nearPhotoreal = photoreal && context.cameraHeight < 8_000;
     roadCollection = (!photoreal || !liveTomTomDrape)
