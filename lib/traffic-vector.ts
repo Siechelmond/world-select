@@ -17,6 +17,8 @@ export type RoadSegment = {
   access?: string;
   motorVehicle?: string;
   junction?: string;
+  nodeIds?: number[];
+  trafficSignals?: Array<{ nodeId: number; coordinate: [number, number]; index: number }>;
 };
 
 export type FlowSegment = {
@@ -28,6 +30,9 @@ export type FlowSegment = {
   level?: number;
   closure?: boolean;
   source?: 'simulated' | 'tomtom-live';
+  direction?: 1 | -1 | 0;
+  leftHandTraffic?: boolean;
+  partOfTwoWayRoad?: boolean;
 };
 
 export type ModeledVehicle = {

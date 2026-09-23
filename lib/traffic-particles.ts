@@ -7,6 +7,8 @@ export type TrafficParticle = {
   segmentIndex: number;
   direction: 1 | -1;
   laneOffsetM: number;
+  laneOrdinal: number;
+  leftHandTraffic: boolean;
   queueGroup: number | null;
   mps: number;
   baseMps: number;
@@ -136,10 +138,11 @@ function queuePlacements(
   return out;
 }
 
-function laneOffsetMeters(
+export function laneOffsetMeters(
   road: RoadSegment,
   direction: 1 | -1,
   ordinal: number,
+  leftHandTraffic = false,
 ) {
   const laneWidthM = 3.2;
   const rawLanes = Number.isFinite(road.lanes) ? Math.round(road.lanes as number) : 0;
@@ -159,7 +162,16 @@ function laneOffsetMeters(
     : Math.max(1, Math.floor(totalLanes / 2));
   const laneIndex = ordinal % lanesPerDirection;
   const centerFromRoadCenterM = laneWidthM * (0.5 + laneIndex);
-  return direction * centerFromRoadCenterM;
+  const trafficSide = leftHandTraffic ? 1 : -1;
+  return direction * trafficSide * centerFromRoadCenterM;
+}
+
+function directionalFlow(
+  flowMap: Map<string, FlowSegment>,
+  roadId: number,
+  direction: 1 | -1,
+) {
+  return flowMap.get(roadId + ':' + direction) ?? flowMap.get(roadId + ':0');
 }
 
 export function particlePixelSize(particle: TrafficParticle) {
@@ -179,7 +191,9 @@ export function generateTrafficParticles(
   altitude: number,
   cap = 1200,
 ): TrafficParticle[] {
-  const flowByRoad = new Map(flows.map((flow) => [flow.roadId, flow]));
+  const flowByRoadDirection = new Map(
+    flows.map((flow) => [flow.roadId + ':' + (flow.direction ?? 0), flow]),
+  );
   const candidateRoads = (altitude > 5000
     ? roads.filter((road) => ['motorway', 'trunk', 'primary'].includes(road.highway))
     : roads
@@ -187,10 +201,19 @@ export function generateTrafficParticles(
 
   const spacing = altitude < 1000 ? 30 : altitude < 3000 ? 80 : altitude < 5000 ? 150 : 250;
   const planned = candidateRoads.map((road) => {
-    const flow = flowByRoad.get(road.id);
-    if (flow?.source === 'tomtom-live' && flow.closure) return 0;
-    const level = flow?.source === 'tomtom-live' ? flow.level ?? null : null;
-    const bucket = flowBucket(flow);
+    const directionalFlows = road.oneway
+      ? [directionalFlow(flowByRoadDirection, road.id, 1)]
+      : [
+          directionalFlow(flowByRoadDirection, road.id, 1),
+          directionalFlow(flowByRoadDirection, road.id, -1),
+        ];
+    const openFlows = directionalFlows.filter((flow) => !(flow?.source === 'tomtom-live' && flow.closure));
+    if (!openFlows.length) return 0;
+    const levels = openFlows
+      .map((flow) => flow?.source === 'tomtom-live' ? flow.level : null)
+      .filter((level): level is number => Number.isFinite(level));
+    const level = levels.length ? levels.reduce((sum, value) => sum + value, 0) / levels.length : null;
+    const bucket = levels.length ? flowBucket(openFlows.sort((a, b) => (a?.level ?? 1) - (b?.level ?? 1))[0]) : null;
     const density = (DENSITY_MULT[road.highway] ?? 1) * flowDensityMult(level, bucket === 'jam');
     return Math.max(1, Math.floor(roadLength(road) / spacing * density));
   });
@@ -238,16 +261,20 @@ export function generateTrafficParticles(
     const road = candidateRoads[roadIndex];
     const count = budgets[roadIndex];
     if (!count) continue;
-    const flow = flowByRoad.get(road.id);
-    const level = flow?.source === 'tomtom-live' ? flow.level ?? null : null;
-    const bucket = flowBucket(flow);
     const totalLength = roadLength(road);
-    const queued = bucket === 'jam'
-      ? queuePlacements(totalLength, count, road.id, road.oneway)
-      : null;
+    const roadFlows = [
+      directionalFlow(flowByRoadDirection, road.id, 1),
+      directionalFlow(flowByRoadDirection, road.id, -1),
+    ];
+    const jammed = roadFlows.some((flow) => flowBucket(flow) === 'jam');
+    const queued = jammed ? queuePlacements(totalLength, count, road.id, road.oneway) : null;
 
     for (let i = 0; i < count && particles.length < cap; i += 1) {
       const direction: 1 | -1 = queued?.[i]?.direction ?? (road.oneway ? 1 : i % 2 === 0 ? 1 : -1);
+      const flow = directionalFlow(flowByRoadDirection, road.id, direction);
+      if (flow?.source === 'tomtom-live' && flow.closure) continue;
+      const level = flow?.source === 'tomtom-live' ? flow.level ?? null : null;
+      const bucket = flowBucket(flow);
       const progress = queued?.[i]?.progress ?? ((i + stableUnit(road.id * 997 + i * 37)) / count) % 1;
       const queueGroup = queued?.[i]?.group ?? null;
       const laneOrdinal = road.oneway ? i : Math.floor(i / 2);
@@ -261,7 +288,9 @@ export function generateTrafficParticles(
         progress,
         segmentIndex: 0,
         direction,
-        laneOffsetM: laneOffsetMeters(road, direction, laneOrdinal),
+        laneOffsetM: laneOffsetMeters(road, direction, laneOrdinal, flow?.leftHandTraffic ?? false),
+        laneOrdinal,
+        leftHandTraffic: flow?.leftHandTraffic ?? false,
         queueGroup,
         mps: baseMps * flowSpeedScale(level),
         baseMps,

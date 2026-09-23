@@ -11,6 +11,8 @@ type FlowPolyline = {
   trafficLevel: number;
   roadType: string;
   closure: boolean;
+  leftHandTraffic: boolean | null;
+  partOfTwoWayRoad: boolean | null;
 };
 
 const FLOW_LAYER_NAME = 'Traffic flow';
@@ -22,6 +24,12 @@ const BEARING_TOLERANCE_DEG = 30;
 const ROAD_SAMPLES = 7;
 const MIN_MATCHED_SAMPLES = 2;
 const MERCATOR_LAT_LIMIT = 85.05112878;
+
+function optionalBoolean(value: unknown): boolean | null {
+  if (value === true || value === 'true' || value === 1 || value === '1') return true;
+  if (value === false || value === 'false' || value === 0 || value === '0') return false;
+  return null;
+}
 
 function lonLatToTile(lon: number, lat: number, z: number) {
   const n = 2 ** z;
@@ -92,6 +100,8 @@ function decodeFlowTile(data: ArrayBuffer, z: number, x: number, y: number): Flo
           trafficLevel,
           roadType,
           closure,
+          leftHandTraffic: optionalBoolean(props.left_hand_traffic),
+          partOfTwoWayRoad: optionalBoolean(props.part_of_two_way_road),
         });
       }
     } catch {
@@ -112,10 +122,10 @@ function bearingDeg(dx: number, dy: number) {
   return Math.atan2(dx, dy) * 180 / Math.PI;
 }
 
-function bearingDiffDeg(a: number, b: number) {
+function directedBearingDiffDeg(a: number, b: number) {
   let delta = Math.abs(a - b) % 360;
   if (delta > 180) delta = 360 - delta;
-  return Math.min(delta, 180 - delta);
+  return delta;
 }
 
 function pointSegDist2(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
@@ -129,8 +139,15 @@ function pointSegDist2(px: number, py: number, ax: number, ay: number, bx: numbe
   return (px - qx) ** 2 + (py - qy) ** 2;
 }
 
+type DirectionalFlowMatch = {
+  level: number;
+  closure: boolean;
+  leftHandTraffic?: boolean;
+  partOfTwoWayRoad?: boolean;
+};
+
 function matchFlowToRoads(roads: RoadSegment[], flowSegments: FlowPolyline[]) {
-  const matches: Array<{ level: number; closure: boolean } | null> = new Array(roads.length).fill(null);
+  const matches: Array<{ forward?: DirectionalFlowMatch; reverse?: DirectionalFlowMatch } | null> = new Array(roads.length).fill(null);
   if (!roads.length || !flowSegments.length) return { matches, matchedCount: 0, candidateCount: 0 };
 
   const anchor = flowSegments.find((flow) => flow.coords.length >= 2);
@@ -145,6 +162,8 @@ function matchFlowToRoads(roads: RoadSegment[], flowSegments: FlowPolyline[]) {
   type GridSegment = {
     ax: number; ay: number; bx: number; by: number;
     bearing: number; level: number; closure: boolean;
+    leftHandTraffic: boolean | null;
+    partOfTwoWayRoad: boolean | null;
   };
   const grid = new Map<string, GridSegment[]>();
 
@@ -169,6 +188,8 @@ function matchFlowToRoads(roads: RoadSegment[], flowSegments: FlowPolyline[]) {
           bearing,
           level: flow.trafficLevel,
           closure: flow.closure,
+          leftHandTraffic: flow.leftHandTraffic,
+          partOfTwoWayRoad: flow.partOfTwoWayRoad,
         };
         const key = cellOf((segment.ax + segment.bx) / 2, (segment.ay + segment.by) / 2);
         const bucket = grid.get(key) ?? [];
@@ -198,8 +219,12 @@ function matchFlowToRoads(roads: RoadSegment[], flowSegments: FlowPolyline[]) {
     if (!(totalLength > 0)) continue;
 
     let hadCandidate = false;
-    const levels: number[] = [];
-    let closure = false;
+    const forwardLevels: number[] = [];
+    const reverseLevels: number[] = [];
+    let forwardClosure = false;
+    let reverseClosure = false;
+    const forwardMeta: GridSegment[] = [];
+    const reverseMeta: GridSegment[] = [];
     let cursor = 1;
 
     for (let sample = 0; sample < ROAD_SAMPLES; sample += 1) {
@@ -212,8 +237,10 @@ function matchFlowToRoads(roads: RoadSegment[], flowSegments: FlowPolyline[]) {
       const sampleBearing = bearingDeg(xs[cursor] - xs[cursor - 1], ys[cursor] - ys[cursor - 1]);
       const cx = Math.floor(px / CELL_SIZE_M);
       const cy = Math.floor(py / CELL_SIZE_M);
-      let best: GridSegment | null = null;
-      let bestDist2 = radius2;
+      let bestForward: GridSegment | null = null;
+      let bestReverse: GridSegment | null = null;
+      let bestForwardDist2 = radius2;
+      let bestReverseDist2 = radius2;
 
       for (let gy = cy - 1; gy <= cy + 1; gy += 1) {
         for (let gx = cx - 1; gx <= cx + 1; gx += 1) {
@@ -223,27 +250,51 @@ function matchFlowToRoads(roads: RoadSegment[], flowSegments: FlowPolyline[]) {
             const distance2 = pointSegDist2(px, py, segment.ax, segment.ay, segment.bx, segment.by);
             if (distance2 > radius2) continue;
             hadCandidate = true;
-            if (bearingDiffDeg(segment.bearing, sampleBearing) >= BEARING_TOLERANCE_DEG) continue;
-            if (distance2 <= bestDist2) {
-              bestDist2 = distance2;
-              best = segment;
+            const bearingDelta = directedBearingDiffDeg(segment.bearing, sampleBearing);
+            if (bearingDelta <= BEARING_TOLERANCE_DEG && distance2 <= bestForwardDist2) {
+              bestForwardDist2 = distance2;
+              bestForward = segment;
+            } else if (bearingDelta >= 180 - BEARING_TOLERANCE_DEG && distance2 <= bestReverseDist2) {
+              bestReverseDist2 = distance2;
+              bestReverse = segment;
             }
           }
         }
       }
-      if (best) {
-        levels.push(best.level);
-        if (best.closure) closure = true;
+      if (bestForward) {
+        forwardLevels.push(bestForward.level);
+        forwardMeta.push(bestForward);
+        if (bestForward.closure) forwardClosure = true;
+      }
+      if (bestReverse) {
+        reverseLevels.push(bestReverse.level);
+        reverseMeta.push(bestReverse);
+        if (bestReverse.closure) reverseClosure = true;
       }
     }
 
     if (hadCandidate) candidateCount += 1;
-    if (levels.length >= Math.max(MIN_MATCHED_SAMPLES, ROAD_SAMPLES / 2)) {
+    const minimumSamples = Math.max(MIN_MATCHED_SAMPLES, Math.ceil(ROAD_SAMPLES / 2));
+    const buildMatch = (levels: number[], closure: boolean, meta: GridSegment[]) => {
+      if (levels.length < minimumSamples) return undefined;
       const level = median(levels);
-      if (level != null) {
-        matches[roadIndex] = { level, closure };
-        matchedCount += 1;
-      }
+      if (level == null) return undefined;
+      const leftHandTraffic = meta.find((value) => value.leftHandTraffic != null)?.leftHandTraffic;
+      const partOfTwoWayRoad = meta.find((value) => value.partOfTwoWayRoad != null)?.partOfTwoWayRoad;
+      return {
+        level,
+        closure,
+        ...(leftHandTraffic != null ? { leftHandTraffic } : {}),
+        ...(partOfTwoWayRoad != null ? { partOfTwoWayRoad } : {}),
+      };
+    };
+    const forward = buildMatch(forwardLevels, forwardClosure, forwardMeta);
+    const reverse = roads[roadIndex].oneway
+      ? undefined
+      : buildMatch(reverseLevels, reverseClosure, reverseMeta);
+    if (forward || reverse) {
+      matches[roadIndex] = { forward, reverse };
+      matchedCount += 1;
     }
   }
 
@@ -287,16 +338,22 @@ export async function fetchTomTomFlowsForRoads(
     const hit = match.matches[i];
     if (!hit) continue;
     const freeFlowSpeedKmh = inferFreeFlowSpeed(roads[i]);
-    flows.push({
-      roadId: roads[i].id,
-      congestion: classify(hit.level),
-      currentSpeedKmh: Math.round(freeFlowSpeedKmh * hit.level),
-      freeFlowSpeedKmh,
-      delaySeconds: 0,
-      level: hit.level,
-      closure: hit.closure,
-      source: 'tomtom-live',
-    });
+    for (const [direction, directional] of [[1, hit.forward], [-1, hit.reverse]] as const) {
+      if (!directional) continue;
+      flows.push({
+        roadId: roads[i].id,
+        direction,
+        congestion: classify(directional.level),
+        currentSpeedKmh: Math.round(freeFlowSpeedKmh * directional.level),
+        freeFlowSpeedKmh,
+        delaySeconds: 0,
+        level: directional.level,
+        closure: directional.closure,
+        leftHandTraffic: directional.leftHandTraffic,
+        partOfTwoWayRoad: directional.partOfTwoWayRoad,
+        source: 'tomtom-live',
+      });
+    }
   }
   const coveragePct = match.candidateCount > 0
     ? Math.round(match.matchedCount / match.candidateCount * 100)

@@ -29,6 +29,8 @@ type RoadSegment = {
   access: string;
   motorVehicle: string;
   junction: string;
+  nodeIds: number[];
+  trafficSignals: Array<{ nodeId: number; coordinate: [number, number]; index: number }>;
 };
 
 const MAJOR_TIMEOUT_MS = 12_000;
@@ -57,12 +59,24 @@ function buildOverpassQuery(
     ? "^(motorway|trunk|primary|secondary)$"
     : "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|motorway_link|trunk_link|primary_link|secondary_link)$";
   const timeoutSec = majorOnly ? 12 : 20;
-  return `[out:json][timeout:${timeoutSec}];(way["highway"~"${highwayRegex}"]${bb};);out geom qt ${MAX_ELEMENTS};`;
+  return `[out:json][timeout:${timeoutSec}];(way["highway"~"${highwayRegex}"]${bb};node["highway"="traffic_signals"]${bb};);out geom qt ${MAX_ELEMENTS};`;
 }
 
 function normalizeRoads(data: OverpassResponse): RoadSegment[] {
   const roads: RoadSegment[] = [];
   const denied = new Set(["no", "private"]);
+  const explicitMotorAccess = new Set(["yes", "permissive", "designated", "destination", "customers", "delivery"]);
+  const signalCoordinates = new Map<number, [number, number]>();
+  for (const element of data.elements ?? []) {
+    if (
+      element.type === "node" &&
+      element.tags?.highway === "traffic_signals" &&
+      Number.isFinite(element.lon) &&
+      Number.isFinite(element.lat)
+    ) {
+      signalCoordinates.set(element.id, [Number(element.lon), Number(element.lat)]);
+    }
+  }
   for (const el of data.elements ?? []) {
     if (el.type !== "way" || !el.geometry?.length) continue;
     const tags = el.tags ?? {};
@@ -73,11 +87,15 @@ function normalizeRoads(data: OverpassResponse): RoadSegment[] {
     const motorVehicle = String(tags.motor_vehicle ?? "").toLowerCase();
     const junction = String(tags.junction ?? "").toLowerCase();
 
-    // Do not model public traffic on explicitly non-motorized/private ways.
-    // Service/living-street roads remain eligible when motor access is plausible,
-    // which covers genuine park roads and parking circulation without footpaths.
-    if (denied.has(motorVehicle) || denied.has(vehicle) || denied.has(access)) continue;
-    if (highway === "service" && ["driveway", "emergency_access"].includes(service)) continue;
+    // OSM access precedence: the most specific populated tag wins.
+    const effectiveMotorAccess = motorVehicle || vehicle || access;
+    if (denied.has(effectiveMotorAccess)) continue;
+    if (highway === "service" && service === "emergency_access") continue;
+    if (
+      highway === "service" &&
+      service === "driveway" &&
+      !explicitMotorAccess.has(effectiveMotorAccess)
+    ) continue;
 
     let coords = el.geometry
       .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
@@ -94,7 +112,11 @@ function normalizeRoads(data: OverpassResponse): RoadSegment[] {
       rawOneway === "true" ||
       rawOneway === "1" ||
       impliedRoundaboutOneway;
-    if (reverseOneway) coords = [...coords].reverse();
+    let nodeIds = Array.isArray(el.nodes) ? [...el.nodes] : [];
+    if (reverseOneway) {
+      coords = [...coords].reverse();
+      nodeIds = [...nodeIds].reverse();
+    }
 
     const maxspeedMatch = tags.maxspeed?.match(/^(\d+)/);
     const bridgeTag = String(tags.bridge ?? "").toLowerCase();
@@ -125,6 +147,13 @@ function normalizeRoads(data: OverpassResponse): RoadSegment[] {
       access,
       motorVehicle,
       junction,
+      nodeIds,
+      trafficSignals: nodeIds.flatMap((nodeId, index) => {
+        const coordinate = signalCoordinates.get(nodeId) ?? coords[index];
+        return signalCoordinates.has(nodeId) && coordinate
+          ? [{ nodeId, coordinate, index }]
+          : [];
+      }),
     });
   }
   return roads;

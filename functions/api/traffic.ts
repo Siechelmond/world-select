@@ -42,6 +42,10 @@ async function fetchTomTomVectorTile(apiKey: string, z: number, x: number, y: nu
     z + '/' + x + '/' + y,
   );
   upstream.searchParams.set('apiVersion', '2');
+  upstream.searchParams.set(
+    'attributes',
+    'tags(road_category,relative_speed,left_hand_traffic,road_closure,part_of_two_way_road)',
+  );
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
@@ -109,22 +113,29 @@ export const onRequestGet = async (context: { request: Request; env: Env }) => {
 
   if (mode === 'status') {
     try {
-      // One low-cost probe tile verifies that the deployed secret is actually accepted.
-      const probe = await fetchTomTomTile(apiKey, 0, 0, 0, 'flow');
-      if (!probe.ok) {
-        return json({
-          configured: true,
-          available: false,
-          provider: 'TomTom Orbis Traffic Flow v2',
-          upstreamStatus: probe.status,
-          message: `TomTom rejected the traffic request (HTTP ${probe.status})`,
-        });
-      }
+      // Raster and vector are separate TomTom entitlements. Probe both so a
+      // raster 403 cannot incorrectly disable the working Orbis vector path.
+      const [rasterProbe, vectorProbe] = await Promise.allSettled([
+        fetchTomTomTile(apiKey, 12, 2048, 1362, 'flow'),
+        fetchTomTomVectorTile(apiKey, 12, 2048, 1362),
+      ]);
+      const rasterStatus = rasterProbe.status === 'fulfilled' ? rasterProbe.value.status : 0;
+      const vectorStatus = vectorProbe.status === 'fulfilled' ? vectorProbe.value.status : 0;
+      const rasterAvailable = rasterProbe.status === 'fulfilled' && rasterProbe.value.ok;
+      const vectorAvailable = vectorProbe.status === 'fulfilled' && vectorProbe.value.ok;
       return json({
         configured: true,
-        available: true,
+        available: rasterAvailable || vectorAvailable,
+        rasterAvailable,
+        vectorAvailable,
+        rasterUpstreamStatus: rasterStatus || undefined,
+        vectorUpstreamStatus: vectorStatus || undefined,
         provider: 'TomTom Orbis Traffic Flow v2',
-        message: 'live traffic flow available',
+        message: rasterAvailable
+          ? 'live raster and vector traffic available'
+          : vectorAvailable
+            ? 'live vector traffic available; raster entitlement unavailable'
+            : 'TomTom rejected raster and vector traffic requests',
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Traffic probe failed';

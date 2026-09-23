@@ -4,6 +4,10 @@ export type TrafficStatus = {
   provider: string;
   message?: string;
   upstreamStatus?: number;
+  rasterAvailable?: boolean;
+  vectorAvailable?: boolean;
+  rasterUpstreamStatus?: number;
+  vectorUpstreamStatus?: number;
 };
 
 export async function fetchTrafficStatus(signal?: AbortSignal): Promise<TrafficStatus> {
