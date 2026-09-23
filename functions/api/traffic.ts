@@ -37,13 +37,20 @@ async function fetchTomTomTile(apiKey: string, z: number, x: number, y: number, 
 
 
 async function fetchTomTomVectorTile(apiKey: string, z: number, x: number, y: number) {
-  const upstream = new URL('https://api.tomtom.com/traffic/map/4/tile/flow/relative/' + z + '/' + x + '/' + y + '.pbf');
-  upstream.searchParams.set('key', apiKey);
+  const upstream = new URL(
+    'https://api.tomtom.com/maps/orbis/traffic/flow/vector/tile/' +
+    z + '/' + x + '/' + y,
+  );
+  upstream.searchParams.set('apiVersion', '2');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     return await fetch(upstream.toString(), {
-      headers: { Accept: 'application/x-protobuf' },
+      headers: {
+        'TomTom-Api-Key': apiKey,
+        'TomTom-Api-Version': '2',
+        Accept: 'application/vnd.mapbox-vector-tile',
+      },
       signal: controller.signal,
       cf: { cacheTtl: 90, cacheEverything: true },
     } as RequestInit & { cf: { cacheTtl: number; cacheEverything: boolean } });

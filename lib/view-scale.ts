@@ -173,10 +173,10 @@ export function resolveEarthSceneState(cameraHeight: number): EarthSceneState {
     earthReferenceVisible:
       normalizedHeight >= EARTH_REFERENCE_MIN_DISTANCE_M,
     cislunarGuideAlpha,
-    // Satellite points stay as spatial context after live propagation stops.
-    // Their Cesium distance scaling makes them fade/shrink naturally instead of
-    // disappearing at one logical-height switch.
-    satelliteContextVisible: !isGround,
+    // Layer enablement owns satellite visibility at Ground/Earth scale.
+    // The renderer already owns live-propagation and far-distance fading, so
+    // the Solar tier contract must not hide ISS or satellites near the ground.
+    satelliteContextVisible: true,
     planetOrbitsAvailable: isSolar,
     statusLabel: fullSolarContextVisible
       ? "FULL SOLAR · COMPRESSED"

@@ -21,6 +21,9 @@ const viewScale = fs.readFileSync(path.join(root, 'lib/view-scale.ts'), 'utf8');
 const viewerLifecycle = fs.readFileSync(path.join(root, 'lib/cesium-viewer.ts'), 'utf8');
 const geocodeApi = fs.readFileSync(path.join(root, 'functions/api/geocode.ts'), 'utf8');
 const mapController = fs.readFileSync(path.join(root, 'runtime/gev/map-controller.ts'), 'utf8');
+const trafficApi = fs.readFileSync(path.join(root, 'functions/api/traffic.ts'), 'utf8');
+const trafficLiveFlow = fs.readFileSync(path.join(root, 'lib/traffic-live-flow.ts'), 'utf8');
+const trafficController = fs.readFileSync(path.join(root, 'runtime/gev/layers/traffic-controller.ts'), 'utf8');
 
 const checks = [
   ['adsb.lol uses documented lat/lon/dist route', aircraftCore.includes('/v2/lat/${lat.toFixed(3)}/lon/${lon.toFixed(3)}/dist/${radius}')],
@@ -47,6 +50,10 @@ const checks = [
   ['Earth orbit is rendered while exact Earth-origin samples stay filtered', !celestialBridge.includes('if (planet.entity.name === "Earth") continue;') && celestialBridge.includes('Cesium.Cartesian3.magnitude(position) > 1')],
   ['native Earth is the only Earth across Earth and solar tiers', !celestialBridge.includes('EARTH_PROXY_ID') && !component.includes('viewer.scene.globe.show = globeVisible')],
   ['map controller exclusively owns globe versus Google 3D surface', mapController.includes('viewer.scene.globe.show = !in3d') && !component.includes('viewer.scene?.globe.show')],
+  ['Ground keeps ISS and satellites visible while renderer owns distance fading', viewScale.includes('satelliteContextVisible: true') && component.includes('visible: satelliteContextVisible && satelliteLayer')],
+  ['TomTom vector traffic uses current Orbis v2 endpoint and server-side header auth', trafficApi.includes('/maps/orbis/traffic/flow/vector/tile/') && trafficApi.includes("upstream.searchParams.set('apiVersion', '2')") && trafficApi.includes("'TomTom-Api-Key': apiKey") && !trafficApi.includes('/traffic/map/4/tile/flow/relative/')],
+  ['TomTom vector decoder consumes Orbis relative-speed and road-category tags', trafficLiveFlow.includes('props.relative_speed') && trafficLiveFlow.includes('props.road_category')],
+  ['Google 3D traffic uses classified donor geometry instead of unsupported tileset imagery', trafficController.includes("if (context.mapMode === 'photoreal') return null") && trafficController.includes('Cesium.GroundPolylinePrimitive') && trafficController.includes('Cesium.ClassificationType.CESIUM_3D_TILE') && !trafficController.includes('tileset?.imageryLayers')],
   ['planet display sizes preserve radius ordering on a compressed visual scale', celestialBridge.includes('BODY_RADIUS_KM') && celestialBridge.includes('Math.pow(radiusKm / earthRadiusKm, 0.25)')],
   ['four-tier contract sequences Earth orbit, cislunar and Solar from one owner', viewScale.includes('"ground" | "earth" | "cislunar" | "solar"') && viewScale.includes('EARTH_LAYER_CONTEXT_MAX_HEIGHT_M = 36_000_000') && viewScale.includes('CISLUNAR_CONTEXT_HEIGHT_M = 80_000_000') && viewScale.includes('SATELLITE_LIVE_PROPAGATION_MAX_HEIGHT_M = 120_000_000') && viewScale.includes('SOLAR_CONTEXT_HEIGHT_M = 1_200_000_000') && viewScale.includes('resolveEarthSceneState')],
   ['React has one camera-scale owner', component.includes('const [earthCamera, setEarthCamera]') && component.includes('const earthScene = useMemo') && !component.includes('setScaleTier(') && !component.includes('setCameraHeight(')],

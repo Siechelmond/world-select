@@ -69,11 +69,17 @@ function decodeFlowTile(data: ArrayBuffer, z: number, x: number, y: number): Flo
       const geometry = feature.toGeoJSON(x, y, z).geometry as any;
       const props = feature.properties ?? {};
       const closure = props.road_closure === true || props.road_closure === 'true';
-      const rawLevel = props.traffic_level;
+      const rawLevel = typeof props.relative_speed === 'number'
+        ? props.relative_speed
+        : props.traffic_level;
       const hasLevel = typeof rawLevel === 'number' && Number.isFinite(rawLevel);
       if (!hasLevel && !closure) continue;
       const trafficLevel = hasLevel ? Math.min(1, Math.max(0, rawLevel)) : 0;
-      const roadType = typeof props.road_type === 'string' ? props.road_type : '';
+      const roadType = typeof props.road_category === 'string'
+        ? props.road_category
+        : typeof props.road_type === 'string'
+          ? props.road_type
+          : '';
       const lines = geometry?.type === 'LineString'
         ? [geometry.coordinates]
         : geometry?.type === 'MultiLineString'

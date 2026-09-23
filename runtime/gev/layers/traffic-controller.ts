@@ -46,7 +46,7 @@ function boundsAround(latitude: number, longitude: number, radiusKm: number) {
 
 /**
  * Traffic ownership remains bounded:
- * - live TomTom raster stays exactly on the current globe / 3D tileset path;
+ * - live TomTom raster stays on globe imagery modes; Google 3D uses classified vector geometry;
  * - OSM road acquisition stays on /api/roads;
  * - donor-derived PointPrimitive traffic replaces SVG billboards only;
  * - TomTom vector flow may refine particle speed/density, but any vector
@@ -328,19 +328,11 @@ export function createTrafficController(input: {
   };
 
   const liveImageryCollection = () => {
-    if (context.mapMode !== 'photoreal') return viewer.imageryLayers;
-    const tileset = getPhotorealisticTileset();
-    const collection = tileset?.imageryLayers;
-    if (!(collection?.addImageryProvider && collection?.remove)) return null;
-
-    // Keep the already-mounted near-ground drape alive while a new Google 3D
-    // refinement cycle settles. Only the *initial* mount is deferred. This keeps
-    // traffic visible below 8 km without repeatedly tearing down imagery layers.
-    if (context.cameraHeight < 8_000 && !near3dDrapeReady) {
-      if (flowLayer && liveLayerCollection === collection) return collection;
-      return null;
-    }
-    return collection;
+    // Cesium3DTileset does not own a supported ImageryLayerCollection. Raster
+    // remains on SAT/MAP/NASA globe modes; Google 3D uses the donor-derived
+    // GroundPolylinePrimitive classification path below.
+    if (context.mapMode === 'photoreal') return null;
+    return viewer.imageryLayers;
   };
 
   const unmountLive = () => {
@@ -797,9 +789,9 @@ export function createTrafficController(input: {
         const mounted = mountLive();
         if (context.mapMode === 'photoreal') {
           if (!mounted && context.cameraHeight >= 8_000) {
-            publish("degraded", "TomTom live flow is available but Cesium 3D imagery drape is unavailable · OSM particles remain");
+            publish("degraded", "TomTom live flow available · zoom below 8 km for the classified 3D road overlay");
           } else if (!mounted && context.cameraHeight < 8_000) {
-            publish("loading", "Google 3D refining · TomTom 3D traffic drape will appear after tiles settle");
+            publish("loading", "Google 3D refining · TomTom classified road overlay will appear after tiles settle");
           }
           void ensureFallback();
           void refreshLiveParticleFlow();
