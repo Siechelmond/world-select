@@ -386,8 +386,6 @@ export default function WorldSelectApp() {
     setMobilePanel("inspector");
     if (entity.kind === "satellite" && /ISS.*ZARYA|^ISS\b/i.test(entity.name)) {
       setIssPreview({ entity, screen: null });
-    } else {
-      setIssPreview(null);
     }
   }, []);
 

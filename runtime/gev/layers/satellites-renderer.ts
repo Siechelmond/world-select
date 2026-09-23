@@ -234,6 +234,9 @@ export function createSatelliteRenderer(input: {
       const spec = SATELLITE_CLASSES[klass];
       const filteredIn = satelliteMatchesFilter(spatial, activeFilter);
       const horizonVisible = !occluder || occluder.isPointVisible(position);
+      // Preserve the historic ISS hero contract: generic satellites obey the
+      // camera-horizon cull, while ISS keeps its persistent point + label.
+      const renderVisible = isIss || horizonVisible;
       const pixelSize = isIss ? Math.max(8, spec.pixelSize) : spec.pixelSize;
       const pointColor = Cesium.Color.fromCssColorString(spec.color);
 
@@ -249,7 +252,7 @@ export function createSatelliteRenderer(input: {
         trail = [];
       }
 
-      const detailWanted = filteredIn && horizonVisible && (isSelected || persistentLabel);
+      const detailWanted = filteredIn && renderVisible && (isSelected || persistentLabel);
       let point = points.get(spatial.id);
       if (!point) {
         point = pointCollection.add({
@@ -261,14 +264,14 @@ export function createSatelliteRenderer(input: {
           outlineWidth: 0.5,
           scaleByDistance: pointScale,
           translucencyByDistance: pointAlpha,
-          show: filteredIn && horizonVisible && !detailWanted,
+          show: filteredIn && renderVisible && !detailWanted,
         });
         points.set(spatial.id, point);
       } else {
         point.position = position;
         point.pixelSize = pixelSize;
         point.color = pointColor;
-        point.show = filteredIn && horizonVisible && !detailWanted;
+        point.show = filteredIn && renderVisible && !detailWanted;
       }
 
       if (detailWanted) {
